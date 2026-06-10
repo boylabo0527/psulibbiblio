@@ -1,49 +1,47 @@
-import { NextResponse } from "next/server";
 import { parseSubjects } from "@/lib/parsers";
+import { ndjsonStream } from "@/lib/streaming";
 import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-export async function POST(req: Request) {
-  try {
-    const form = await req.formData();
-    const file = form.get("file");
-    const programOverride = (form.get("program") as string | null)?.trim() || "";
-    const campusOverride = (form.get("campus") as string | null)?.trim() || "";
-    const collegeOverride = (form.get("college") as string | null)?.trim() || "";
+const TICK_EVERY = 25;
 
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "Missing file" }, { status: 400 });
-    }
+export async function POST(req: Request) {
+  const form = await req.formData();
+  const file = form.get("file");
+  const programOverride = (form.get("program") as string | null)?.trim() || "";
+  const campusOverride = (form.get("campus") as string | null)?.trim() || "";
+  const collegeOverride = (form.get("college") as string | null)?.trim() || "";
+
+  const stream = ndjsonStream(async (send) => {
+    if (!(file instanceof File)) throw new Error("Missing file");
+    send({ phase: "parsing" });
     const buf = Buffer.from(await file.arrayBuffer());
     const records = await parseSubjects(file.name, buf);
-    if (!records.length) return NextResponse.json({ received: 0, inserted: 0, programs: 0 });
-
+    send({ phase: "parsed", total: records.length });
+    if (!records.length) {
+      send({ phase: "done", received: 0, inserted: 0, programs: 0 });
+      return;
+    }
     const db = serviceClient();
 
-    type Key = string;
-    const programKey = (p: string, ca: string, co: string) => `${p}${ca}${co}`;
-    const programCache = new Map<Key, number>();
-
+    const programCache = new Map<string, number>();
     let inserted = 0;
     let programsCreated = 0;
 
-    for (const rec of records) {
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
       const progName = (programOverride || rec.program || "").trim();
       const campus = (campusOverride || rec.campus || "").trim();
       const college = (collegeOverride || rec.college || "").trim();
       if (!progName) {
-        return NextResponse.json(
-          { error: "No 'program' column found and no program override provided." },
-          { status: 400 },
-        );
+        throw new Error("No 'program' column found and no program override provided.");
       }
-      const key = programKey(progName, campus, college);
+      const key = `${progName}|${campus}|${college}`;
       let pid = programCache.get(key);
       if (!pid) {
-        // upsert program by (campus, college, name)
         const existing = await db.from("programs")
           .select("id")
           .eq("campus", campus).eq("college", college).eq("name", progName)
@@ -71,10 +69,14 @@ export async function POST(req: Request) {
       });
       if (error) throw error;
       inserted++;
+      if (inserted % TICK_EVERY === 0 || inserted === records.length) {
+        send({ phase: "inserting", inserted, total: records.length });
+      }
     }
-    return NextResponse.json({ received: records.length, inserted, programs: programsCreated });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 400 });
-  }
+    send({ phase: "done", received: records.length, inserted, programs: programsCreated });
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
+  });
 }

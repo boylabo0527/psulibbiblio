@@ -1,5 +1,5 @@
-import { NextResponse } from "next/server";
 import { parseEbookTitles } from "@/lib/parsers";
+import { ndjsonStream } from "@/lib/streaming";
 import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -9,16 +9,19 @@ export const maxDuration = 120;
 const BATCH = 500;
 
 export async function POST(req: Request) {
-  try {
-    const form = await req.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "Missing file" }, { status: 400 });
-    }
+  const form = await req.formData();
+  const file = form.get("file");
+
+  const stream = ndjsonStream(async (send) => {
+    if (!(file instanceof File)) throw new Error("Missing file");
+    send({ phase: "parsing" });
     const buf = Buffer.from(await file.arrayBuffer());
     const records = await parseEbookTitles(file.name, buf);
-    if (!records.length) return NextResponse.json({ received: 0, inserted: 0 });
-
+    send({ phase: "parsed", total: records.length });
+    if (!records.length) {
+      send({ phase: "done", received: 0, inserted: 0 });
+      return;
+    }
     const db = serviceClient();
     let inserted = 0;
     for (let i = 0; i < records.length; i += BATCH) {
@@ -37,10 +40,12 @@ export async function POST(req: Request) {
       const { data, error } = await db.from("titles").insert(slice).select("id");
       if (error) throw error;
       inserted += data?.length ?? 0;
+      send({ phase: "inserting", inserted, total: records.length });
     }
-    return NextResponse.json({ received: records.length, inserted });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 400 });
-  }
+    send({ phase: "done", received: records.length, inserted });
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
+  });
 }
