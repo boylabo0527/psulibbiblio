@@ -1,16 +1,17 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 
 type Program = { id: number; name: string; campus: string; college: string };
 type Title = {
-  id: number; format: "ebook" | "printed";
+  id: number; format: ResourceTypeId;
   title: string; author: string; publisher: string; year: string;
-  isbn: string; call_no: string; copies: number;
+  isbn: string; issn: string; call_no: string; copies: number;
 };
+type Buckets = Record<ResourceTypeId, Title[]>;
 type SubjectDetail = {
   subject: { id: number; section: string; course_code: string; course_title: string; description: string };
-  ebooks: Title[];
-  printed: Title[];
+  buckets: Buckets;
 };
 type Bibliography = {
   program: Program;
@@ -46,20 +47,11 @@ export default function ProgramsTab() {
     window.location.href = `/api/export?program_id=${selected}&fmt=${fmt}`;
   }
 
-  async function removeAssignment(subjectId: number, titleId: number) {
+  async function changeAssignment(subjectId: number, titleId: number, keep: boolean) {
     await fetch("/api/match/override", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subject_id: subjectId, title_id: titleId, keep: false }),
-    });
-    load();
-  }
-
-  async function addAssignment(subjectId: number, titleId: number) {
-    await fetch("/api/match/override", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subject_id: subjectId, title_id: titleId, keep: true }),
+      body: JSON.stringify({ subject_id: subjectId, title_id: titleId, keep }),
     });
     load();
   }
@@ -74,9 +66,7 @@ export default function ProgramsTab() {
             <select className="input ml-1 min-w-[280px]" value={selected ?? ""} onChange={(e) => setSelected(Number(e.target.value))}>
               {programs.length === 0 && <option value="">No programs uploaded yet</option>}
               {programs.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.campus ? ` — ${p.campus}` : ""}
-                </option>
+                <option key={p.id} value={p.id}>{p.name}{p.campus ? ` — ${p.campus}` : ""}</option>
               ))}
             </select>
           </label>
@@ -108,8 +98,8 @@ export default function ProgramsTab() {
                 <SubjectBlock
                   key={sub.subject.id}
                   detail={sub}
-                  onRemove={(titleId) => removeAssignment(sub.subject.id, titleId)}
-                  onAdd={(titleId) => addAssignment(sub.subject.id, titleId)}
+                  onRemove={(titleId) => changeAssignment(sub.subject.id, titleId, false)}
+                  onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
                 />
               ))}
             </div>
@@ -123,8 +113,18 @@ export default function ProgramsTab() {
 function SubjectBlock({
   detail, onRemove, onAdd,
 }: { detail: SubjectDetail; onRemove: (titleId: number) => void; onAdd: (titleId: number) => void }) {
-  const print = detail.printed.reduce((acc, t) => ({ titles: acc.titles + 1, volumes: acc.volumes + (t.copies || 1) }), { titles: 0, volumes: 0 });
-  const ebook = { titles: detail.ebooks.length, volumes: detail.ebooks.length };
+  let totalTitles = 0;
+  let totalVolumes = 0;
+  for (const t of RESOURCE_TYPES) {
+    const list = detail.buckets[t.id] ?? [];
+    totalTitles += list.length;
+    if (t.medium === "print") {
+      for (const b of list) totalVolumes += Math.max(1, b.copies ?? 1);
+    } else {
+      totalVolumes += list.length;
+    }
+  }
+
   return (
     <div className="mb-5 border-l-4 border-psu-light pl-3">
       <div className="flex items-baseline gap-2">
@@ -134,22 +134,17 @@ function SubjectBlock({
       {detail.subject.description && (
         <p className="text-xs text-slate-600 mb-2 leading-relaxed">{detail.subject.description}</p>
       )}
-      <BookSection
-        label="eBooks (Kavita)"
-        books={detail.ebooks}
-        onRemove={onRemove}
-        showCallNo={false}
-      />
-      <BookSection
-        label="Printed Books"
-        books={detail.printed}
-        onRemove={onRemove}
-        showCallNo={true}
-      />
+      {RESOURCE_TYPES.map((t) => (
+        <BookSection
+          key={t.id}
+          label={t.sectionLabel}
+          books={detail.buckets[t.id] ?? []}
+          onRemove={onRemove}
+          showIdent={t.medium === "print" || t.kind === "journal"}
+        />
+      ))}
       <p className="text-xs text-slate-700 mt-1">
-        <strong>Titles:</strong> {print.titles + ebook.titles}
-        {" · "}
-        <strong>Volumes:</strong> {print.volumes + ebook.volumes}
+        <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
       </p>
       <AddBook subjectId={detail.subject.id} onAdded={onAdd} />
     </div>
@@ -157,8 +152,8 @@ function SubjectBlock({
 }
 
 function BookSection({
-  label, books, onRemove, showCallNo,
-}: { label: string; books: Title[]; onRemove: (id: number) => void; showCallNo: boolean }) {
+  label, books, onRemove, showIdent,
+}: { label: string; books: Title[]; onRemove: (id: number) => void; showIdent: boolean }) {
   if (!books.length) return null;
   return (
     <div className="mb-2">
@@ -166,7 +161,7 @@ function BookSection({
       <table className="w-full text-xs">
         <thead className="text-slate-500">
           <tr>
-            {showCallNo && <th className="text-left p-1 w-32">Call No.</th>}
+            {showIdent && <th className="text-left p-1 w-32">Call No. / ISSN</th>}
             <th className="text-left p-1 w-44">Author</th>
             <th className="text-left p-1">Title</th>
             <th className="text-left p-1 w-12">Year</th>
@@ -177,7 +172,7 @@ function BookSection({
         <tbody>
           {books.map((b) => (
             <tr key={b.id} className="border-t border-slate-100">
-              {showCallNo && <td className="p-1">{b.call_no}</td>}
+              {showIdent && <td className="p-1">{b.call_no || b.issn}</td>}
               <td className="p-1">{b.author}</td>
               <td className="p-1">{b.title}</td>
               <td className="p-1">{b.year}</td>
@@ -195,7 +190,7 @@ function BookSection({
 
 function AddBook({ subjectId, onAdded }: { subjectId: number; onAdded: (titleId: number) => void }) {
   const [q, setQ] = useState("");
-  const [format, setFormat] = useState<"" | "ebook" | "printed">("");
+  const [format, setFormat] = useState<"" | ResourceTypeId>("");
   const [hits, setHits] = useState<Title[]>([]);
   const [open, setOpen] = useState(false);
 
@@ -210,16 +205,15 @@ function AddBook({ subjectId, onAdded }: { subjectId: number; onAdded: (titleId:
   return (
     <div className="mt-2">
       {!open ? (
-        <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add book to {subjectId}</button>
+        <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add resource to {subjectId}</button>
       ) : (
         <div className="bg-slate-50 rounded p-2">
           <div className="flex flex-wrap gap-2 mb-2">
             <input className="input text-xs flex-1 min-w-[180px]" placeholder="Search title..." value={q}
               onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
             <select className="input text-xs" value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
-              <option value="">Any format</option>
-              <option value="ebook">eBook</option>
-              <option value="printed">Printed</option>
+              <option value="">Any type</option>
+              {RESOURCE_TYPES.map((t) => <option key={t.id} value={t.id}>{t.uiLabel}</option>)}
             </select>
             <button className="btn text-xs" onClick={search}>Search</button>
             <button className="btn-outline text-xs" onClick={() => setOpen(false)}>Close</button>

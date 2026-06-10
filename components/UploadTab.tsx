@@ -233,21 +233,57 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="2. Upload Perlego title list (eBooks)"
-        hint="Marked as eBooks (Kavita). Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
-        endpoint="/api/upload/titles"
+        title="2. Paid / Subscribed eBooks (Perlego, Kavita)"
+        hint="Subscription-based eBook lists. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
+        endpoint="/api/upload/ebook_paid"
         templates={[
-          { label: "perlego_ebooks_template.xlsx", href: "/templates/perlego_ebooks_template.xlsx" },
-          { label: "perlego_ebooks_template.csv", href: "/templates/perlego_ebooks_template.csv" },
+          { label: "ebooks_paid_template.xlsx", href: "/templates/ebooks_paid_template.xlsx" },
+          { label: "ebooks_paid_template.csv",  href: "/templates/ebooks_paid_template.csv" },
         ]}
       />
       <FileCard
-        title="3. Upload Printed Books catalog"
-        hint="Library catalog rows. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
-        endpoint="/api/upload/printed"
+        title="3. Open Source eBooks"
+        hint="Open Access eBook lists (OAPEN, DOAB, etc.). Same recognized columns as the paid template."
+        endpoint="/api/upload/ebook_open"
+        templates={[
+          { label: "ebooks_open_template.xlsx", href: "/templates/ebooks_open_template.xlsx" },
+          { label: "ebooks_open_template.csv",  href: "/templates/ebooks_open_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="4. Printed Books"
+        hint="Library catalog rows for printed books. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
+        endpoint="/api/upload/book_printed"
         templates={[
           { label: "printed_books_template.xlsx", href: "/templates/printed_books_template.xlsx" },
-          { label: "printed_books_template.csv", href: "/templates/printed_books_template.csv" },
+          { label: "printed_books_template.csv",  href: "/templates/printed_books_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="5. Printed Journals"
+        hint="Print journal subscriptions. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher."
+        endpoint="/api/upload/journal_printed"
+        templates={[
+          { label: "journals_printed_template.xlsx", href: "/templates/journals_printed_template.xlsx" },
+          { label: "journals_printed_template.csv",  href: "/templates/journals_printed_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="6. Subscribed Online Journals"
+        hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
+        endpoint="/api/upload/journal_online_paid"
+        templates={[
+          { label: "journals_online_paid_template.xlsx", href: "/templates/journals_online_paid_template.xlsx" },
+          { label: "journals_online_paid_template.csv",  href: "/templates/journals_online_paid_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="7. Open Source Online Journals"
+        hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
+        endpoint="/api/upload/journal_online_open"
+        templates={[
+          { label: "journals_online_open_template.xlsx", href: "/templates/journals_online_open_template.xlsx" },
+          { label: "journals_online_open_template.csv",  href: "/templates/journals_online_open_template.csv" },
         ]}
       />
       <div className="card border-red-300">

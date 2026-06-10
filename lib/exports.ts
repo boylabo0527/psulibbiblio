@@ -1,38 +1,27 @@
 /**
- * Per-program bibliography export shaped to match the BA_PolSci_100725
- * template:
+ * Per-program bibliography export shaped to match the BA_PolSci template
+ * and split into per-resource-type sections.
  *
- * Sheet "sum":
- *   - Header rows (campus, program, "Summary of Professional Books")
- *   - Table: section header rows + per-subject rows
- *     [Course Code | Course Title | PrintTitles | PrintVols | eBookTitles | TotalTitles | TotalVols]
- *
- * Sheet "Detail":
- *   - Per-subject blocks:
- *       Course Code | Course Title
- *       Description
- *       Call No. | Author | Title | Year | Copy
- *       eBooks (Kavita)
- *         ... ebook rows ...
- *       Printed Books
- *         ... printed rows ...
- *       Titles  | <count>
- *       Volumes | <count>
+ * - sum sheet: per-subject Titles/Volumes for every resource type + totals
+ * - Detail sheet: per-subject blocks with a typed table per resource type
+ * - DOCX / PDF mirror the same layout (PDF uses hand-drawn bordered tables)
  */
+import { RESOURCE_TYPES, type ResourceTypeId } from "./resources";
 import type { TitleRow, SubjectRow, ProgramRow } from "./types";
 
-export type AssignmentDetail = {
+export type Buckets = Record<ResourceTypeId, TitleRow[]>;
+
+export type SubjectDetail = {
   subject: SubjectRow;
-  ebooks: TitleRow[];
-  printed: TitleRow[];
+  buckets: Buckets;
 };
 
 export type ProgramBibliography = {
   program: ProgramRow;
-  bySection: { section: string; subjects: AssignmentDetail[] }[];
+  bySection: { section: string; subjects: SubjectDetail[] }[];
 };
 
-function totals(books: TitleRow[]) {
+function bucketTotals(books: TitleRow[]) {
   let titles = 0;
   let volumes = 0;
   for (const b of books) {
@@ -42,23 +31,43 @@ function totals(books: TitleRow[]) {
   return { titles, volumes };
 }
 
+function subjectTotals(buckets: Buckets) {
+  let titles = 0, volumes = 0;
+  for (const t of RESOURCE_TYPES) {
+    const sub = bucketTotals(buckets[t.id]);
+    titles += sub.titles;
+    volumes += t.medium === "print" ? sub.volumes : sub.titles;
+  }
+  return { titles, volumes };
+}
+
+const NON_EMPTY_TYPES = (buckets: Buckets) =>
+  RESOURCE_TYPES.filter((t) => buckets[t.id].length > 0);
+
+// ---------------------------------------------------------------------------
+// XLSX
+// ---------------------------------------------------------------------------
 export async function programBibliographyXlsx(b: ProgramBibliography): Promise<Buffer> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   wb.creator = "PSU Bibliography Generator";
-
   writeSummarySheet(wb, b);
   writeDetailSheet(wb, b);
-
-  const out = await wb.xlsx.writeBuffer();
-  return Buffer.from(out);
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
   const ws = wb.addWorksheet("sum");
+  // First two cols are course code + title; then for each resource type:
+  // - one column for titles
+  // - if print medium, also one column for volumes
+  const typeCols = RESOURCE_TYPES.flatMap((t) =>
+    t.medium === "print" ? [`${t.sectionLabel} Titles`, `${t.sectionLabel} Volumes`] : [`${t.sectionLabel} Titles`],
+  );
   ws.columns = [
-    { width: 14 }, { width: 60 }, { width: 10 }, { width: 12 },
-    { width: 10 }, { width: 10 }, { width: 12 },
+    { width: 14 }, { width: 50 },
+    ...typeCols.map(() => ({ width: 16 })),
+    { width: 14 }, { width: 14 },
   ];
 
   let r = 1;
@@ -69,22 +78,18 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   r++;
   ws.getCell(r++, 1).value = b.program.name;
   ws.getRow(r - 1).font = { bold: true };
-  ws.getCell(r++, 1).value = "Summary of Professional Books";
+  ws.getCell(r++, 1).value = "Summary of Professional Resources";
   ws.getRow(r - 1).font = { italic: true };
   r++;
 
-  const header1 = ["Professional Subject", "", "Printed books", "", "eBooks", "Total", ""];
-  const header2 = ["", "", "Titles", "Volumes", "Titles", "Titles", "Volumes"];
-  ws.getRow(r).values = header1;
+  const header = ["Course Code", "Course Title", ...typeCols, "Total Titles", "Total Volumes"];
+  ws.getRow(r).values = header;
   ws.getRow(r).font = { bold: true };
-  r++;
-  ws.getRow(r).values = header2;
-  ws.getRow(r).font = { bold: true };
-  ws.mergeCells(r - 1, 3, r - 1, 4);
-  ws.mergeCells(r - 1, 6, r - 1, 7);
   r++;
 
-  let progPrintTitles = 0, progPrintVols = 0, progEbookTitles = 0;
+  // Running totals per column for the Program Totals row.
+  const colTotals: number[] = Array(header.length - 2).fill(0);
+
   for (const sec of b.bySection) {
     if (sec.section) {
       ws.getCell(r, 2).value = sec.section;
@@ -92,20 +97,22 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
       r++;
     }
     for (const sub of sec.subjects) {
-      const print = totals(sub.printed);
-      const ebook = totals(sub.ebooks);
-      const totTitles = print.titles + ebook.titles;
-      const totVols = print.volumes + ebook.titles; // eBook volumes count = titles
-      ws.getRow(r).values = [
-        sub.subject.course_code || "",
-        sub.subject.course_title || "",
-        print.titles, print.volumes,
-        ebook.titles,
-        totTitles, totVols,
-      ];
-      progPrintTitles += print.titles;
-      progPrintVols += print.volumes;
-      progEbookTitles += ebook.titles;
+      const cells: (string | number)[] = [sub.subject.course_code || "", sub.subject.course_title || ""];
+      let typeIdx = 0;
+      for (const t of RESOURCE_TYPES) {
+        const tot = bucketTotals(sub.buckets[t.id]);
+        cells.push(tot.titles);
+        colTotals[typeIdx] += tot.titles; typeIdx++;
+        if (t.medium === "print") {
+          cells.push(tot.volumes);
+          colTotals[typeIdx] += tot.volumes; typeIdx++;
+        }
+      }
+      const all = subjectTotals(sub.buckets);
+      cells.push(all.titles, all.volumes);
+      colTotals[typeIdx] += all.titles; typeIdx++;
+      colTotals[typeIdx] += all.volumes;
+      ws.getRow(r).values = cells;
       r++;
     }
   }
@@ -113,11 +120,9 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   r++;
   ws.getCell(r, 1).value = "Program Totals";
   ws.getRow(r).font = { bold: true };
-  ws.getCell(r, 3).value = progPrintTitles;
-  ws.getCell(r, 4).value = progPrintVols;
-  ws.getCell(r, 5).value = progEbookTitles;
-  ws.getCell(r, 6).value = progPrintTitles + progEbookTitles;
-  ws.getCell(r, 7).value = progPrintVols + progEbookTitles;
+  for (let i = 0; i < colTotals.length; i++) {
+    ws.getCell(r, 3 + i).value = colTotals[i];
+  }
 }
 
 function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
@@ -125,7 +130,6 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
   ws.columns = [
     { width: 20 }, { width: 30 }, { width: 60 }, { width: 8 }, { width: 8 },
   ];
-
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
   ws.getRow(r - 1).font = { bold: true };
@@ -134,7 +138,7 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
   r++;
   ws.getCell(r++, 1).value = b.program.name;
   ws.getRow(r - 1).font = { bold: true };
-  ws.getCell(r++, 1).value = "Professional Books";
+  ws.getCell(r++, 1).value = "Professional Resources";
   ws.getRow(r - 1).font = { italic: true };
   r++;
 
@@ -144,15 +148,11 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
       ws.getRow(r).font = { bold: true };
       r++;
     }
-
     for (const sub of sec.subjects) {
-      // Course code | Title
       ws.getCell(r, 1).value = sub.subject.course_code || "";
       ws.getCell(r, 2).value = sub.subject.course_title || "";
       ws.getRow(r).font = { bold: true };
       r++;
-
-      // Description (merged across columns)
       if (sub.subject.description) {
         ws.getCell(r, 1).value = sub.subject.description;
         ws.mergeCells(r, 1, r, 5);
@@ -160,48 +160,36 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
         ws.getRow(r).height = 60;
         r++;
       }
-
-      // Column headers
-      ws.getRow(r).values = ["Call No.", "Author", "Title", "Year", "Copy"];
+      // Single header row, then a labeled block per non-empty resource type.
+      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Year", "Copy"];
       ws.getRow(r).font = { bold: true };
       r++;
-
-      if (sub.ebooks.length) {
-        ws.getCell(r, 1).value = "eBooks (Kavita)";
+      for (const t of NON_EMPTY_TYPES(sub.buckets)) {
+        ws.getCell(r, 1).value = t.sectionLabel;
         ws.getRow(r).font = { italic: true };
         r++;
-        for (const t of sub.ebooks) {
-          ws.getRow(r).values = ["", t.author || "", t.title || "", t.year || "", t.copies ?? 1];
+        for (const tt of sub.buckets[t.id]) {
+          const ident = tt.call_no || tt.issn || "";
+          ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.year || "", tt.copies ?? 1];
           r++;
         }
       }
-      if (sub.printed.length) {
-        ws.getCell(r, 1).value = "Printed Books";
-        ws.getRow(r).font = { italic: true };
-        r++;
-        for (const t of sub.printed) {
-          ws.getRow(r).values = [t.call_no || "", t.author || "", t.title || "", t.year || "", t.copies ?? 1];
-          r++;
-        }
-      }
-
-      const print = totals(sub.printed);
-      const ebook = totals(sub.ebooks);
+      const all = subjectTotals(sub.buckets);
       ws.getCell(r, 1).value = "Titles";
-      ws.getCell(r, 2).value = print.titles + ebook.titles;
+      ws.getCell(r, 2).value = all.titles;
       ws.getRow(r).font = { bold: true };
       r++;
       ws.getCell(r, 1).value = "Volumes";
-      ws.getCell(r, 2).value = print.volumes + ebook.titles;
+      ws.getCell(r, 2).value = all.volumes;
       ws.getRow(r).font = { bold: true };
       r++;
-      r++; // blank spacer
+      r++;
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// CSV / DOCX export of the same per-subject structure (flattened table).
+// CSV: flat per-row table tagged with resource type
 // ---------------------------------------------------------------------------
 export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   const escape = (v: unknown) => {
@@ -211,17 +199,17 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   const lines = [
     [
       "Section", "Course Code", "Course Title", "Description",
-      "Format", "Call No.", "Author", "Title", "Year", "Copies",
+      "Resource Type", "Call No.", "ISSN", "Author", "Title", "Year", "Copies",
     ].join(","),
   ];
   for (const sec of b.bySection) {
     for (const sub of sec.subjects) {
-      for (const fmt of ["ebook", "printed"] as const) {
-        const list = fmt === "ebook" ? sub.ebooks : sub.printed;
-        for (const t of list) {
+      for (const t of RESOURCE_TYPES) {
+        for (const tt of sub.buckets[t.id]) {
           lines.push([
             sec.section, sub.subject.course_code, sub.subject.course_title,
-            sub.subject.description, fmt, t.call_no, t.author, t.title, t.year, t.copies ?? 1,
+            sub.subject.description, t.sectionLabel,
+            tt.call_no, tt.issn, tt.author, tt.title, tt.year, tt.copies ?? 1,
           ].map(escape).join(","));
         }
       }
@@ -230,6 +218,9 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   return Buffer.from(lines.join("\n"), "utf-8");
 }
 
+// ---------------------------------------------------------------------------
+// DOCX
+// ---------------------------------------------------------------------------
 export async function programBibliographyDocx(b: ProgramBibliography): Promise<Buffer> {
   const { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, WidthType, TextRun } = await import("docx");
 
@@ -237,97 +228,162 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
     new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: text || "", bold })] })] });
 
   const headerRow = () => new TableRow({
-    children: ["Call No.", "Author", "Title", "Year", "Copy"].map((c) => cell(c, true)),
+    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy"].map((c) => cell(c, true)),
   });
 
-  const sections: import("docx").FileChild[] = [];
-  sections.push(new Paragraph({ text: b.program.name, heading: HeadingLevel.HEADING_1 }));
-  if (b.program.campus) sections.push(new Paragraph({ text: b.program.campus }));
-  if (b.program.college) sections.push(new Paragraph({ text: b.program.college }));
+  const children: import("docx").FileChild[] = [];
+  children.push(new Paragraph({ text: "PALAWAN STATE UNIVERSITY", heading: HeadingLevel.TITLE }));
+  if (b.program.campus) children.push(new Paragraph({ text: b.program.campus }));
+  children.push(new Paragraph({ text: b.program.college || "Library Services" }));
+  children.push(new Paragraph({ text: b.program.name, heading: HeadingLevel.HEADING_1 }));
+  children.push(new Paragraph({ text: "Professional Resources" }));
 
   for (const sec of b.bySection) {
-    if (sec.section) sections.push(new Paragraph({ text: sec.section, heading: HeadingLevel.HEADING_2 }));
+    if (sec.section) children.push(new Paragraph({ text: sec.section, heading: HeadingLevel.HEADING_2 }));
     for (const sub of sec.subjects) {
       const heading = `${sub.subject.course_code ? sub.subject.course_code + " " : ""}${sub.subject.course_title}`;
-      sections.push(new Paragraph({ text: heading, heading: HeadingLevel.HEADING_3 }));
-      if (sub.subject.description) sections.push(new Paragraph({ text: sub.subject.description }));
+      children.push(new Paragraph({ text: heading, heading: HeadingLevel.HEADING_3 }));
+      if (sub.subject.description) children.push(new Paragraph({ text: sub.subject.description }));
 
       const rows: import("docx").TableRow[] = [headerRow()];
-      if (sub.ebooks.length) {
-        rows.push(new TableRow({ children: [cell("eBooks (Kavita)", true), cell(""), cell(""), cell(""), cell("")] }));
-        for (const t of sub.ebooks) {
+      for (const t of NON_EMPTY_TYPES(sub.buckets)) {
+        rows.push(new TableRow({ children: [cell(t.sectionLabel, true), cell(""), cell(""), cell(""), cell("")] }));
+        for (const tt of sub.buckets[t.id]) {
+          const ident = tt.call_no || tt.issn || "";
           rows.push(new TableRow({
-            children: [cell(""), cell(t.author || ""), cell(t.title || ""), cell(t.year || ""), cell(String(t.copies ?? 1))],
+            children: [cell(ident), cell(tt.author || ""), cell(tt.title || ""), cell(tt.year || ""), cell(String(tt.copies ?? 1))],
           }));
         }
       }
-      if (sub.printed.length) {
-        rows.push(new TableRow({ children: [cell("Printed Books", true), cell(""), cell(""), cell(""), cell("")] }));
-        for (const t of sub.printed) {
-          rows.push(new TableRow({
-            children: [cell(t.call_no || ""), cell(t.author || ""), cell(t.title || ""), cell(t.year || ""), cell(String(t.copies ?? 1))],
-          }));
-        }
-      }
-      sections.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
-      const print = totals(sub.printed);
-      const ebook = totals(sub.ebooks);
-      sections.push(new Paragraph({
+      children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
+
+      const all = subjectTotals(sub.buckets);
+      children.push(new Paragraph({
         children: [
           new TextRun({ text: "Titles: ", bold: true }),
-          new TextRun({ text: String(print.titles + ebook.titles) }),
+          new TextRun({ text: String(all.titles) }),
           new TextRun({ text: "   Volumes: ", bold: true }),
-          new TextRun({ text: String(print.volumes + ebook.titles) }),
+          new TextRun({ text: String(all.volumes) }),
         ],
       }));
-      sections.push(new Paragraph({ text: "" }));
+      children.push(new Paragraph({ text: "" }));
     }
   }
 
-  const doc = new Document({ sections: [{ children: sections }] });
+  const doc = new Document({ sections: [{ children }] });
   return await Packer.toBuffer(doc);
 }
 
+// ---------------------------------------------------------------------------
+// PDF — bordered table layout that mirrors the DOCX
+// ---------------------------------------------------------------------------
 export async function programBibliographyPdf(b: ProgramBibliography): Promise<Buffer> {
   const PDFDocument = (await import("pdfkit")).default;
-  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  const doc = new PDFDocument({ size: "A4", margin: 36 });
   const chunks: Buffer[] = [];
   doc.on("data", (c: Buffer) => chunks.push(c));
   const done = new Promise<Buffer>((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
-  doc.fontSize(16).font("Helvetica-Bold").text(b.program.name);
-  doc.fontSize(10).font("Helvetica");
+  const PAGE_BOTTOM = doc.page.height - doc.page.margins.bottom;
+  const LEFT = doc.page.margins.left;
+  const RIGHT = doc.page.width - doc.page.margins.right;
+  const WIDTH = RIGHT - LEFT;
+  // Column widths sum to WIDTH. Title gets the most space.
+  const cols = [
+    { key: "ident",  width: 0.16 * WIDTH },
+    { key: "author", width: 0.18 * WIDTH },
+    { key: "title",  width: 0.46 * WIDTH },
+    { key: "year",   width: 0.08 * WIDTH },
+    { key: "copy",   width: 0.06 * WIDTH },
+  ];
+  // pad row widths so they sum exactly to WIDTH (avoid float drift).
+  const sumW = cols.reduce((a, c) => a + c.width, 0);
+  cols[2].width += WIDTH - sumW;
+
+  const colX = (idx: number) => LEFT + cols.slice(0, idx).reduce((a, c) => a + c.width, 0);
+
+  function ensureSpace(needed: number) {
+    if (doc.y + needed > PAGE_BOTTOM) doc.addPage();
+  }
+
+  function rowHeight(cells: string[], padding = 4): number {
+    let h = 0;
+    doc.fontSize(8);
+    for (let i = 0; i < cells.length; i++) {
+      const w = cols[i].width - padding * 2;
+      const hi = doc.heightOfString(cells[i] || "", { width: w });
+      if (hi > h) h = hi;
+    }
+    return h + padding * 2;
+  }
+
+  function drawRow(cells: string[], opts: { bold?: boolean; italic?: boolean; fillHeader?: boolean; merged?: boolean } = {}) {
+    const padding = 4;
+    const font = opts.bold ? "Helvetica-Bold" : opts.italic ? "Helvetica-Oblique" : "Helvetica";
+    doc.font(font).fontSize(8);
+    const h = opts.merged
+      ? doc.heightOfString(cells[0] || "", { width: WIDTH - padding * 2 }) + padding * 2
+      : rowHeight(cells, padding);
+    ensureSpace(h);
+    const y = doc.y;
+    if (opts.fillHeader) doc.save().rect(LEFT, y, WIDTH, h).fill("#e8f0fa").restore();
+    if (opts.merged) {
+      doc.rect(LEFT, y, WIDTH, h).stroke();
+      doc.text(cells[0] || "", LEFT + padding, y + padding, { width: WIDTH - padding * 2 });
+    } else {
+      for (let i = 0; i < cells.length; i++) {
+        const x = colX(i);
+        doc.rect(x, y, cols[i].width, h).stroke();
+        doc.text(cells[i] || "", x + padding, y + padding, { width: cols[i].width - padding * 2 });
+      }
+    }
+    doc.y = y + h;
+  }
+
+  // Header
+  doc.font("Helvetica-Bold").fontSize(14).text("PALAWAN STATE UNIVERSITY", { align: "left" });
+  doc.font("Helvetica").fontSize(10);
   if (b.program.campus) doc.text(b.program.campus);
-  if (b.program.college) doc.text(b.program.college);
-  doc.moveDown();
+  doc.text(b.program.college || "Library Services");
+  doc.moveDown(0.5);
+  doc.font("Helvetica-Bold").fontSize(13).text(b.program.name);
+  doc.font("Helvetica-Oblique").fontSize(10).text("Professional Resources");
+  doc.font("Helvetica");
+  doc.moveDown(0.5);
 
   for (const sec of b.bySection) {
     if (sec.section) {
-      doc.moveDown(0.5).fontSize(12).font("Helvetica-Bold").text(sec.section);
-      doc.fontSize(10).font("Helvetica");
+      ensureSpace(24);
+      doc.moveDown(0.4);
+      doc.font("Helvetica-Bold").fontSize(11).text(sec.section);
+      doc.font("Helvetica").fontSize(10);
     }
     for (const sub of sec.subjects) {
-      doc.moveDown(0.5).font("Helvetica-Bold")
-        .text(`${sub.subject.course_code ? sub.subject.course_code + " — " : ""}${sub.subject.course_title}`);
-      doc.font("Helvetica");
-      if (sub.subject.description) doc.text(sub.subject.description, { width: 515 });
-      const print = totals(sub.printed);
-      const ebook = totals(sub.ebooks);
+      ensureSpace(60);
+      doc.moveDown(0.4);
+      doc.font("Helvetica-Bold").fontSize(10)
+        .text(`${sub.subject.course_code ? sub.subject.course_code + "  " : ""}${sub.subject.course_title || ""}`);
+      doc.font("Helvetica").fontSize(9);
+      if (sub.subject.description) {
+        doc.text(sub.subject.description, { width: WIDTH });
+      }
+      doc.moveDown(0.2);
 
-      if (sub.ebooks.length) {
-        doc.moveDown(0.3).font("Helvetica-Oblique").text("eBooks (Kavita)");
-        doc.font("Helvetica");
-        for (const t of sub.ebooks) doc.text(`• ${t.author ? t.author + ". " : ""}${t.title} (${t.year || "n.d."})`);
+      // Per-subject table: header row, then per-type label row + entries.
+      drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy"], { bold: true, fillHeader: true });
+      for (const t of NON_EMPTY_TYPES(sub.buckets)) {
+        drawRow([t.sectionLabel, "", "", "", ""], { italic: true, merged: true });
+        for (const tt of sub.buckets[t.id]) {
+          const ident = tt.call_no || tt.issn || "";
+          drawRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1)]);
+        }
       }
-      if (sub.printed.length) {
-        doc.moveDown(0.3).font("Helvetica-Oblique").text("Printed Books");
-        doc.font("Helvetica");
-        for (const t of sub.printed) doc.text(`• ${t.call_no ? `[${t.call_no}] ` : ""}${t.author ? t.author + ". " : ""}${t.title} (${t.year || "n.d."}) — ${t.copies ?? 1} copy`);
-      }
-      doc.moveDown(0.3).font("Helvetica-Bold").text(
-        `Titles: ${print.titles + ebook.titles}    Volumes: ${print.volumes + ebook.titles}`,
-      );
+      const all = subjectTotals(sub.buckets);
+      doc.moveDown(0.2);
+      doc.font("Helvetica-Bold").fontSize(9)
+        .text(`Titles: ${all.titles}    Volumes: ${all.volumes}`);
       doc.font("Helvetica");
+      doc.moveDown(0.3);
     }
   }
 

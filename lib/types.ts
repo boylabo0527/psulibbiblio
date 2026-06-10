@@ -1,4 +1,6 @@
-export type TitleFormat = "ebook" | "printed";
+import type { ResourceTypeId } from "./resources";
+
+export type TitleFormat = ResourceTypeId;
 
 export type TitleRow = {
   id?: number;
@@ -8,6 +10,7 @@ export type TitleRow = {
   publisher?: string;
   year?: string;
   isbn?: string;
+  issn?: string;
   call_no?: string;
   copies?: number;
   url?: string;

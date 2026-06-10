@@ -44,12 +44,18 @@ create index if not exists subjects_program_idx on subjects (program_id);
 -- (library catalog row with call number and copies).
 create table if not exists titles (
   id         bigserial primary key,
-  format     text not null check (format in ('ebook', 'printed')),
+  format     text not null check (format in (
+    'ebook_paid', 'ebook_open',
+    'book_printed',
+    'journal_printed',
+    'journal_online_paid', 'journal_online_open'
+  )),
   title      text not null,
   author     text default '',
   publisher  text default '',
   year       text default '',
   isbn       text default '',
+  issn       text default '',
   call_no    text default '',
   copies     int  default 1,
   url        text default '',
@@ -58,6 +64,7 @@ create table if not exists titles (
 );
 create index if not exists titles_format_idx on titles (format);
 create index if not exists titles_isbn_idx   on titles (isbn);
+create index if not exists titles_issn_idx   on titles (issn);
 create index if not exists titles_callno_idx on titles (call_no);
 create index if not exists titles_title_idx  on titles (title);
 

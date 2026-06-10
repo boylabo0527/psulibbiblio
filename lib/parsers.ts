@@ -96,7 +96,8 @@ export async function parseEbookTitles(filename: string, buf: Buffer): Promise<T
   const ext = (filename.split(".").pop() || "").toLowerCase();
   if (ext === "pdf" || ext === "docx") {
     const text = ext === "pdf" ? await pdfText(buf) : await docxText(buf);
-    return freeformTitles(text).map((t) => ({ ...t, format: "ebook", copies: 1 }));
+    // freeform parser: format is assigned by the upload route based on URL slug
+    return freeformTitles(text).map((t) => ({ ...t, copies: 1 }));
   }
   const rows = rowsFromWorkbook(readSheet(filename, buf));
   if (rows.length === 0) return [];
@@ -109,7 +110,6 @@ export async function parseEbookTitles(filename: string, buf: Buffer): Promise<T
     const title = (r[map.title] || "").trim();
     if (!title) continue;
     out.push({
-      format: "ebook",
       title,
       author: map.author ? r[map.author] : "",
       publisher: map.publisher ? r[map.publisher] : "",
@@ -145,6 +145,50 @@ function freeformTitles(text: string): TitleRow[] {
 }
 
 // ---------------------------------------------------------------------------
+// Journals
+// ---------------------------------------------------------------------------
+const JOURNAL_ALIASES: Record<string, string[]> = {
+  title: ["title", "journal title", "publication_title", "publication title", "journal", "name"],
+  author: ["author", "editor", "first_author"],
+  publisher: ["publisher", "publisher_name", "publisher name"],
+  year: ["year", "publication_year", "publication year", "vol year"],
+  issn: ["issn", "issn-l", "eissn", "online_identifier", "online identifier"],
+  call_no: ["call no", "call no.", "call number", "callno", "classification"],
+  copies: ["copy", "copies", "subscriptions", "no. of copies", "volumes"],
+  url: ["url", "title_url", "link", "homepage"],
+};
+
+export async function parseJournals(filename: string, buf: Buffer): Promise<TitleRow[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), JOURNAL_ALIASES);
+  if (!map.title) {
+    throw new Error(`Could not find a title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: TitleRow[] = [];
+  for (const r of rows) {
+    const title = (r[map.title] || "").trim();
+    if (!title) continue;
+    let copies = 1;
+    if (map.copies) {
+      const n = parseInt(r[map.copies] || "0", 10);
+      if (Number.isFinite(n) && n > 0) copies = n;
+    }
+    out.push({
+      title,
+      author: map.author ? r[map.author] : "",
+      publisher: map.publisher ? r[map.publisher] : "",
+      year: map.year ? r[map.year] : "",
+      issn: map.issn ? r[map.issn] : "",
+      call_no: map.call_no ? r[map.call_no] : "",
+      url: map.url ? r[map.url] : "",
+      copies,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Printed books (library catalog rows)
 // ---------------------------------------------------------------------------
 export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<TitleRow[]> {
@@ -164,7 +208,6 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
       if (Number.isFinite(n) && n > 0) copies = n;
     }
     out.push({
-      format: "printed",
       title,
       call_no: map.call_no ? r[map.call_no] : "",
       author: map.author ? r[map.author] : "",

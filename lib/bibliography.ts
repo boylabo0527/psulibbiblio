@@ -1,5 +1,6 @@
 import { serviceClient } from "./supabase";
 import type { ProgramBibliography } from "./exports";
+import { RESOURCE_TYPES, type ResourceTypeId } from "./resources";
 import type { SubjectRow, TitleRow } from "./types";
 
 const PAGE = 1000;
@@ -33,30 +34,33 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
       .range(from, to),
   );
 
-  type Joined = { subject_id: number; titles: TitleRow };
+  type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId } };
   const assignments = await paged<Joined>((from, to) =>
     db.from("assignments")
-      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, call_no, copies, url)")
+      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url)")
       .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
       .range(from, to),
   );
 
-  const bySubject = new Map<number, { ebooks: TitleRow[]; printed: TitleRow[] }>();
-  for (const s of subjects) bySubject.set(s.id!, { ebooks: [], printed: [] });
+  type Buckets = Record<ResourceTypeId, TitleRow[]>;
+  const emptyBuckets = (): Buckets =>
+    Object.fromEntries(RESOURCE_TYPES.map((t) => [t.id, [] as TitleRow[]])) as Buckets;
+
+  const bySubject = new Map<number, Buckets>();
+  for (const s of subjects) bySubject.set(s.id!, emptyBuckets());
   for (const a of assignments) {
     const bucket = bySubject.get(a.subject_id);
     if (!bucket) continue;
-    if (a.titles.format === "printed") bucket.printed.push(a.titles);
-    else bucket.ebooks.push(a.titles);
+    const fmt = a.titles.format;
+    if (!(fmt in bucket)) continue;
+    bucket[fmt].push(a.titles);
   }
   for (const bucket of bySubject.values()) {
     const sortBooks = (xs: TitleRow[]) =>
       xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
-    sortBooks(bucket.ebooks);
-    sortBooks(bucket.printed);
+    for (const t of RESOURCE_TYPES) sortBooks(bucket[t.id]);
   }
 
-  // Group subjects by section in their existing order.
   const sectionOrder: string[] = [];
   const sectionMap = new Map<string, typeof subjects>();
   for (const s of subjects) {
@@ -68,8 +72,7 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
     section,
     subjects: sectionMap.get(section)!.map((subject) => ({
       subject,
-      ebooks: bySubject.get(subject.id!)!.ebooks,
-      printed: bySubject.get(subject.id!)!.printed,
+      buckets: bySubject.get(subject.id!)!,
     })),
   }));
 
