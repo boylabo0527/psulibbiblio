@@ -1,69 +1,101 @@
 # PSU Bibliography Generator
 
 Web app that turns a Perlego title list + course descriptions into a
-matched bibliography and library acquisition table.
+matched bibliography and a sortable library acquisition table.
 
-This MVP runs entirely locally: a FastAPI backend with SQLite, a static
-HTML/JS frontend, and a TF-IDF + cosine-similarity matcher. No external
-API keys required.
+**Stack:** Next.js 14 (App Router) on Vercel · Supabase Postgres for data ·
+TypeScript TF-IDF + cosine matcher · no external AI keys required.
 
-## Features
+## What it does
 
-- Upload Perlego title lists (`.xlsx`, `.xls`, `.csv`, `.pdf`, `.docx`).
-- Upload course descriptions in the same formats.
-- PSU campus/college/program catalog is seeded automatically on first run
-  from `data/psu_programs.csv`.
-- TF-IDF + cosine similarity matches each course to the most relevant
-  titles, with shared-term explainability.
-- Bibliography output in APA 7, MLA 9, Chicago (author-date), and Harvard.
+- Upload Perlego title lists (`.xlsx`, `.xls`, `.csv`, `.pdf`, `.docx`)
+  and course description files in the same formats.
+- Seeds the PSU campus/college/program catalog from
+  `data/psu_programs.csv`.
+- Runs TF-IDF + cosine matching locally inside a serverless function
+  (no per-row API calls), with shared-term explanations.
+- Bibliographies in APA 7, MLA 9, Chicago (author-date), Harvard.
 - Master recommendation table sorted by Campus → College → Program →
-  Course → Book Title.
-- Aggregated copy-count heuristic (number of matching courses + an
-  enrollment factor when provided).
-- Filter by campus, college, program, course, author, publisher, year.
-- Export the master table to XLSX, CSV, PDF, DOCX.
+  Course → Book Title, with aggregated copy counts (number of matching
+  courses + an enrollment factor).
+- Filters by campus / college / program / course / author / publisher /
+  year.
+- Exports to XLSX, CSV, PDF, DOCX.
 - Dashboard: totals, top publishers, titles spanning multiple programs.
-- Manual override endpoint (`POST /api/match/override`) to pin or
-  remove individual course/title pairs.
 
-## Quick start
+## Setup
+
+### 1. Create a Supabase project
+
+1. <https://supabase.com> → New project.
+2. Open the SQL editor and run **[supabase/schema.sql](supabase/schema.sql)**.
+3. From **Project Settings → API** copy:
+   - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
+   - `anon public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only)
+
+### 2. Run locally
 
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+cp .env.example .env.local   # then paste the three keys
+npm install
+npm run dev
 ```
 
-Open <http://localhost:8000>.
+Open <http://localhost:3000>. On the Upload tab, click **Seed programs**
+to load the PSU catalog, then upload a Perlego title list, then go to
+the Match tab and click **Run matching**.
 
-1. Upload a Perlego title list on the **Upload** tab.
-2. (Optional) Upload course descriptions — PSU programs are already
-   seeded from `data/psu_programs.csv`.
-3. Run **Matching**.
-4. Browse, filter, and export the resulting recommendation table.
+Or seed the catalog from the command line:
 
-## File layout
+```bash
+npm run seed
+```
+
+### 3. Deploy to Vercel
+
+1. Push this repo to GitHub.
+2. <https://vercel.com> → New Project → import the repo.
+3. Set the three env vars in **Project Settings → Environment Variables**.
+4. Deploy. `vercel.json` already extends the match/upload/export
+   function timeouts.
+
+## Project layout
 
 ```
 app/
-  main.py        FastAPI app, routes, uploads, matching, export
-  db.py          SQLite engine
-  models.py      Title, Course, Match ORM models
-  schemas.py     Pydantic DTOs
-  parsers.py     Title + course parsing across formats
-  matcher.py     TF-IDF cosine match + copy-count heuristic
-  citations.py   APA7 / MLA9 / Chicago / Harvard
-  exports.py     XLSX / CSV / PDF / DOCX export
-  seed.py        Seed PSU campus/college/program rows
-data/
-  psu_programs.csv          PSU catalog (used for seeding)
-  sample_perlego_titles.xls Sample Perlego title list
-static/
-  index.html, app.js, styles.css
+  page.tsx              4-tab UI shell
+  layout.tsx, globals.css
+  api/
+    upload/titles/route.ts       parse & insert Perlego titles
+    upload/courses/route.ts      parse & insert course descriptions
+    match/run/route.ts           TF-IDF + cosine matching
+    match/override/route.ts      manual override / pin / remove
+    recommendations/route.ts     filtered master table + bibliography
+    facets/route.ts              distinct values for filter dropdowns
+    dashboard/route.ts           totals, top publishers, cross-program titles
+    export/route.ts              xlsx | csv | pdf | docx
+    admin/seed/route.ts          insert PSU programs from data/psu_programs.csv
+    admin/reset/route.ts         wipe all tables
+    health/route.ts
+components/
+  UploadTab.tsx, MatchTab.tsx, BrowseTab.tsx, DashboardTab.tsx
+lib/
+  supabase.ts           service-role + anon clients
+  parsers.ts            xlsx/xls/csv/pdf/docx parsing with header aliasing
+  matcher.ts            TF-IDF + cosine in pure TS
+  citations.ts          APA 7 / MLA 9 / Chicago / Harvard
+  exports.ts            xlsx (ExcelJS) / csv / pdf (pdfkit) / docx
+  recommendations.ts    join + aggregate + format
+  types.ts
+supabase/schema.sql     Postgres schema, indexes, basic RLS
+scripts/seed.ts         CLI seeder for data/psu_programs.csv
+data/                   psu_programs.csv (seed), sample_perlego_titles.xls
 ```
 
 ## Recognized columns
 
-The parser auto-detects common column names:
+The parser auto-detects common header variants:
 
 - **Titles:** `publication_title`/`title`, `first_author`/`author`,
   `publisher_name`/`publisher`, `year`, `online_identifier`/`isbn`,
@@ -74,7 +106,8 @@ The parser auto-detects common column names:
 
 ## Scope notes
 
-This is an MVP. Out of scope for this pass: role-based authentication,
-multi-tenant project save/load, PostgreSQL, audit logging beyond match
-explanations, full Next.js/Tailwind UI. The backend is structured so any
-of those can be added without reworking the data model.
+This is an MVP. Out of scope for this pass: role-based auth, multi-tenant
+project save/load, audit logging beyond match explanations, manual
+override UI (the endpoint exists but no UI yet), semantic embeddings.
+The data model and routes are structured so any of those can be added
+without rework.
