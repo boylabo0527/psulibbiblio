@@ -1,5 +1,20 @@
 -- Supabase schema for PSU per-program subject bibliographies.
--- Run once in the SQL Editor of your Supabase project.
+-- Run in the SQL Editor of your Supabase project.
+--
+-- WARNING: this script is destructive. It drops any existing
+-- programs / subjects / titles / assignments / matches / courses tables
+-- so the schema can be re-applied cleanly. The data model went through
+-- a breaking change (titles gained `format` / `call_no` / `copies`,
+-- matches became assignments, programs and subjects were added) so an
+-- in-place migration would be more confusing than a clean rebuild.
+-- If you have data you need to keep, export it first.
+
+drop table if exists assignments cascade;
+drop table if exists matches     cascade;  -- old name; harmless if absent
+drop table if exists subjects    cascade;
+drop table if exists courses     cascade;  -- old name; harmless if absent
+drop table if exists titles      cascade;
+drop table if exists programs    cascade;
 
 -- A program belongs to a campus / college.
 create table if not exists programs (
