@@ -4,13 +4,15 @@ import { useRef, useState } from "react";
 type ProgressEvent =
   | { phase: "parsing" }
   | { phase: "parsed"; total: number }
-  | { phase: "inserting"; inserted: number; total: number }
-  | { phase: "done"; received: number; inserted: number; programs?: number }
+  | { phase: "deduping"; existing: number }
+  | { phase: "inserting"; inserted: number; skipped: number; total: number }
+  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
   | { phase: "error"; error: string };
 
 type Status = {
   phase: ProgressEvent["phase"] | "idle" | "uploading";
   inserted: number;
+  skipped: number;
   total: number;
   programs?: number;
   error?: string;
@@ -18,7 +20,7 @@ type Status = {
   elapsedMs: number;
 };
 
-const IDLE: Status = { phase: "idle", inserted: 0, total: 0, elapsedMs: 0 };
+const IDLE: Status = { phase: "idle", inserted: 0, skipped: 0, total: 0, elapsedMs: 0 };
 const STALL_MS = 10_000;
 
 type Props = {
@@ -68,7 +70,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
 
     startedAt.current = Date.now();
     lastEventAt.current = Date.now();
-    setStatus({ phase: "uploading", inserted: 0, total: 0, elapsedMs: 0 });
+    setStatus({ phase: "uploading", inserted: 0, skipped: 0, total: 0, elapsedMs: 0 });
     startTicking();
 
     try {
@@ -99,8 +101,9 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
           try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
           lastEventAt.current = Date.now();
           if (ev.phase === "parsed") update({ phase: ev.phase, total: ev.total, stalled: false });
-          else if (ev.phase === "inserting") update({ phase: ev.phase, inserted: ev.inserted, total: ev.total, stalled: false });
-          else if (ev.phase === "done") update({ phase: "done", inserted: ev.inserted, total: ev.received, programs: ev.programs, stalled: false });
+          else if (ev.phase === "deduping") update({ phase: ev.phase, stalled: false });
+          else if (ev.phase === "inserting") update({ phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total, stalled: false });
+          else if (ev.phase === "done") update({ phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, stalled: false });
           else if (ev.phase === "error") update({ phase: "error", error: ev.error, stalled: false });
           else update({ phase: ev.phase, stalled: false });
         }
@@ -123,13 +126,15 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
 
   const busy = status.phase !== "idle" && status.phase !== "done" && status.phase !== "error";
   const pct = status.total > 0 ? Math.round((status.inserted / status.total) * 100) : 0;
+  const skippedSuffix = status.skipped > 0 ? `, skipped ${status.skipped.toLocaleString()} duplicate${status.skipped === 1 ? "" : "s"}` : "";
   const phaseLabel = ({
     idle: "",
     uploading: "Uploading file...",
     parsing: "Parsing file...",
-    parsed: `Parsed ${status.total.toLocaleString()} rows. Inserting...`,
-    inserting: `Inserting ${status.inserted.toLocaleString()} / ${status.total.toLocaleString()}`,
-    done: `Done. Inserted ${status.inserted.toLocaleString()} of ${status.total.toLocaleString()}${status.programs ? ` · ${status.programs} program(s) created` : ""}.`,
+    parsed: `Parsed ${status.total.toLocaleString()} rows. Checking for duplicates...`,
+    deduping: "Checking for duplicates...",
+    inserting: `Inserting ${status.inserted.toLocaleString()} / ${status.total.toLocaleString()}${skippedSuffix}`,
+    done: `Done. Inserted ${status.inserted.toLocaleString()} of ${status.total.toLocaleString()}${skippedSuffix}${status.programs ? ` · ${status.programs} program(s) created` : ""}.`,
     error: `Error: ${status.error}`,
   } as Record<Status["phase"], string>)[status.phase];
 

@@ -17,8 +17,9 @@
 export type ProgressEvent =
   | { phase: "parsing" }
   | { phase: "parsed"; total: number }
-  | { phase: "inserting"; inserted: number; total: number }
-  | { phase: "done"; received: number; inserted: number; programs?: number }
+  | { phase: "deduping"; existing: number }
+  | { phase: "inserting"; inserted: number; skipped: number; total: number }
+  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
   | { phase: "error"; error: string };
 
 export function ndjsonStream(
