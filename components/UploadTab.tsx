@@ -5,10 +5,11 @@ type Props = {
   title: string;
   hint: string;
   endpoint: string;
+  templates?: { label: string; href: string }[];
   extraFields?: { name: string; label: string; placeholder?: string }[];
 };
 
-function FileCard({ title, hint, endpoint, extraFields }: Props) {
+function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [extras, setExtras] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -34,7 +35,18 @@ function FileCard({ title, hint, endpoint, extraFields }: Props) {
   return (
     <div className="card">
       <h2 className="text-psu font-semibold mb-1">{title}</h2>
-      <p className="text-sm text-slate-600 mb-3">{hint}</p>
+      <p className="text-sm text-slate-600 mb-2">{hint}</p>
+      {templates && templates.length > 0 && (
+        <p className="text-xs text-slate-600 mb-3">
+          <span className="font-medium">Template:</span>{" "}
+          {templates.map((t, i) => (
+            <span key={t.href}>
+              {i > 0 && <span className="text-slate-400 mx-1">·</span>}
+              <a href={t.href} download className="text-psu underline">{t.label}</a>
+            </span>
+          ))}
+        </p>
+      )}
       {extraFields?.map((f) => (
         <div key={f.name} className="mb-2">
           <label className="label">{f.label}</label>
@@ -72,6 +84,10 @@ export default function UploadTab() {
         title="1. Upload Subjects (per program)"
         hint="Spreadsheet with one row per subject. Recognized columns: program, campus, college, section (e.g. MAJOR COURSES), course code, course title, description. If 'program' is missing from the file, set the program override below."
         endpoint="/api/upload/subjects"
+        templates={[
+          { label: "subjects_template.xlsx", href: "/templates/subjects_template.xlsx" },
+          { label: "subjects_template.csv", href: "/templates/subjects_template.csv" },
+        ]}
         extraFields={[
           { name: "program", label: "Program override", placeholder: "e.g. BA Political Science" },
           { name: "campus", label: "Campus override", placeholder: "Main Campus" },
@@ -82,11 +98,19 @@ export default function UploadTab() {
         title="2. Upload Perlego title list (eBooks)"
         hint="Marked as eBooks (Kavita). Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
         endpoint="/api/upload/titles"
+        templates={[
+          { label: "perlego_ebooks_template.xlsx", href: "/templates/perlego_ebooks_template.xlsx" },
+          { label: "perlego_ebooks_template.csv", href: "/templates/perlego_ebooks_template.csv" },
+        ]}
       />
       <FileCard
         title="3. Upload Printed Books catalog"
         hint="Library catalog rows. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
         endpoint="/api/upload/printed"
+        templates={[
+          { label: "printed_books_template.xlsx", href: "/templates/printed_books_template.xlsx" },
+          { label: "printed_books_template.csv", href: "/templates/printed_books_template.csv" },
+        ]}
       />
       <div className="card border-red-300">
         <h2 className="text-red-700 font-semibold mb-2">Admin</h2>
