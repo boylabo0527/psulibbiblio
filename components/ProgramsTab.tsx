@@ -23,20 +23,36 @@ export default function ProgramsTab() {
   const [selected, setSelected] = useState<number | null>(null);
   const [biblio, setBiblio] = useState<Bibliography | null>(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/programs").then((r) => r.json()).then((d) => {
-      setPrograms(d.programs ?? []);
-      if (d.programs?.length && selected === null) setSelected(d.programs[0].id);
-    }).catch(() => {});
+    fetch("/api/programs")
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { setErr(j.error || `HTTP ${r.status}`); return; }
+        setPrograms(j.programs ?? []);
+        if (j.programs?.length && selected === null) setSelected(j.programs[0].id);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   }, [selected]);
 
   const load = useCallback(async () => {
     if (!selected) return;
     setLoading(true);
+    setErr(null);
+    setBiblio(null);
     try {
-      const data = await fetch(`/api/programs/${selected}/bibliography`).then((r) => r.json());
-      setBiblio(data);
+      const res = await fetch(`/api/programs/${selected}/bibliography`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        setErr(data.error || `HTTP ${res.status}`);
+      } else if (!data?.bySection || !data?.program) {
+        setErr("Bibliography response missing expected fields.");
+      } else {
+        setBiblio(data);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
   }, [selected]);
 
@@ -81,6 +97,13 @@ export default function ProgramsTab() {
 
       {loading && <p className="text-slate-500 text-sm">Loading...</p>}
 
+      {err && (
+        <div className="card border-red-300">
+          <h2 className="text-red-700 font-semibold mb-1">Couldn't load program</h2>
+          <pre className="text-xs text-red-700 whitespace-pre-wrap">{err}</pre>
+        </div>
+      )}
+
       {biblio && (
         <div className="card">
           <h2 className="text-psu font-semibold mb-2">
@@ -113,10 +136,11 @@ export default function ProgramsTab() {
 function SubjectBlock({
   detail, onRemove, onAdd,
 }: { detail: SubjectDetail; onRemove: (titleId: number) => void; onAdd: (titleId: number) => void }) {
+  const buckets = detail.buckets ?? ({} as Buckets);
   let totalTitles = 0;
   let totalVolumes = 0;
   for (const t of RESOURCE_TYPES) {
-    const list = detail.buckets[t.id] ?? [];
+    const list = buckets[t.id] ?? [];
     totalTitles += list.length;
     if (t.medium === "print") {
       for (const b of list) totalVolumes += Math.max(1, b.copies ?? 1);
@@ -138,7 +162,7 @@ function SubjectBlock({
         <BookSection
           key={t.id}
           label={t.sectionLabel}
-          books={detail.buckets[t.id] ?? []}
+          books={buckets[t.id] ?? []}
           onRemove={onRemove}
           showIdent={t.medium === "print" || t.kind === "journal"}
         />
