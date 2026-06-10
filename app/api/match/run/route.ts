@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { runMatch } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
-import type { CourseRow, TitleRow } from "@/lib/types";
+import type { SubjectRow, TitleRow } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,10 +9,15 @@ export const maxDuration = 300;
 
 const PAGE = 1000;
 
-async function fetchAll<T>(db: ReturnType<typeof serviceClient>, table: string, columns: string): Promise<T[]> {
+async function fetchAll<T>(
+  db: ReturnType<typeof serviceClient>, table: string, columns: string,
+  filter?: { col: string; value: number },
+): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await db.from(table).select(columns).range(from, from + PAGE - 1);
+    let q = db.from(table).select(columns).range(from, from + PAGE - 1);
+    if (filter) q = q.eq(filter.col, filter.value);
+    const { data, error } = await q;
     if (error) throw error;
     if (!data || data.length === 0) break;
     out.push(...(data as unknown as T[]));
@@ -26,45 +31,54 @@ export async function POST(req: Request) {
     const url = new URL(req.url);
     const topK = parseInt(url.searchParams.get("top_k") ?? "10", 10);
     const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
+    const programId = url.searchParams.get("program_id");
     const db = serviceClient();
-    const courses = await fetchAll<CourseRow>(db, "courses",
-      "id,campus,college,program,major,course_title,description,learning_outcomes,keywords,enrollment");
-    const titles = await fetchAll<TitleRow>(db, "titles",
-      "id,title,author,publisher,subjects");
 
-    if (!courses.length || !titles.length) {
+    const subjects = await fetchAll<SubjectRow>(
+      db, "subjects",
+      "id, program_id, section, course_code, course_title, description",
+      programId ? { col: "program_id", value: Number(programId) } : undefined,
+    );
+    const titles = await fetchAll<TitleRow>(
+      db, "titles",
+      "id, format, title, author, publisher, year, subjects",
+    );
+    if (!subjects.length || !titles.length) {
       return NextResponse.json(
-        { error: "Need at least one course and one title before matching." },
+        { error: "Need at least one subject and one title before matching." },
         { status: 400 },
       );
     }
 
-    const results = runMatch(courses, titles, { topK, minScore });
+    const results = runMatch(subjects, titles, { topK, minScore });
 
-    // Wipe prior auto matches; keep manual overrides.
-    const { error: delErr } = await db.from("matches").delete().eq("overridden", 0);
-    if (delErr) throw delErr;
+    // Drop prior auto assignments for these subjects; keep manual rows.
+    const subjectIds = subjects.map((s) => s.id!);
+    for (let i = 0; i < subjectIds.length; i += 200) {
+      const slice = subjectIds.slice(i, i + 200);
+      const { error } = await db.from("assignments")
+        .delete().in("subject_id", slice).eq("manual", 0);
+      if (error) throw error;
+    }
 
-    // Upsert new matches; on (course_id,title_id) conflict, leave existing row.
     const rows = results.map((r) => ({
-      course_id: r.course_id,
+      subject_id: r.subject_id,
       title_id: r.title_id,
       score: r.score,
       rank: r.rank,
       explanation: r.explanation ?? "",
-      overridden: 0,
+      manual: 0,
     }));
     for (let i = 0; i < rows.length; i += 1000) {
       const slice = rows.slice(i, i + 1000);
-      const { error } = await db
-        .from("matches")
-        .upsert(slice, { onConflict: "course_id,title_id", ignoreDuplicates: true });
+      const { error } = await db.from("assignments")
+        .upsert(slice, { onConflict: "subject_id,title_id", ignoreDuplicates: true });
       if (error) throw error;
     }
 
     return NextResponse.json({
       matches: results.length,
-      courses: courses.length,
+      subjects: subjects.length,
       titles: titles.length,
     });
   } catch (err) {

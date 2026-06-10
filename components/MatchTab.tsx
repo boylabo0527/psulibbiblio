@@ -1,18 +1,27 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+type Program = { id: number; name: string; campus: string; college: string };
 
 export default function MatchTab() {
-  const [topK, setTopK] = useState(10);
-  const [minScore, setMinScore] = useState(0.05);
+  const [programs, setPrograms] = useState<Program[]>([]);
+  const [programId, setProgramId] = useState<string>("");
+  const [topK, setTopK] = useState(8);
+  const [minScore, setMinScore] = useState(0.06);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState("");
+
+  useEffect(() => {
+    fetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
+  }, []);
 
   async function run() {
     setBusy(true);
     setResult("Running...");
     try {
-      const url = `/api/match/run?top_k=${topK}&min_score=${minScore}`;
-      const r = await fetch(url, { method: "POST" });
+      const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
+      if (programId) params.set("program_id", programId);
+      const r = await fetch(`/api/match/run?${params}`, { method: "POST" });
       setResult(JSON.stringify(await r.json(), null, 2));
     } catch (e) {
       setResult(String(e));
@@ -23,41 +32,34 @@ export default function MatchTab() {
 
   return (
     <div className="card">
-      <h2 className="text-psu font-semibold mb-2">Run AI Matching</h2>
+      <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
-        Local TF-IDF + cosine similarity. Replaces prior auto matches; preserves manually-overridden rows.
+        TF-IDF + cosine on the subject description. Auto-assigns the top K books (eBooks + Printed) per subject.
+        Manual additions and pins are preserved.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <label className="label">
-          Top K per course
-          <input
-            type="number"
-            min={1}
-            max={50}
-            value={topK}
-            onChange={(e) => setTopK(Number(e.target.value))}
-            className="input ml-1 w-20"
-          />
+          Program
+          <select className="input ml-1" value={programId} onChange={(e) => setProgramId(e.target.value)}>
+            <option value="">All programs</option>
+            {programs.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}{p.campus ? ` — ${p.campus}` : ""}</option>
+            ))}
+          </select>
+        </label>
+        <label className="label">
+          Top K
+          <input type="number" min={1} max={50} className="input ml-1 w-20"
+            value={topK} onChange={(e) => setTopK(Number(e.target.value))} />
         </label>
         <label className="label">
           Min score
-          <input
-            type="number"
-            step={0.01}
-            min={0}
-            max={1}
-            value={minScore}
-            onChange={(e) => setMinScore(Number(e.target.value))}
-            className="input ml-1 w-20"
-          />
+          <input type="number" min={0} max={1} step={0.01} className="input ml-1 w-20"
+            value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
-        <button className="btn" onClick={run} disabled={busy}>
-          {busy ? "Matching..." : "Run matching"}
-        </button>
+        <button className="btn" onClick={run} disabled={busy}>{busy ? "Matching..." : "Run matching"}</button>
       </div>
-      {result && (
-        <pre className="mt-3 bg-slate-100 rounded p-2 text-xs overflow-auto max-h-64">{result}</pre>
-      )}
+      {result && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs overflow-auto max-h-64">{result}</pre>}
     </div>
   );
 }

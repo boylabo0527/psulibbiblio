@@ -1,0 +1,77 @@
+import { serviceClient } from "./supabase";
+import type { ProgramBibliography } from "./exports";
+import type { SubjectRow, TitleRow } from "./types";
+
+const PAGE = 1000;
+
+async function paged<T>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  build: (from: number, to: number) => any,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    out.push(...(data as T[]));
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
+export async function loadProgramBibliography(programId: number): Promise<ProgramBibliography> {
+  const db = serviceClient();
+  const { data: progRow, error: progErr } = await db
+    .from("programs").select("id, campus, college, name").eq("id", programId).single();
+  if (progErr) throw progErr;
+
+  const subjects = await paged<SubjectRow>((from, to) =>
+    db.from("subjects")
+      .select("id, program_id, section, course_code, course_title, description, sort_order")
+      .eq("program_id", programId)
+      .order("sort_order", { ascending: true })
+      .range(from, to),
+  );
+
+  type Joined = { subject_id: number; titles: TitleRow };
+  const assignments = await paged<Joined>((from, to) =>
+    db.from("assignments")
+      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, call_no, copies, url)")
+      .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
+      .range(from, to),
+  );
+
+  const bySubject = new Map<number, { ebooks: TitleRow[]; printed: TitleRow[] }>();
+  for (const s of subjects) bySubject.set(s.id!, { ebooks: [], printed: [] });
+  for (const a of assignments) {
+    const bucket = bySubject.get(a.subject_id);
+    if (!bucket) continue;
+    if (a.titles.format === "printed") bucket.printed.push(a.titles);
+    else bucket.ebooks.push(a.titles);
+  }
+  for (const bucket of bySubject.values()) {
+    const sortBooks = (xs: TitleRow[]) =>
+      xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
+    sortBooks(bucket.ebooks);
+    sortBooks(bucket.printed);
+  }
+
+  // Group subjects by section in their existing order.
+  const sectionOrder: string[] = [];
+  const sectionMap = new Map<string, typeof subjects>();
+  for (const s of subjects) {
+    const key = s.section || "";
+    if (!sectionMap.has(key)) { sectionMap.set(key, []); sectionOrder.push(key); }
+    sectionMap.get(key)!.push(s);
+  }
+  const bySection = sectionOrder.map((section) => ({
+    section,
+    subjects: sectionMap.get(section)!.map((subject) => ({
+      subject,
+      ebooks: bySubject.get(subject.id!)!.ebooks,
+      printed: bySubject.get(subject.id!)!.printed,
+    })),
+  }));
+
+  return { program: progRow as ProgramBibliography["program"], bySection };
+}

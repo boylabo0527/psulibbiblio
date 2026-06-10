@@ -1,68 +1,82 @@
--- Supabase schema for PSU Bibliography Generator.
--- Run this once in the SQL Editor of your Supabase project.
+-- Supabase schema for PSU per-program subject bibliographies.
+-- Run once in the SQL Editor of your Supabase project.
 
+-- A program belongs to a campus / college.
+create table if not exists programs (
+  id         bigserial primary key,
+  campus     text default '',
+  college    text default '',
+  name       text not null,            -- e.g. "BA Political Science"
+  created_at timestamptz default now()
+);
+create unique index if not exists programs_unique on programs (campus, college, name);
+
+-- A subject (course) sits under a program. Optional section header
+-- groups subjects (e.g. "MAJOR COURSES", "PROFESSIONAL ELECTIVES").
+create table if not exists subjects (
+  id           bigserial primary key,
+  program_id   bigint not null references programs(id) on delete cascade,
+  section      text default '',          -- e.g. "MAJOR COURSES"
+  course_code  text default '',          -- e.g. "PSM 1"
+  course_title text not null,            -- e.g. "Fundamentals of Political Science"
+  description  text default '',
+  sort_order   int  default 0,
+  created_at   timestamptz default now()
+);
+create index if not exists subjects_program_idx on subjects (program_id);
+
+-- A title is a book record. format=ebook (Perlego / Kavita) or printed
+-- (library catalog row with call number and copies).
 create table if not exists titles (
-  id          bigserial primary key,
-  title       text not null,
-  author      text default '',
-  publisher   text default '',
-  year        text default '',
-  isbn        text default '',
-  edition     text default '',
-  url         text default '',
-  subjects    text default '',
-  created_at  timestamptz default now()
+  id         bigserial primary key,
+  format     text not null check (format in ('ebook', 'printed')),
+  title      text not null,
+  author     text default '',
+  publisher  text default '',
+  year       text default '',
+  isbn       text default '',
+  call_no    text default '',
+  copies     int  default 1,
+  url        text default '',
+  subjects   text default '',
+  created_at timestamptz default now()
 );
-create index if not exists titles_isbn_idx on titles (isbn);
-create index if not exists titles_title_idx on titles (title);
+create index if not exists titles_format_idx on titles (format);
+create index if not exists titles_isbn_idx   on titles (isbn);
+create index if not exists titles_callno_idx on titles (call_no);
+create index if not exists titles_title_idx  on titles (title);
 
-create table if not exists courses (
-  id                bigserial primary key,
-  campus            text default '',
-  college           text default '',
-  program           text default '',
-  major             text default '',
-  course_code       text default '',
-  course_title      text not null,
-  description       text default '',
-  learning_outcomes text default '',
-  keywords          text default '',
-  enrollment        int  default 0,
-  created_at        timestamptz default now()
-);
-create index if not exists courses_campus_idx  on courses (campus);
-create index if not exists courses_college_idx on courses (college);
-create index if not exists courses_program_idx on courses (program);
-
-create table if not exists matches (
+-- Assignment of a title to a subject. manual=1 means a librarian pinned
+-- or added this row; manual=0 is auto-matched and will be replaced on
+-- the next match run.
+create table if not exists assignments (
   id          bigserial primary key,
-  course_id   bigint not null references courses(id) on delete cascade,
-  title_id    bigint not null references titles(id)  on delete cascade,
-  score       double precision not null default 0,
-  rank        int    not null default 0,
+  subject_id  bigint not null references subjects(id) on delete cascade,
+  title_id    bigint not null references titles(id)   on delete cascade,
+  score       double precision default 0,
+  rank        int default 0,
   explanation text default '',
-  overridden  int    not null default 0,
+  manual      int default 0,
   created_at  timestamptz default now(),
-  unique (course_id, title_id)
+  unique (subject_id, title_id)
 );
-create index if not exists matches_course_idx on matches (course_id);
-create index if not exists matches_title_idx  on matches (title_id);
+create index if not exists assignments_subject_idx on assignments (subject_id);
+create index if not exists assignments_title_idx   on assignments (title_id);
 
--- Row Level Security: turn it on but provide a single permissive policy
--- since this MVP uses the service-role key from server-side routes only.
--- Tighten this when adding auth.
-alter table titles  enable row level security;
-alter table courses enable row level security;
-alter table matches enable row level security;
+alter table programs    enable row level security;
+alter table subjects    enable row level security;
+alter table titles      enable row level security;
+alter table assignments enable row level security;
 
--- Allow anonymous read for browse endpoints if desired. Writes go through
--- server routes using the service role, so they bypass RLS.
 do $$ begin
-  create policy "anon read titles"  on titles  for select using (true);
+  create policy "anon read programs"    on programs    for select using (true);
 exception when duplicate_object then null; end $$;
 do $$ begin
-  create policy "anon read courses" on courses for select using (true);
+  create policy "anon read subjects"    on subjects    for select using (true);
 exception when duplicate_object then null; end $$;
 do $$ begin
-  create policy "anon read matches" on matches for select using (true);
+  create policy "anon read titles"      on titles      for select using (true);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create policy "anon read assignments" on assignments for select using (true);
 exception when duplicate_object then null; end $$;

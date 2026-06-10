@@ -1,113 +1,125 @@
 # PSU Bibliography Generator
 
-Web app that turns a Perlego title list + course descriptions into a
-matched bibliography and a sortable library acquisition table.
+Per-program subject bibliographies for the PSU library. Each program's
+output mirrors the **BA_PolSci_100725** template:
 
-**Stack:** Next.js 14 (App Router) on Vercel · Supabase Postgres for data ·
-TypeScript TF-IDF + cosine matcher · no external AI keys required.
+- **`sum` sheet** — summary of professional books, with per-subject
+  *Printed Titles · Volumes · eBook Titles · Total Titles · Total Volumes*
+  and program totals.
+- **`Detail` sheet** — per subject: course code, course title, the
+  course description, then the `Call No. | Author | Title | Year | Copy`
+  table with `eBooks (Kavita)` and `Printed Books` blocks, ending in
+  *Titles* / *Volumes* counts.
+
+**Stack:** Next.js 14 (App Router) on Vercel · Supabase Postgres · pure
+TypeScript TF-IDF matcher · no external AI keys.
 
 ## What it does
 
-- Upload Perlego title lists (`.xlsx`, `.xls`, `.csv`, `.pdf`, `.docx`)
-  and course description files in the same formats.
-- Seeds the PSU campus/college/program catalog from
-  `data/psu_programs.csv`.
-- Runs TF-IDF + cosine matching locally inside a serverless function
-  (no per-row API calls), with shared-term explanations.
-- Bibliographies in APA 7, MLA 9, Chicago (author-date), Harvard.
-- Master recommendation table sorted by Campus → College → Program →
-  Course → Book Title, with aggregated copy counts (number of matching
-  courses + an enrollment factor).
-- Filters by campus / college / program / course / author / publisher /
-  year.
-- Exports to XLSX, CSV, PDF, DOCX.
-- Dashboard: totals, top publishers, titles spanning multiple programs.
+1. Upload three things per program:
+   - **Subjects** — a spreadsheet with one row per subject (program,
+     section, course code, course title, description).
+   - **Perlego title list** — marked as eBooks (Kavita).
+   - **Printed books catalog** — Call No., Author, Title, Year, Copies.
+2. **Match** — TF-IDF + cosine assigns the top-K books to each subject
+   from the description. Manual additions and removals are preserved
+   across reruns.
+3. **Edit** — in the *Programs* tab, pick a program, review subjects,
+   add or remove books per subject.
+4. **Export** — the program's bibliography as XLSX (template-shaped),
+   CSV, PDF, or DOCX.
 
 ## Setup
 
-### 1. Create a Supabase project
+### 1. Supabase
 
-1. <https://supabase.com> → New project.
-2. Open the SQL editor and run **[supabase/schema.sql](supabase/schema.sql)**.
-3. From **Project Settings → API** copy:
+1. Create a project at <https://supabase.com>.
+2. SQL editor → run **[supabase/schema.sql](supabase/schema.sql)**.
+3. Project Settings → API → copy:
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
-   - `anon public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only)
+   - `anon public` → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `service_role` → `SUPABASE_SERVICE_ROLE_KEY`
 
 ### 2. Run locally
 
 ```bash
-cp .env.example .env.local   # then paste the three keys
+cp .env.example .env.local   # paste the three keys
 npm install
-npm run dev
-```
-
-Open <http://localhost:3000>. On the Upload tab, click **Seed programs**
-to load the PSU catalog, then upload a Perlego title list, then go to
-the Match tab and click **Run matching**.
-
-Or seed the catalog from the command line:
-
-```bash
-npm run seed
+npm run dev                   # → http://localhost:3000
 ```
 
 ### 3. Deploy to Vercel
 
 1. Push this repo to GitHub.
-2. <https://vercel.com> → New Project → import the repo.
-3. Set the three env vars in **Project Settings → Environment Variables**.
-4. Deploy. `vercel.json` already extends the match/upload/export
-   function timeouts.
+2. Vercel → New Project → import the repo.
+3. Set the three env vars in Project Settings → Environment Variables.
+4. Deploy. `vercel.json` already raises function timeouts for the match
+   and upload routes.
+
+## Subject-file format
+
+The subjects upload accepts xlsx / xls / csv. Recognized columns
+(case-insensitive, header aliasing built in):
+
+| Canonical | Aliases |
+|-|-|
+| `program` | program, programme, program / degree, degree |
+| `campus` | campus |
+| `college` | college, school, faculty |
+| `section` | section, category, course type |
+| `course code` | course code, code, subject code |
+| `course title` | course title, course, title, subject title |
+| `description` | description, course description, syllabus, synopsis |
+
+If your file has no program column, set the **Program override** field
+in the upload card (also Campus / College overrides) and the whole file
+is attributed to that program.
+
+## Printed-books format
+
+xlsx / xls / csv with recognized columns: Call No., Author, Title, Year,
+Copies, Publisher, ISBN.
 
 ## Project layout
 
 ```
 app/
-  page.tsx              4-tab UI shell
+  page.tsx                    4-tab UI shell
   layout.tsx, globals.css
   api/
-    upload/titles/route.ts       parse & insert Perlego titles
-    upload/courses/route.ts      parse & insert course descriptions
-    match/run/route.ts           TF-IDF + cosine matching
-    match/override/route.ts      manual override / pin / remove
-    recommendations/route.ts     filtered master table + bibliography
-    facets/route.ts              distinct values for filter dropdowns
-    dashboard/route.ts           totals, top publishers, cross-program titles
-    export/route.ts              xlsx | csv | pdf | docx
-    admin/seed/route.ts          insert PSU programs from data/psu_programs.csv
-    admin/reset/route.ts         wipe all tables
+    upload/
+      subjects/route.ts       parse subject list, create/find programs
+      titles/route.ts         insert Perlego eBooks
+      printed/route.ts        insert printed catalog rows
+    match/
+      run/route.ts            TF-IDF matching → assignments
+      override/route.ts       pin / remove a single assignment
+    programs/route.ts         list programs
+    programs/[id]/bibliography/route.ts  joined bibliography for a program
+    titles/search/route.ts    title search for the "Add book" UI
+    export/route.ts           xlsx | csv | pdf | docx for a program
+    dashboard/route.ts        totals (programs, subjects, titles, ...)
+    admin/reset/route.ts      wipe all rows
     health/route.ts
 components/
-  UploadTab.tsx, MatchTab.tsx, BrowseTab.tsx, DashboardTab.tsx
+  UploadTab.tsx, MatchTab.tsx, ProgramsTab.tsx, DashboardTab.tsx
 lib/
-  supabase.ts           service-role + anon clients
-  parsers.ts            xlsx/xls/csv/pdf/docx parsing with header aliasing
-  matcher.ts            TF-IDF + cosine in pure TS
-  citations.ts          APA 7 / MLA 9 / Chicago / Harvard
-  exports.ts            xlsx (ExcelJS) / csv / pdf (pdfkit) / docx
-  recommendations.ts    join + aggregate + format
+  supabase.ts            service-role + anon clients
+  parsers.ts             parseEbookTitles / parsePrintedBooks / parseSubjects
+  matcher.ts             TF-IDF + cosine matcher (subjects × titles)
+  bibliography.ts        joined program + subjects + assignments → tree
+  exports.ts             template-shaped xlsx, csv, pdf, docx
   types.ts
-supabase/schema.sql     Postgres schema, indexes, basic RLS
-scripts/seed.ts         CLI seeder for data/psu_programs.csv
-data/                   psu_programs.csv (seed), sample_perlego_titles.xls
+supabase/schema.sql      programs, subjects, titles, assignments + RLS
+data/
+  psu_programs.csv             PSU campus/college/program catalog (reference)
+  sample_perlego_titles.xls    sample Perlego ebook list
+  sample_BA_PolSci.xlsx        target output template
 ```
-
-## Recognized columns
-
-The parser auto-detects common header variants:
-
-- **Titles:** `publication_title`/`title`, `first_author`/`author`,
-  `publisher_name`/`publisher`, `year`, `online_identifier`/`isbn`,
-  `title_url`/`url`, optional `subjects`.
-- **Courses:** `campus`, `college`, `program`, `major`, `course code`,
-  `course title`, `description`, `learning outcomes`, `keywords`,
-  `enrollment`.
 
 ## Scope notes
 
 This is an MVP. Out of scope for this pass: role-based auth, multi-tenant
-project save/load, audit logging beyond match explanations, manual
-override UI (the endpoint exists but no UI yet), semantic embeddings.
-The data model and routes are structured so any of those can be added
-without rework.
+project save/load, per-title edition tracking, audit log beyond match
+explanations, semantic-embedding matching. The data model and routes are
+structured to add any of those without rework.

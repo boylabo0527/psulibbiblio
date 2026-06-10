@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { parseTitles } from "@/lib/parsers";
+import { parseEbookTitles } from "@/lib/parsers";
 import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 const BATCH = 500;
 
@@ -15,44 +16,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
     }
     const buf = Buffer.from(await file.arrayBuffer());
-    const records = await parseTitles(file.name, buf);
-    if (records.length === 0) {
-      return NextResponse.json({ received: 0, inserted: 0, skipped: 0 });
-    }
-    const db = serviceClient();
+    const records = await parseEbookTitles(file.name, buf);
+    if (!records.length) return NextResponse.json({ received: 0, inserted: 0 });
 
+    const db = serviceClient();
     let inserted = 0;
-    let skipped = 0;
     for (let i = 0; i < records.length; i += BATCH) {
       const slice = records.slice(i, i + BATCH).map((r) => ({
+        format: "ebook" as const,
         title: r.title,
         author: r.author ?? "",
         publisher: r.publisher ?? "",
         year: r.year ?? "",
         isbn: r.isbn ?? "",
-        edition: r.edition ?? "",
+        call_no: "",
+        copies: 1,
         url: r.url ?? "",
         subjects: r.subjects ?? "",
       }));
-      // Use upsert keyed by isbn when available; otherwise plain insert.
-      const withIsbn = slice.filter((r) => r.isbn);
-      const noIsbn = slice.filter((r) => !r.isbn);
-      if (withIsbn.length) {
-        const { data, error } = await db
-          .from("titles")
-          .upsert(withIsbn, { onConflict: "isbn", ignoreDuplicates: true })
-          .select("id");
-        if (error) throw error;
-        inserted += data?.length ?? 0;
-        skipped += withIsbn.length - (data?.length ?? 0);
-      }
-      if (noIsbn.length) {
-        const { data, error } = await db.from("titles").insert(noIsbn).select("id");
-        if (error) throw error;
-        inserted += data?.length ?? 0;
-      }
+      const { data, error } = await db.from("titles").insert(slice).select("id");
+      if (error) throw error;
+      inserted += data?.length ?? 0;
     }
-    return NextResponse.json({ received: records.length, inserted, skipped });
+    return NextResponse.json({ received: records.length, inserted });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 400 });

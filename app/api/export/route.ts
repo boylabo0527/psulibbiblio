@@ -1,45 +1,48 @@
-import { loadRecommendations } from "@/lib/recommendations";
-import { toCsv, toDocx, toPdf, toXlsx } from "@/lib/exports";
-import type { CitationStyle } from "@/lib/types";
+import { loadProgramBibliography } from "@/lib/bibliography";
+import {
+  programBibliographyCsv,
+  programBibliographyDocx,
+  programBibliographyPdf,
+  programBibliographyXlsx,
+} from "@/lib/exports";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+function safeName(s: string) {
+  return s.replace(/[^A-Za-z0-9_\-]+/g, "_").slice(0, 60) || "program";
+}
+
 export async function GET(req: Request) {
   try {
     const u = new URL(req.url);
+    const programId = parseInt(u.searchParams.get("program_id") ?? "", 10);
     const fmt = (u.searchParams.get("fmt") ?? "xlsx").toLowerCase();
-    const data = await loadRecommendations({
-      campus: u.searchParams.get("campus") ?? undefined,
-      college: u.searchParams.get("college") ?? undefined,
-      program: u.searchParams.get("program") ?? undefined,
-      course: u.searchParams.get("course") ?? undefined,
-      author: u.searchParams.get("author") ?? undefined,
-      publisher: u.searchParams.get("publisher") ?? undefined,
-      year: u.searchParams.get("year") ?? undefined,
-      style: (u.searchParams.get("style") as CitationStyle) ?? "apa7",
-    });
+    if (!Number.isFinite(programId)) {
+      return new Response(JSON.stringify({ error: "program_id is required" }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      });
+    }
+    const data = await loadProgramBibliography(programId);
+    const baseName = safeName(data.program.name);
 
-    let body: Buffer;
-    let media: string;
-    let name: string;
+    let body: Buffer; let media: string; let ext: string;
     switch (fmt) {
-      case "csv":  body = toCsv(data.rows);  media = "text/csv"; name = "recommendations.csv"; break;
-      case "pdf":  body = await toPdf(data.rows);  media = "application/pdf"; name = "recommendations.pdf"; break;
-      case "docx": body = await toDocx(data.rows); media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; name = "recommendations.docx"; break;
+      case "csv":  body = programBibliographyCsv(data); media = "text/csv"; ext = "csv"; break;
+      case "pdf":  body = await programBibliographyPdf(data);  media = "application/pdf"; ext = "pdf"; break;
+      case "docx": body = await programBibliographyDocx(data); media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; ext = "docx"; break;
       case "xlsx":
-      default:    body = await toXlsx(data.rows); media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; name = "recommendations.xlsx";
+      default:     body = await programBibliographyXlsx(data); media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; ext = "xlsx";
     }
     return new Response(new Uint8Array(body), {
       headers: {
         "Content-Type": media,
-        "Content-Disposition": `attachment; filename="${name}"`,
+        "Content-Disposition": `attachment; filename="${baseName}.${ext}"`,
       },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return new Response(JSON.stringify({ error: msg }), {
+    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
       status: 500, headers: { "Content-Type": "application/json" },
     });
   }

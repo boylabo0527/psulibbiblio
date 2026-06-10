@@ -1,45 +1,52 @@
 /**
- * File parsers for Perlego title lists and course descriptions.
- * Supports: .xlsx, .xls, .csv, .pdf, .docx
+ * File parsers.
+ *
+ * - parseEbookTitles:  Perlego-style title lists (xlsx/xls/csv/pdf/docx)
+ * - parsePrintedBooks: library catalog rows with Call No., Author, Title, Year, Copies
+ * - parseSubjects:     per-program subject list (course code, title, description, optional section)
  */
 import * as XLSX from "xlsx";
-import type { TitleRow, CourseRow } from "./types";
+import type { TitleRow, SubjectRow } from "./types";
 
-const TITLE_ALIASES: Record<keyof TitleRow, string[]> = {
+const EBOOK_ALIASES: Record<string, string[]> = {
   title: ["title", "book title", "publication_title", "publication title", "name"],
   author: ["author", "authors", "first_author", "author(s)", "first author"],
   publisher: ["publisher", "publisher_name", "publisher name"],
   year: ["year", "publication_year", "publication year", "pub year", "date"],
   isbn: ["isbn", "online_identifier", "online identifier", "isbn-13", "isbn13", "eisbn"],
-  edition: ["edition", "ed."],
   url: ["url", "title_url", "link"],
   subjects: ["subjects", "subject", "tags", "keywords"],
-  id: [],
 };
 
-const COURSE_ALIASES: Record<keyof CourseRow, string[]> = {
+const PRINTED_ALIASES: Record<string, string[]> = {
+  call_no: ["call no", "call no.", "call number", "callno", "call_no", "classification"],
+  author: ["author", "authors", "first_author"],
+  title: ["title", "book title"],
+  year: ["year", "publication_year", "publication year", "copyright"],
+  copies: ["copy", "copies", "no. of copies", "volumes"],
+  publisher: ["publisher", "publisher_name"],
+  isbn: ["isbn", "isbn-13", "isbn13"],
+};
+
+const SUBJECT_ALIASES: Record<string, string[]> = {
+  program: ["program", "programme", "program / degree", "degree"],
   campus: ["campus"],
   college: ["college", "school", "faculty"],
-  program: ["program", "programme", "program / degree", "degree"],
-  major: ["major", "track", "specialization", "major/ track / specialization", "major / track / specialization"],
-  course_code: ["course code", "code", "course_code"],
-  course_title: ["course title", "course", "title", "subject title"],
-  description: ["description", "course description", "syllabus"],
-  learning_outcomes: ["learning outcomes", "outcomes", "objectives", "course outcomes"],
-  keywords: ["keywords", "tags", "topics"],
-  enrollment: ["enrollment", "students", "enrolment", "no. of students"],
-  id: [],
+  section: ["section", "category", "course type", "type"],
+  course_code: ["course code", "code", "course_code", "subject code"],
+  course_title: ["course title", "course", "title", "subject title", "subject"],
+  description: ["description", "course description", "syllabus", "synopsis"],
 };
 
 const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
-function buildHeaderMap<T extends Record<string, string[]>>(columns: string[], aliases: T): Partial<Record<keyof T, string>> {
+function buildHeaderMap(columns: string[], aliases: Record<string, string[]>): Record<string, string> {
   const normed = new Map(columns.map((c) => [norm(c), c]));
-  const out: Partial<Record<keyof T, string>> = {};
-  for (const key of Object.keys(aliases) as Array<keyof T>) {
-    for (const alt of aliases[key]) {
+  const out: Record<string, string> = {};
+  for (const [canonical, alts] of Object.entries(aliases)) {
+    for (const alt of alts) {
       const actual = normed.get(alt);
-      if (actual) { out[key] = actual; break; }
+      if (actual) { out[canonical] = actual; break; }
     }
   }
   return out;
@@ -48,15 +55,14 @@ function buildHeaderMap<T extends Record<string, string[]>>(columns: string[], a
 function cellToString(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "number") {
-    // Preserve full precision for ISBN-like integers; avoid scientific notation.
     if (Number.isInteger(v)) return v.toString();
     return Number(v).toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 20 });
   }
   return String(v).trim();
 }
 
-function rowsFromWorkbook(wb: XLSX.WorkBook): Record<string, string>[] {
-  const sheet = wb.Sheets[wb.SheetNames[0]];
+function rowsFromWorkbook(wb: XLSX.WorkBook, sheetName?: string): Record<string, string>[] {
+  const sheet = wb.Sheets[sheetName || wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: true });
   return rows.map((r) => {
     const out: Record<string, string> = {};
@@ -65,57 +71,54 @@ function rowsFromWorkbook(wb: XLSX.WorkBook): Record<string, string>[] {
   });
 }
 
-function rowsFromSheet(buf: Buffer): Record<string, string>[] {
-  return rowsFromWorkbook(XLSX.read(buf, { type: "buffer" }));
-}
-
-function rowsFromCsv(buf: Buffer): Record<string, string>[] {
-  return rowsFromWorkbook(XLSX.read(buf.toString("utf-8"), { type: "string" }));
+function readSheet(filename: string, buf: Buffer): XLSX.WorkBook {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  if (ext === "csv") return XLSX.read(buf.toString("utf-8"), { type: "string" });
+  if (ext === "xlsx" || ext === "xls") return XLSX.read(buf, { type: "buffer" });
+  throw new Error(`Expected xlsx/xls/csv, got .${ext}`);
 }
 
 async function pdfText(buf: Buffer): Promise<string> {
-  // pdf-parse is CJS; dynamic import keeps it out of edge bundles.
   const mod = await import("pdf-parse");
   const pdf = (mod.default ?? mod) as (b: Buffer) => Promise<{ text: string }>;
-  const out = await pdf(buf);
-  return out.text || "";
+  return (await pdf(buf)).text || "";
 }
 
 async function docxText(buf: Buffer): Promise<string> {
   const mammoth = await import("mammoth");
-  const res = await mammoth.extractRawText({ buffer: buf });
-  return res.value || "";
+  return (await mammoth.extractRawText({ buffer: buf })).value || "";
 }
 
-export async function parseTitles(filename: string, buf: Buffer): Promise<TitleRow[]> {
+// ---------------------------------------------------------------------------
+// eBook (Perlego) titles
+// ---------------------------------------------------------------------------
+export async function parseEbookTitles(filename: string, buf: Buffer): Promise<TitleRow[]> {
   const ext = (filename.split(".").pop() || "").toLowerCase();
-  let rows: Record<string, string>[];
-  if (ext === "csv") rows = rowsFromCsv(buf);
-  else if (ext === "xlsx" || ext === "xls") rows = rowsFromSheet(buf);
-  else if (ext === "pdf" || ext === "docx") {
+  if (ext === "pdf" || ext === "docx") {
     const text = ext === "pdf" ? await pdfText(buf) : await docxText(buf);
-    return freeformTitles(text);
-  } else throw new Error(`Unsupported titles format: .${ext}`);
-
+    return freeformTitles(text).map((t) => ({ ...t, format: "ebook", copies: 1 }));
+  }
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
   if (rows.length === 0) return [];
-  const map = buildHeaderMap(Object.keys(rows[0]), TITLE_ALIASES);
+  const map = buildHeaderMap(Object.keys(rows[0]), EBOOK_ALIASES);
   if (!map.title) {
-    throw new Error(
-      `Could not find a title column. Headers seen: ${Object.keys(rows[0]).join(", ")}`,
-    );
+    throw new Error(`Could not find a title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
   }
   const out: TitleRow[] = [];
   for (const r of rows) {
-    const t: TitleRow = { title: (r[map.title] || "").trim() };
-    if (!t.title) continue;
-    if (map.author) t.author = (r[map.author] || "").trim();
-    if (map.publisher) t.publisher = (r[map.publisher] || "").trim();
-    if (map.year) t.year = (r[map.year] || "").trim();
-    if (map.isbn) t.isbn = (r[map.isbn] || "").trim();
-    if (map.edition) t.edition = (r[map.edition] || "").trim();
-    if (map.url) t.url = (r[map.url] || "").trim();
-    if (map.subjects) t.subjects = (r[map.subjects] || "").trim();
-    out.push(t);
+    const title = (r[map.title] || "").trim();
+    if (!title) continue;
+    out.push({
+      format: "ebook",
+      title,
+      author: map.author ? r[map.author] : "",
+      publisher: map.publisher ? r[map.publisher] : "",
+      year: map.year ? r[map.year] : "",
+      isbn: map.isbn ? r[map.isbn] : "",
+      url: map.url ? r[map.url] : "",
+      subjects: map.subjects ? r[map.subjects] : "",
+      copies: 1,
+    });
   }
   return out;
 }
@@ -141,47 +144,67 @@ function freeformTitles(text: string): TitleRow[] {
   return out;
 }
 
-export async function parseCourses(filename: string, buf: Buffer): Promise<CourseRow[]> {
-  const ext = (filename.split(".").pop() || "").toLowerCase();
-  let rows: Record<string, string>[];
-  if (ext === "csv") rows = rowsFromCsv(buf);
-  else if (ext === "xlsx" || ext === "xls") rows = rowsFromSheet(buf);
-  else if (ext === "pdf" || ext === "docx") {
-    const text = ext === "pdf" ? await pdfText(buf) : await docxText(buf);
-    return text
-      .split(/\n\s*\n/)
-      .map((b) => b.trim())
-      .filter(Boolean)
-      .map<CourseRow>((b) => ({
-        course_title: (b.split("\n")[0] || "Untitled").slice(0, 300),
-        description: b,
-      }));
-  } else throw new Error(`Unsupported courses format: .${ext}`);
-
+// ---------------------------------------------------------------------------
+// Printed books (library catalog rows)
+// ---------------------------------------------------------------------------
+export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<TitleRow[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
   if (rows.length === 0) return [];
-  const map = buildHeaderMap(Object.keys(rows[0]), COURSE_ALIASES);
-  const out: CourseRow[] = [];
+  const map = buildHeaderMap(Object.keys(rows[0]), PRINTED_ALIASES);
+  if (!map.title) {
+    throw new Error(`Could not find a title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: TitleRow[] = [];
   for (const r of rows) {
-    const c: CourseRow = {
-      course_title:
-        (map.course_title && r[map.course_title]) ||
-        (map.program && r[map.program]) ||
-        "Untitled Course",
-    };
-    if (map.campus) c.campus = (r[map.campus] || "").trim();
-    if (map.college) c.college = (r[map.college] || "").trim();
-    if (map.program) c.program = (r[map.program] || "").trim();
-    if (map.major) c.major = (r[map.major] || "").trim();
-    if (map.course_code) c.course_code = (r[map.course_code] || "").trim();
-    if (map.description) c.description = (r[map.description] || "").trim();
-    if (map.learning_outcomes) c.learning_outcomes = (r[map.learning_outcomes] || "").trim();
-    if (map.keywords) c.keywords = (r[map.keywords] || "").trim();
-    if (map.enrollment) {
-      const n = parseInt(r[map.enrollment] || "0", 10);
-      c.enrollment = Number.isFinite(n) ? n : 0;
+    const title = (r[map.title] || "").trim();
+    if (!title) continue;
+    let copies = 1;
+    if (map.copies) {
+      const n = parseInt(r[map.copies] || "0", 10);
+      if (Number.isFinite(n) && n > 0) copies = n;
     }
-    const substantive = c.course_title || c.program || c.course_code || c.description;
-    if (substantive) out.push(c);
+    out.push({
+      format: "printed",
+      title,
+      call_no: map.call_no ? r[map.call_no] : "",
+      author: map.author ? r[map.author] : "",
+      year: map.year ? r[map.year] : "",
+      publisher: map.publisher ? r[map.publisher] : "",
+      isbn: map.isbn ? r[map.isbn] : "",
+      copies,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Subjects (per-program course list)
+// ---------------------------------------------------------------------------
+export type ParsedSubject = SubjectRow & { program?: string; campus?: string; college?: string };
+
+export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), SUBJECT_ALIASES);
+  if (!map.course_title && !map.course_code) {
+    throw new Error(`Could not find a course title or code column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: ParsedSubject[] = [];
+  let order = 0;
+  for (const r of rows) {
+    const courseTitle = (map.course_title ? r[map.course_title] : "").trim();
+    const courseCode = (map.course_code ? r[map.course_code] : "").trim();
+    if (!courseTitle && !courseCode) continue;
+    out.push({
+      program: map.program ? r[map.program] : "",
+      campus: map.campus ? r[map.campus] : "",
+      college: map.college ? r[map.college] : "",
+      section: map.section ? r[map.section] : "",
+      course_code: courseCode,
+      course_title: courseTitle || courseCode,
+      description: map.description ? r[map.description] : "",
+      sort_order: order++,
+    });
   }
   return out;
 }

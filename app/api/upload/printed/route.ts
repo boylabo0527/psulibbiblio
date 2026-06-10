@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { parseCourses } from "@/lib/parsers";
+import { parsePrintedBooks } from "@/lib/parsers";
 import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 const BATCH = 500;
 
@@ -15,25 +16,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
     }
     const buf = Buffer.from(await file.arrayBuffer());
-    const records = await parseCourses(file.name, buf);
-    if (records.length === 0) return NextResponse.json({ received: 0, inserted: 0 });
+    const records = await parsePrintedBooks(file.name, buf);
+    if (!records.length) return NextResponse.json({ received: 0, inserted: 0 });
 
     const db = serviceClient();
     let inserted = 0;
     for (let i = 0; i < records.length; i += BATCH) {
-      const slice = records.slice(i, i + BATCH).map((c) => ({
-        campus: c.campus ?? "",
-        college: c.college ?? "",
-        program: c.program ?? "",
-        major: c.major ?? "",
-        course_code: c.course_code ?? "",
-        course_title: c.course_title,
-        description: c.description ?? "",
-        learning_outcomes: c.learning_outcomes ?? "",
-        keywords: c.keywords ?? "",
-        enrollment: c.enrollment ?? 0,
+      const slice = records.slice(i, i + BATCH).map((r) => ({
+        format: "printed" as const,
+        title: r.title,
+        author: r.author ?? "",
+        publisher: r.publisher ?? "",
+        year: r.year ?? "",
+        isbn: r.isbn ?? "",
+        call_no: r.call_no ?? "",
+        copies: r.copies ?? 1,
+        url: "",
+        subjects: "",
       }));
-      const { data, error } = await db.from("courses").insert(slice).select("id");
+      const { data, error } = await db.from("titles").insert(slice).select("id");
       if (error) throw error;
       inserted += data?.length ?? 0;
     }

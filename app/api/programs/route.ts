@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export async function POST() {
+
+export async function GET() {
   try {
     const db = serviceClient();
-    await db.from("assignments").delete().gte("id", 0);
-    await db.from("subjects").delete().gte("id", 0);
-    await db.from("titles").delete().gte("id", 0);
-    await db.from("programs").delete().gte("id", 0);
-    return NextResponse.json({ ok: true });
+    const { data, error } = await db.from("programs")
+      .select("id, campus, college, name").order("name");
+    if (error) throw error;
+    return NextResponse.json({ programs: data ?? [] });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
