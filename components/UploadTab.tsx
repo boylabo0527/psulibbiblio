@@ -75,50 +75,95 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     startTicking();
 
     try {
-      let body: BodyInit;
-      let headers: Record<string, string> = {};
-
       if (isSpreadsheet(file.name)) {
-        // Parse spreadsheet in the browser to avoid Vercel's 4.5 MB payload limit.
+        // Parse in the browser and POST rows as JSON batches (≤1 000 rows each)
+        // to stay well under Vercel's 4.5 MB per-request payload limit.
         const buf = await file.arrayBuffer();
-        const rows = parseSheetRows(file.name, buf);
-        body = JSON.stringify({ rows, filename: file.name, ...extras });
-        headers = { "Content-Type": "application/json" };
+        const allRows = parseSheetRows(file.name, buf);
+        const BATCH = 1_000;
+        const total = allRows.length;
+        let inserted = 0;
+        let skipped = 0;
+        update({ phase: "parsed", total, stalled: false });
+
+        for (let i = 0; i < allRows.length; i += BATCH) {
+          if (controller.signal.aborted) break;
+          const rows = allRows.slice(i, i + BATCH);
+          const body = JSON.stringify({ rows, filename: file.name, ...extras });
+          const res = await fetch(endpoint, {
+            method: "POST",
+            body,
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) {
+            const text = await res.text();
+            update({ phase: "error", error: text || `HTTP ${res.status}` });
+            return;
+          }
+          // Consume NDJSON stream for this batch.
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let lineBuf = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            lineBuf += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = lineBuf.indexOf("\n")) >= 0) {
+              const line = lineBuf.slice(0, nl).trim();
+              lineBuf = lineBuf.slice(nl + 1);
+              if (!line) continue;
+              let ev: ProgressEvent;
+              try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
+              lastEventAt.current = Date.now();
+              if (ev.phase === "done") {
+                inserted += ev.inserted;
+                skipped += ev.skipped;
+                update({ phase: "inserting", inserted, skipped, total, stalled: false });
+              } else if (ev.phase === "error") {
+                update({ phase: "error", error: ev.error, stalled: false });
+                return;
+              }
+            }
+          }
+        }
+        update({ phase: "done", inserted, skipped, total, stalled: false });
       } else {
+        // Non-spreadsheet (PDF / DOCX): send as raw file via multipart.
         const fd = new FormData();
         fd.append("file", file);
         for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
-        body = fd;
-      }
 
-      const res = await fetch(endpoint, { method: "POST", body, headers, signal: controller.signal });
-      if (!res.ok || !res.body) {
-        const text = await res.text();
-        update({ phase: "error", error: text || `HTTP ${res.status}` });
-        return;
-      }
+        const res = await fetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
+        if (!res.ok || !res.body) {
+          const text = await res.text();
+          update({ phase: "error", error: text || `HTTP ${res.status}` });
+          return;
+        }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let ev: ProgressEvent;
-          try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
-          lastEventAt.current = Date.now();
-          if (ev.phase === "parsed") update({ phase: ev.phase, total: ev.total, stalled: false });
-          else if (ev.phase === "deduping") update({ phase: ev.phase, stalled: false });
-          else if (ev.phase === "inserting") update({ phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total, stalled: false });
-          else if (ev.phase === "done") update({ phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, stalled: false });
-          else if (ev.phase === "error") update({ phase: "error", error: ev.error, stalled: false });
-          else update({ phase: ev.phase, stalled: false });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let ev: ProgressEvent;
+            try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
+            lastEventAt.current = Date.now();
+            if (ev.phase === "parsed") update({ phase: ev.phase, total: ev.total, stalled: false });
+            else if (ev.phase === "deduping") update({ phase: ev.phase, stalled: false });
+            else if (ev.phase === "inserting") update({ phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total, stalled: false });
+            else if (ev.phase === "done") update({ phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, stalled: false });
+            else if (ev.phase === "error") update({ phase: "error", error: ev.error, stalled: false });
+            else update({ phase: ev.phase, stalled: false });
+          }
         }
       }
     } catch (e) {
