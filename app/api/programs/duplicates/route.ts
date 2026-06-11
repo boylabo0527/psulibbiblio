@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
-import { normalizeForDedup } from "@/lib/dedup";
+import { normalizeProgramName } from "@/lib/dedup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +31,7 @@ export async function GET() {
 
     const groups = new Map<string, ProgramSummary[]>();
     for (const p of programs ?? []) {
-      const key = normalizeForDedup(p.name);
+      const key = normalizeProgramName(p.name);
       if (!key) continue;
       const summary: ProgramSummary = {
         id: p.id,
