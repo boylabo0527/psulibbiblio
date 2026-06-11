@@ -51,9 +51,12 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     // Printed types include the campus in the dedup key so the same call
     // number can exist at Main Campus AND PSU-Coron without colliding.
     type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string; campus: string };
+    const selectCols = rt.campusScoped
+      ? "isbn, issn, call_no, title, author, year, campus"
+      : "isbn, issn, call_no, title, author, year";
     const existing = await pageThrough<Existing>(
       (from, to) => db.from("titles")
-        .select("isbn, issn, call_no, title, author, year, campus")
+        .select(selectCols)
         .eq("format", rt.id)
         .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
     );
@@ -141,7 +144,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           );
         }
         if (!shouldKeep(r, c)) { skipped++; continue; }
-        toInsert.push({
+        const row: Record<string, unknown> = {
           format: rt.id,
           title: r.title,
           author: r.author ?? "",
@@ -153,8 +156,9 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           copies: r.copies ?? 1,
           url: r.url ?? "",
           subjects: r.subjects ?? "",
-          campus: c,
-        });
+        };
+        if (rt.campusScoped) row.campus = c;
+        toInsert.push(row);
       }
       if (toInsert.length) {
         const { data, error } = await db.from("titles").insert(toInsert).select("id");
