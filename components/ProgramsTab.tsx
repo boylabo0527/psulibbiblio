@@ -210,6 +210,7 @@ function SubjectBlock({
           label={t.sectionLabel}
           books={buckets[t.id] ?? []}
           onRemove={onRemove}
+          onEdited={onSaved}
           showIdent={t.medium === "print" || t.kind === "journal"}
         />
       ))}
@@ -330,8 +331,14 @@ function SubjectHeader({
 }
 
 function BookSection({
-  label, books, onRemove, showIdent,
-}: { label: string; books: Title[]; onRemove: (id: number) => void; showIdent: boolean }) {
+  label, books, onRemove, onEdited, showIdent,
+}: {
+  label: string;
+  books: Title[];
+  onRemove: (id: number) => void;
+  onEdited: () => void;
+  showIdent: boolean;
+}) {
   if (!books.length) return null;
   return (
     <div className="mb-2">
@@ -344,25 +351,148 @@ function BookSection({
             <th className="text-left p-1">Title</th>
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
-            <th className="p-1 w-8"></th>
+            <th className="p-1 w-16"></th>
           </tr>
         </thead>
         <tbody>
           {books.map((b) => (
-            <tr key={b.id} className="border-t border-slate-100">
-              {showIdent && <td className="p-1">{b.call_no || b.issn}</td>}
-              <td className="p-1">{b.author}</td>
-              <td className="p-1">{b.title}</td>
-              <td className="p-1">{b.year}</td>
-              <td className="p-1">{b.copies ?? 1}</td>
-              <td className="p-1">
-                <button className="text-red-600 text-xs" onClick={() => onRemove(b.id)}>remove</button>
-              </td>
-            </tr>
+            <BookRow
+              key={b.id}
+              book={b}
+              showIdent={showIdent}
+              onRemove={onRemove}
+              onSaved={onEdited}
+            />
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function BookRow({
+  book, showIdent, onRemove, onSaved,
+}: {
+  book: Title;
+  showIdent: boolean;
+  onRemove: (id: number) => void;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [ident, setIdent] = useState(book.call_no || book.issn || "");
+  const [author, setAuthor] = useState(book.author || "");
+  const [title, setTitle] = useState(book.title || "");
+  const [year, setYear] = useState(book.year || "");
+  const [copies, setCopies] = useState(String(book.copies ?? 1));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIdent(book.call_no || book.issn || "");
+    setAuthor(book.author || "");
+    setTitle(book.title || "");
+    setYear(book.year || "");
+    setCopies(String(book.copies ?? 1));
+  }, [book.call_no, book.issn, book.author, book.title, book.year, book.copies]);
+
+  // The Call No. / ISSN cell shows whichever the row has. When the user
+  // edits it, route the new value back to the same field they were viewing
+  // (call_no for printed, issn for journals).
+  const identField: "call_no" | "issn" = book.call_no ? "call_no" : book.issn ? "issn" : "call_no";
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const payload: Record<string, string | number> = {
+        author, title, year,
+        copies: Math.max(0, parseInt(copies, 10) || 0),
+      };
+      if (showIdent) payload[identField] = ident;
+      const res = await fetch(`/api/titles/${book.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        setErr(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setEditing(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancel() {
+    setIdent(book.call_no || book.issn || "");
+    setAuthor(book.author || "");
+    setTitle(book.title || "");
+    setYear(book.year || "");
+    setCopies(String(book.copies ?? 1));
+    setErr(null);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <>
+        <tr className="border-t border-slate-100 bg-slate-50">
+          {showIdent && (
+            <td className="p-1">
+              <input className="input text-xs w-full" value={ident} onChange={(e) => setIdent(e.target.value)} />
+            </td>
+          )}
+          <td className="p-1">
+            <input className="input text-xs w-full" value={author} onChange={(e) => setAuthor(e.target.value)} />
+          </td>
+          <td className="p-1">
+            <input className="input text-xs w-full" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </td>
+          <td className="p-1">
+            <input className="input text-xs w-full" value={year} onChange={(e) => setYear(e.target.value)} />
+          </td>
+          <td className="p-1">
+            <input
+              className="input text-xs w-full"
+              type="number"
+              min={0}
+              value={copies}
+              onChange={(e) => setCopies(e.target.value)}
+            />
+          </td>
+          <td className="p-1 text-right whitespace-nowrap">
+            <button className="text-psu text-xs mr-1" disabled={saving} onClick={save}>
+              {saving ? "…" : "save"}
+            </button>
+            <button className="text-slate-500 text-xs" disabled={saving} onClick={cancel}>cancel</button>
+          </td>
+        </tr>
+        {err && (
+          <tr className="bg-slate-50">
+            <td colSpan={showIdent ? 6 : 5} className="px-1 pb-1 text-xs text-red-600">{err}</td>
+          </tr>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <tr className="border-t border-slate-100">
+      {showIdent && <td className="p-1">{book.call_no || book.issn}</td>}
+      <td className="p-1">{book.author}</td>
+      <td className="p-1">{book.title}</td>
+      <td className="p-1">{book.year}</td>
+      <td className="p-1">{book.copies ?? 1}</td>
+      <td className="p-1 text-right whitespace-nowrap">
+        <button className="text-psu text-xs mr-2" onClick={() => setEditing(true)}>edit</button>
+        <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+      </td>
+    </tr>
   );
 }
 
