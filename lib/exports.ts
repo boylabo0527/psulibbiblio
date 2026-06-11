@@ -224,13 +224,52 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
 // DOCX
 // ---------------------------------------------------------------------------
 export async function programBibliographyDocx(b: ProgramBibliography): Promise<Buffer> {
-  const { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, WidthType, TextRun } = await import("docx");
+  const {
+    Document, Packer, Paragraph, Table, TableCell, TableRow,
+    HeadingLevel, WidthType, TextRun,
+  } = await import("docx");
 
-  const cell = (text: string, bold = false) =>
-    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: text || "", bold })] })] });
+  // Column widths in DXA (twips). Sum = 9000 = full page width inside margins.
+  const COL_DXA = [1500, 1700, 4300, 800, 700];
+  const TOTAL_DXA = COL_DXA.reduce((a, c) => a + c, 0);
 
-  const headerRow = () => new TableRow({
-    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy"].map((c) => cell(c, true)),
+  const cell = (
+    text: string,
+    opts: { bold?: boolean; italic?: boolean; colSpan?: number; widthDxa?: number } = {},
+  ) => new TableCell({
+    width: opts.widthDxa
+      ? { size: opts.widthDxa, type: WidthType.DXA }
+      : undefined,
+    columnSpan: opts.colSpan,
+    children: [new Paragraph({
+      children: [new TextRun({ text: text || "", bold: opts.bold, italics: opts.italic })],
+    })],
+  });
+
+  const subjectHeaderRow = (code: string, title: string) => new TableRow({
+    children: [
+      cell(code, { bold: true, widthDxa: COL_DXA[0] }),
+      cell(title, { bold: true, colSpan: 4, widthDxa: TOTAL_DXA - COL_DXA[0] }),
+    ],
+  });
+
+  const descriptionRow = (desc: string) => new TableRow({
+    children: [cell(desc, { colSpan: 5, widthDxa: TOTAL_DXA })],
+  });
+
+  const columnHeaderRow = () => new TableRow({
+    tableHeader: true,
+    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy"].map((c, i) =>
+      cell(c, { bold: true, widthDxa: COL_DXA[i] }),
+    ),
+  });
+
+  const typeLabelRow = (label: string) => new TableRow({
+    children: [cell(label, { italic: true, colSpan: 5, widthDxa: TOTAL_DXA })],
+  });
+
+  const dataRow = (vals: string[]) => new TableRow({
+    children: vals.map((v, i) => cell(v, { widthDxa: COL_DXA[i] })),
   });
 
   const children: import("docx").FileChild[] = [];
@@ -243,21 +282,22 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
   for (const sec of b.bySection) {
     if (sec.section) children.push(new Paragraph({ text: sec.section, heading: HeadingLevel.HEADING_2 }));
     for (const sub of sec.subjects) {
-      const heading = `${sub.subject.course_code ? sub.subject.course_code + " " : ""}${sub.subject.course_title}`;
-      children.push(new Paragraph({ text: heading, heading: HeadingLevel.HEADING_3 }));
-      if (sub.subject.description) children.push(new Paragraph({ text: sub.subject.description }));
-
-      const rows: import("docx").TableRow[] = [headerRow()];
+      const rows: import("docx").TableRow[] = [];
+      rows.push(subjectHeaderRow(sub.subject.course_code || "", sub.subject.course_title || ""));
+      if (sub.subject.description) rows.push(descriptionRow(sub.subject.description));
+      rows.push(columnHeaderRow());
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
-        rows.push(new TableRow({ children: [cell(t.sectionLabel, true), cell(""), cell(""), cell(""), cell("")] }));
+        rows.push(typeLabelRow(t.sectionLabel));
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          rows.push(new TableRow({
-            children: [cell(ident), cell(tt.author || ""), cell(tt.title || ""), cell(tt.year || ""), cell(String(tt.copies ?? 1))],
-          }));
+          rows.push(dataRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1)]));
         }
       }
-      children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
+      children.push(new Table({
+        width: { size: TOTAL_DXA, type: WidthType.DXA },
+        columnWidths: COL_DXA,
+        rows,
+      }));
 
       const all = subjectTotals(sub.buckets);
       children.push(new Paragraph({
@@ -319,6 +359,27 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     return h + padding * 2;
   }
 
+  // Two-cell row used for the subject heading: course code (col 0 width) +
+  // course title spanning the remaining columns. Mirrors the XLSX layout.
+  function drawSubjectHeaderRow(code: string, title: string) {
+    const padding = 4;
+    doc.font("Helvetica-Bold").fontSize(9);
+    const leftW = cols[0].width;
+    const rightW = WIDTH - leftW;
+    const hLeft = doc.heightOfString(code || "", { width: leftW - padding * 2 });
+    const hRight = doc.heightOfString(title || "", { width: rightW - padding * 2 });
+    const h = Math.max(hLeft, hRight) + padding * 2;
+    ensureSpace(h);
+    const y = doc.y;
+    doc.save().rect(LEFT, y, WIDTH, h).fill("#f4f6fb").restore();
+    doc.font("Helvetica-Bold").fontSize(9);
+    doc.rect(LEFT, y, leftW, h).stroke();
+    doc.text(code || "", LEFT + padding, y + padding, { width: leftW - padding * 2 });
+    doc.rect(LEFT + leftW, y, rightW, h).stroke();
+    doc.text(title || "", LEFT + leftW + padding, y + padding, { width: rightW - padding * 2 });
+    doc.y = y + h;
+  }
+
   function drawRow(cells: string[], opts: { bold?: boolean; italic?: boolean; fillHeader?: boolean; merged?: boolean } = {}) {
     const padding = 4;
     const font = opts.bold ? "Helvetica-Bold" : opts.italic ? "Helvetica-Oblique" : "Helvetica";
@@ -363,15 +424,15 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     for (const sub of sec.subjects) {
       ensureSpace(60);
       doc.moveDown(0.4);
-      doc.font("Helvetica-Bold").fontSize(10)
-        .text(`${sub.subject.course_code ? sub.subject.course_code + "  " : ""}${sub.subject.course_title || ""}`);
-      doc.font("Helvetica").fontSize(9);
-      if (sub.subject.description) {
-        doc.text(sub.subject.description, { width: WIDTH });
-      }
-      doc.moveDown(0.2);
 
-      // Per-subject table: header row, then per-type label row + entries.
+      // Subject heading row: course code in col 1, course title spanning cols 2-5.
+      // This matches the XLSX detail sheet (course_code in col A, title in col B).
+      drawSubjectHeaderRow(sub.subject.course_code || "", sub.subject.course_title || "");
+      if (sub.subject.description) {
+        drawRow([sub.subject.description, "", "", "", ""], { merged: true });
+      }
+
+      // Column header row + per-type label row + entries.
       drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy"], { bold: true, fillHeader: true });
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
         drawRow([t.sectionLabel, "", "", "", ""], { italic: true, merged: true });

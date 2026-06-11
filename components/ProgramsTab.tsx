@@ -129,6 +129,14 @@ export default function ProgramsTab() {
               {fmt}
             </button>
           ))}
+          <button
+            className="btn-outline text-xs"
+            disabled={!selected}
+            onClick={() => download("citations")}
+            title="Download APA 7 reference list (.docx)"
+          >
+            Citations (APA 7)
+          </button>
         </div>
       </div>
 

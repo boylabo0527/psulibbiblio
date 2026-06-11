@@ -5,6 +5,7 @@ import {
   programBibliographyPdf,
   programBibliographyXlsx,
 } from "@/lib/exports";
+import { programCitationsDocx } from "@/lib/citations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,13 +27,21 @@ export async function GET(req: Request) {
       });
     }
     const data = await loadProgramBibliography(programId, campus);
-    const baseName = safeName(`${data.program.name}${campus ? "_" + campus : ""}`);
+    const isCitations = fmt === "citations";
+    const baseName = safeName(
+      `${data.program.name}${campus ? "_" + campus : ""}${isCitations ? "_citations_APA7" : ""}`,
+    );
 
     let body: Buffer; let media: string; let ext: string;
     switch (fmt) {
       case "csv":  body = programBibliographyCsv(data); media = "text/csv"; ext = "csv"; break;
       case "pdf":  body = await programBibliographyPdf(data);  media = "application/pdf"; ext = "pdf"; break;
       case "docx": body = await programBibliographyDocx(data); media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; ext = "docx"; break;
+      case "citations":
+        body = await programCitationsDocx(data);
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        ext = "docx";
+        break;
       case "xlsx":
       default:     body = await programBibliographyXlsx(data); media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; ext = "xlsx";
     }

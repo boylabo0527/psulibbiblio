@@ -280,8 +280,15 @@ export default function UploadTab() {
   const [resetResult, setResetResult] = useState("");
   async function reset() {
     if (!confirm("Wipe all programs, subjects, titles, and assignments?")) return;
+    const password = prompt("Enter admin password to confirm wipe:");
+    if (password === null) return;
+    if (!password.trim()) { setResetResult("Cancelled: password required."); return; }
     setResetResult("Resetting...");
-    const r = await fetch("/api/admin/reset", { method: "POST" });
+    const r = await fetch("/api/admin/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
     setResetResult(JSON.stringify(await r.json(), null, 2));
   }
 
@@ -362,6 +369,9 @@ export default function UploadTab() {
       <div className="card border-red-300">
         <h2 className="text-red-700 font-semibold mb-2">Admin</h2>
         <button className="btn bg-red-600 hover:bg-red-700" onClick={reset}>Wipe all data</button>
+        <p className="text-xs text-slate-500 mt-2">
+          Requires the admin password configured in <code>ADMIN_RESET_PASSWORD</code>.
+        </p>
         {resetResult && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs">{resetResult}</pre>}
       </div>
     </>
