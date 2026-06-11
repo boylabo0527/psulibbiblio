@@ -10,18 +10,19 @@ type ProgressEvent =
   | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
   | { phase: "error"; error: string };
 
-type Status = {
-  phase: ProgressEvent["phase"] | "idle" | "uploading";
+type FilePhase = ProgressEvent["phase"] | "idle" | "uploading" | "queued";
+
+type FileStatus = {
+  file: File;
+  phase: FilePhase;
   inserted: number;
   skipped: number;
   total: number;
   programs?: number;
   error?: string;
-  stalled?: boolean;
   elapsedMs: number;
 };
 
-const IDLE: Status = { phase: "idle", inserted: 0, skipped: 0, total: 0, elapsedMs: 0 };
 const STALL_MS = 10_000;
 
 type Props = {
@@ -32,168 +33,158 @@ type Props = {
   extraFields?: { name: string; label: string; placeholder?: string }[];
 };
 
+async function consumeNdjson(
+  res: Response,
+  onEvent: (ev: ProgressEvent) => void,
+  signal: AbortSignal,
+) {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    if (signal.aborted) { reader.cancel(); break; }
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try { onEvent(JSON.parse(line) as ProgressEvent); } catch { /* skip */ }
+    }
+  }
+}
+
 function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
-  const [file, setFile] = useState<File | null>(null);
+  const [queue, setQueue] = useState<FileStatus[]>([]);
   const [extras, setExtras] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<Status>(IDLE);
-  const startedAt = useRef(0);
-  const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastEventAt = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const runningRef = useRef(false);
 
-  function update(partial: Partial<Status>) {
-    setStatus((prev) => ({ ...prev, ...partial }));
+  function patchFile(index: number, patch: Partial<FileStatus>) {
+    setQueue((prev) => prev.map((f, i) => i === index ? { ...f, ...patch } : f));
   }
 
-  function startTicking() {
-    if (tickTimer.current) clearInterval(tickTimer.current);
-    tickTimer.current = setInterval(() => {
-      setStatus((prev) => {
-        const now = Date.now();
-        return {
-          ...prev,
-          elapsedMs: now - startedAt.current,
-          stalled: now - lastEventAt.current > STALL_MS && prev.phase !== "done" && prev.phase !== "error",
-        };
-      });
+  async function uploadOne(fs: FileStatus, index: number, controller: AbortController) {
+    const { file } = fs;
+    const startedAt = Date.now();
+    patchFile(index, { phase: "uploading", elapsedMs: 0 });
+
+    // Tick elapsed time while uploading.
+    const ticker = setInterval(() => {
+      patchFile(index, { elapsedMs: Date.now() - startedAt });
     }, 500);
-  }
-
-  function stopTicking() {
-    if (tickTimer.current) { clearInterval(tickTimer.current); tickTimer.current = null; }
-  }
-
-  async function send() {
-    if (!file) return;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    startedAt.current = Date.now();
-    lastEventAt.current = Date.now();
-    setStatus({ phase: "uploading", inserted: 0, skipped: 0, total: 0, elapsedMs: 0 });
-    startTicking();
 
     try {
       if (isSpreadsheet(file)) {
-        // Parse in the browser and POST rows as JSON batches (≤1 000 rows each)
-        // to stay well under Vercel's 4.5 MB per-request payload limit.
+        patchFile(index, { phase: "parsing" });
         const allRows = await parseSheetRows(file);
         const BATCH = 1_000;
         const total = allRows.length;
         let inserted = 0;
         let skipped = 0;
-        update({ phase: "parsed", total, stalled: false });
+        patchFile(index, { phase: "parsed", total });
 
         for (let i = 0; i < allRows.length; i += BATCH) {
           if (controller.signal.aborted) break;
           const rows = allRows.slice(i, i + BATCH);
-          const body = JSON.stringify({ rows, filename: file.name, ...extras });
           const res = await fetch(endpoint, {
             method: "POST",
-            body,
+            body: JSON.stringify({ rows, filename: file.name, ...extras }),
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
           });
-          if (!res.ok || !res.body) {
+          if (!res.ok) {
             const text = await res.text();
-            update({ phase: "error", error: text || `HTTP ${res.status}` });
+            patchFile(index, { phase: "error", error: text || `HTTP ${res.status}` });
             return;
           }
-          // Consume NDJSON stream for this batch.
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let lineBuf = "";
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            lineBuf += decoder.decode(value, { stream: true });
-            let nl;
-            while ((nl = lineBuf.indexOf("\n")) >= 0) {
-              const line = lineBuf.slice(0, nl).trim();
-              lineBuf = lineBuf.slice(nl + 1);
-              if (!line) continue;
-              let ev: ProgressEvent;
-              try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
-              lastEventAt.current = Date.now();
-              if (ev.phase === "done") {
-                inserted += ev.inserted;
-                skipped += ev.skipped;
-                update({ phase: "inserting", inserted, skipped, total, stalled: false });
-              } else if (ev.phase === "error") {
-                update({ phase: "error", error: ev.error, stalled: false });
-                return;
-              }
+          await consumeNdjson(res, (ev) => {
+            if (ev.phase === "done") {
+              inserted += ev.inserted;
+              skipped += ev.skipped;
+              patchFile(index, { phase: "inserting", inserted, skipped, total });
+            } else if (ev.phase === "error") {
+              patchFile(index, { phase: "error", error: ev.error });
             }
-          }
+          }, controller.signal);
         }
-        update({ phase: "done", inserted, skipped, total, stalled: false });
+        patchFile(index, { phase: "done", inserted, skipped, total, elapsedMs: Date.now() - startedAt });
       } else {
-        // Non-spreadsheet (PDF / DOCX): send as raw file via multipart.
         const fd = new FormData();
         fd.append("file", file);
         for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
-
         const res = await fetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
-        if (!res.ok || !res.body) {
+        if (!res.ok) {
           const text = await res.text();
-          update({ phase: "error", error: text || `HTTP ${res.status}` });
+          patchFile(index, { phase: "error", error: text || `HTTP ${res.status}` });
           return;
         }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let nl;
-          while ((nl = buf.indexOf("\n")) >= 0) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (!line) continue;
-            let ev: ProgressEvent;
-            try { ev = JSON.parse(line) as ProgressEvent; } catch { continue; }
-            lastEventAt.current = Date.now();
-            if (ev.phase === "parsed") update({ phase: ev.phase, total: ev.total, stalled: false });
-            else if (ev.phase === "deduping") update({ phase: ev.phase, stalled: false });
-            else if (ev.phase === "inserting") update({ phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total, stalled: false });
-            else if (ev.phase === "done") update({ phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, stalled: false });
-            else if (ev.phase === "error") update({ phase: "error", error: ev.error, stalled: false });
-            else update({ phase: ev.phase, stalled: false });
-          }
-        }
+        await consumeNdjson(res, (ev) => {
+          if (ev.phase === "parsed") patchFile(index, { phase: ev.phase, total: ev.total });
+          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase });
+          else if (ev.phase === "inserting") patchFile(index, { phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total });
+          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
+          else if (ev.phase === "error") patchFile(index, { phase: "error", error: ev.error });
+        }, controller.signal);
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        update({ phase: "error", error: (e as Error).message });
+        patchFile(index, { phase: "error", error: (e as Error).message });
       }
     } finally {
-      stopTicking();
-      setStatus((s) => ({ ...s, elapsedMs: Date.now() - startedAt.current }));
+      clearInterval(ticker);
+      patchFile(index, { elapsedMs: Date.now() - startedAt });
     }
+  }
+
+  async function runQueue(items: FileStatus[]) {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    for (let i = 0; i < items.length; i++) {
+      if (controller.signal.aborted) break;
+      const current = items[i];
+      if (current.phase !== "queued") continue;
+      await uploadOne(current, i, controller);
+    }
+    runningRef.current = false;
+  }
+
+  function onFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    const newItems: FileStatus[] = files.map((f) => ({
+      file: f, phase: "queued", inserted: 0, skipped: 0, total: 0, elapsedMs: 0,
+    }));
+    setQueue(newItems);
+    // Start after state update.
+    setTimeout(() => runQueue(newItems), 0);
+    e.target.value = "";
   }
 
   function cancel() {
     abortRef.current?.abort();
-    stopTicking();
-    update({ phase: "error", error: "Cancelled" });
+    runningRef.current = false;
+    setQueue((prev) =>
+      prev.map((f) =>
+        f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
+          ? { ...f, phase: "error", error: "Cancelled" }
+          : f,
+      ),
+    );
   }
 
-  const busy = status.phase !== "idle" && status.phase !== "done" && status.phase !== "error";
-  const pct = status.total > 0 ? Math.round((status.inserted / status.total) * 100) : 0;
-  const skippedSuffix = status.skipped > 0 ? `, skipped ${status.skipped.toLocaleString()} duplicate${status.skipped === 1 ? "" : "s"}` : "";
-  const phaseLabel = ({
-    idle: "",
-    uploading: "Uploading file...",
-    parsing: "Parsing file...",
-    parsed: `Parsed ${status.total.toLocaleString()} rows. Checking for duplicates...`,
-    deduping: "Checking for duplicates...",
-    inserting: `Inserting ${status.inserted.toLocaleString()} / ${status.total.toLocaleString()}${skippedSuffix}`,
-    done: `Done. Inserted ${status.inserted.toLocaleString()} of ${status.total.toLocaleString()}${skippedSuffix}${status.programs ? ` · ${status.programs} program(s) created` : ""}.`,
-    error: `Error: ${status.error}`,
-  } as Record<Status["phase"], string>)[status.phase];
+  const busy = queue.some((f) =>
+    f.phase !== "idle" && f.phase !== "queued" && f.phase !== "done" && f.phase !== "error"
+      ? true
+      : f.phase === "queued",
+  );
 
   return (
     <div className="card">
@@ -222,43 +213,64 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         </div>
       ))}
       <div className="flex items-center gap-2 flex-wrap">
-        <input type="file" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        {!busy && <button className="btn" onClick={send} disabled={!file}>Upload</button>}
-        {busy && <button className="btn bg-red-600 hover:bg-red-700" onClick={cancel}>Cancel</button>}
+        <label className="btn cursor-pointer">
+          {busy ? "Add more…" : "Choose files"}
+          <input type="file" multiple className="sr-only" onChange={onFilesSelected} />
+        </label>
+        {busy && (
+          <button className="btn bg-red-600 hover:bg-red-700" onClick={cancel}>Cancel all</button>
+        )}
       </div>
 
-      {status.phase !== "idle" && (
-        <div className="mt-3">
-          <div className="h-2 w-full bg-slate-200 rounded overflow-hidden">
-            <div
-              className={
-                "h-full transition-all " +
-                (status.phase === "error" ? "bg-red-500" :
-                 status.phase === "done"  ? "bg-emerald-500" :
-                 status.stalled            ? "bg-amber-500" :
-                                             "bg-psu")
-              }
-              style={{ width: status.phase === "uploading" || status.phase === "parsing"
-                ? "10%"
-                : status.phase === "parsed" ? "15%"
-                : status.phase === "done" || status.phase === "error" ? "100%"
-                : `${Math.max(15, pct)}%` }}
-            />
-          </div>
-          <div className="mt-1 text-xs flex justify-between gap-2 flex-wrap">
-            <span className={
-              status.phase === "error" ? "text-red-700" :
-              status.phase === "done"  ? "text-emerald-700" :
-              status.stalled ? "text-amber-700" : "text-slate-700"
-            }>
-              {phaseLabel}
-              {status.stalled && status.phase !== "error" && " · no progress for >10s, server may be stalled"}
-            </span>
-            <span className="text-slate-500 tabular-nums">
-              {(status.elapsedMs / 1000).toFixed(1)}s
-            </span>
-          </div>
-        </div>
+      {queue.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {queue.map((fs, i) => {
+            const skippedSuffix = fs.skipped > 0
+              ? `, skipped ${fs.skipped.toLocaleString()} dup${fs.skipped === 1 ? "" : "s"}`
+              : "";
+            const label = ({
+              idle: "Waiting…",
+              queued: "Queued",
+              uploading: "Uploading…",
+              parsing: "Parsing…",
+              parsed: `Parsed ${fs.total.toLocaleString()} rows`,
+              deduping: "Deduplicating…",
+              inserting: `${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${skippedSuffix}`,
+              done: `Done — ${fs.inserted.toLocaleString()} inserted${skippedSuffix}`,
+              error: `Error: ${fs.error}`,
+            } as Record<FilePhase, string>)[fs.phase];
+
+            const pct = fs.total > 0 ? Math.round((fs.inserted / fs.total) * 100) : 0;
+            const barColor =
+              fs.phase === "error" ? "bg-red-500" :
+              fs.phase === "done"  ? "bg-emerald-500" :
+              fs.phase === "queued" ? "bg-slate-300" : "bg-psu";
+            const barWidth =
+              fs.phase === "done" || fs.phase === "error" ? "100%" :
+              fs.phase === "queued" ? "0%" :
+              fs.phase === "uploading" || fs.phase === "parsing" || fs.phase === "parsed" || fs.phase === "deduping" ? "10%" :
+              `${Math.max(10, pct)}%`;
+
+            return (
+              <li key={i} className="text-xs">
+                <div className="flex justify-between mb-0.5">
+                  <span className="truncate max-w-[60%] text-slate-700 font-medium">{fs.file.name}</span>
+                  <span className={
+                    fs.phase === "error" ? "text-red-700" :
+                    fs.phase === "done"  ? "text-emerald-700" :
+                    fs.phase === "queued" ? "text-slate-400" : "text-slate-600"
+                  }>{label}</span>
+                </div>
+                <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden">
+                  <div className={`h-full transition-all ${barColor}`} style={{ width: barWidth }} />
+                </div>
+                {fs.phase !== "queued" && fs.phase !== "idle" && (
+                  <div className="text-right text-slate-400 mt-0.5">{(fs.elapsedMs / 1000).toFixed(1)}s</div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
