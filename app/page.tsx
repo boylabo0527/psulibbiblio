@@ -20,7 +20,7 @@ export default function Home() {
       <header className="bg-psu text-white px-8 py-6">
         <h1 className="text-xl font-semibold">PSU Bibliography Generator</h1>
         <p className="text-sm opacity-90">
-          Per-program subject bibliographies with eBooks (Kavita) and Printed Books, summary totals, and exportable XLSX/PDF/DOCX.
+          Per-program subject bibliographies with subscribed eBooks and printed books, summary totals, and exportable XLSX/PDF/DOCX.
         </p>
       </header>
 

@@ -307,7 +307,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="2. Paid / Subscribed eBooks (Perlego, Kavita)"
+        title="2. Subscribed eBooks"
         hint="Subscription-based eBook lists. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
         endpoint="/api/upload/ebook_paid"
         templates={[
