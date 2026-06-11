@@ -371,12 +371,13 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     const h = Math.max(hLeft, hRight) + padding * 2;
     ensureSpace(h);
     const y = doc.y;
-    doc.save().rect(LEFT, y, WIDTH, h).fill("#f4f6fb").restore();
-    doc.font("Helvetica-Bold").fontSize(9);
-    doc.rect(LEFT, y, leftW, h).stroke();
+    doc.rect(LEFT, y, WIDTH, h).fillColor("#f4f6fb").fill();
+    doc.fillColor("black");
+    doc.rect(LEFT, y, leftW, h).strokeColor("black").stroke();
     doc.text(code || "", LEFT + padding, y + padding, { width: leftW - padding * 2 });
     doc.rect(LEFT + leftW, y, rightW, h).stroke();
     doc.text(title || "", LEFT + leftW + padding, y + padding, { width: rightW - padding * 2 });
+    doc.x = LEFT;
     doc.y = y + h;
   }
 
@@ -389,7 +390,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
       : rowHeight(cells, padding);
     ensureSpace(h);
     const y = doc.y;
-    if (opts.fillHeader) doc.save().rect(LEFT, y, WIDTH, h).fill("#e8f0fa").restore();
+    if (opts.fillHeader) {
+      doc.rect(LEFT, y, WIDTH, h).fillColor("#e8f0fa").fill();
+    }
+    // Always reset the text/stroke colors before drawing borders and text so
+    // a previous fill() doesn't leak into the next row.
+    doc.fillColor("black").strokeColor("black");
     if (opts.merged) {
       doc.rect(LEFT, y, WIDTH, h).stroke();
       doc.text(cells[0] || "", LEFT + padding, y + padding, { width: WIDTH - padding * 2 });
@@ -400,10 +406,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
         doc.text(cells[i] || "", x + padding, y + padding, { width: cols[i].width - padding * 2 });
       }
     }
+    doc.x = LEFT;
     doc.y = y + h;
   }
 
   // Header
+  doc.fillColor("black").strokeColor("black");
   doc.font("Helvetica-Bold").fontSize(14).text("PALAWAN STATE UNIVERSITY", { align: "left" });
   doc.font("Helvetica").fontSize(10);
   doc.text(b.campus || "All Campuses");
@@ -417,8 +425,10 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
   for (const sec of b.bySection) {
     if (sec.section) {
       ensureSpace(24);
+      doc.x = LEFT;
       doc.moveDown(0.4);
-      doc.font("Helvetica-Bold").fontSize(11).text(sec.section);
+      doc.fillColor("black");
+      doc.font("Helvetica-Bold").fontSize(11).text(sec.section, LEFT, doc.y, { width: WIDTH });
       doc.font("Helvetica").fontSize(10);
     }
     for (const sub of sec.subjects) {
@@ -442,10 +452,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
         }
       }
       const all = subjectTotals(sub.buckets);
+      doc.x = LEFT;
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(9)
-        .text(`Titles: ${all.titles}    Volumes: ${all.volumes}`);
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("black")
+        .text(`Titles: ${all.titles}    Volumes: ${all.volumes}`, LEFT, doc.y, { width: WIDTH });
       doc.font("Helvetica");
+      doc.x = LEFT;
       doc.moveDown(0.3);
     }
   }
