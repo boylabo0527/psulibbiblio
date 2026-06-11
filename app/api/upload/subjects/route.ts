@@ -1,4 +1,4 @@
-import { parseSubjects } from "@/lib/parsers";
+import { parseSubjects, buildSubjectsFromRaw } from "@/lib/parsers";
 import { pageThrough } from "@/lib/paging";
 import { ndjsonStream } from "@/lib/streaming";
 import { serviceClient } from "@/lib/supabase";
@@ -10,15 +10,32 @@ export const maxDuration = 300;
 const BATCH = 500;
 
 export async function POST(req: Request) {
-  const form = await req.formData();
-  const file = form.get("file");
-  const programOverride = (form.get("program") as string | null)?.trim() || "";
+  // Accept either pre-parsed JSON rows (sent by the browser after client-side
+  // spreadsheet parsing) or a raw file via multipart/form-data.
+  const isJson = (req.headers.get("content-type") ?? "").includes("application/json");
+
+  let programOverride = "";
+  let preRows: Record<string, string>[] | null = null;
+  let file: File | null = null;
+
+  if (isJson) {
+    const body = await req.json() as { rows?: Record<string, string>[]; filename?: string; program?: string };
+    preRows = body.rows ?? [];
+    programOverride = (body.program ?? "").trim();
+    file = { name: body.filename ?? "upload.xlsx" } as File;
+  } else {
+    const form = await req.formData();
+    const f = form.get("file");
+    file = f instanceof File ? f : null;
+    programOverride = (form.get("program") as string | null)?.trim() || "";
+  }
 
   const stream = ndjsonStream(async (send) => {
-    if (!(file instanceof File)) throw new Error("Missing file");
+    if (!file) throw new Error("Missing file");
     send({ phase: "parsing" });
-    const buf = Buffer.from(await file.arrayBuffer());
-    const records = await parseSubjects(file.name, buf);
+    const records = preRows
+      ? buildSubjectsFromRaw(preRows)
+      : await parseSubjects(file.name, Buffer.from(await file.arrayBuffer()));
     send({ phase: "parsed", total: records.length });
     if (!records.length) {
       send({ phase: "done", received: 0, inserted: 0, skipped: 0, programs: 0 });
