@@ -34,13 +34,44 @@ function bucketTotals(books: TitleRow[]) {
 }
 
 function subjectTotals(buckets: Buckets) {
+  // Volumes are a printed-material concept: only printed books / journals
+  // contribute. Digital titles (eBooks, online journals) count toward titles
+  // but not toward volumes.
   let titles = 0, volumes = 0;
   for (const t of RESOURCE_TYPES) {
     const sub = bucketTotals(buckets[t.id]);
     titles += sub.titles;
-    volumes += t.medium === "print" ? sub.volumes : sub.titles;
+    if (t.medium === "print") volumes += sub.volumes;
   }
   return { titles, volumes };
+}
+
+/** Parse a year string like "2018", "c2018", "[2018]" → 2018. Unknown → null. */
+function parseYear(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const m = String(raw).match(/(\d{4})/);
+  if (!m) return null;
+  const y = parseInt(m[1], 10);
+  if (y < 1000 || y > 9999) return null;
+  return y;
+}
+
+/** Split subject totals into recent (<= 10 years from now) vs. older. Unknown year counts as old. */
+function subjectTotalsByAge(buckets: Buckets, currentYear: number) {
+  const cutoff = currentYear - 10;
+  const recent = { titles: 0, volumes: 0 };
+  const old = { titles: 0, volumes: 0 };
+  for (const t of RESOURCE_TYPES) {
+    for (const b of buckets[t.id]) {
+      const y = parseYear(b.year);
+      const isRecent = y !== null && y >= cutoff;
+      const volumes = t.medium === "print" ? Math.max(1, b.copies ?? 1) : 0;
+      const bucket = isRecent ? recent : old;
+      bucket.titles += 1;
+      bucket.volumes += volumes;
+    }
+  }
+  return { recent, old };
 }
 
 const NON_EMPTY_TYPES = (buckets: Buckets) =>
@@ -60,15 +91,17 @@ export async function programBibliographyXlsx(b: ProgramBibliography): Promise<B
 
 function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
   const ws = wb.addWorksheet("sum");
-  // First two cols are course code + title; then for each resource type:
-  // - one column for titles
-  // - if print medium, also one column for volumes
-  const typeCols = RESOURCE_TYPES.flatMap((t) =>
-    t.medium === "print" ? [`${t.sectionLabel} Titles`, `${t.sectionLabel} Volumes`] : [`${t.sectionLabel} Titles`],
-  );
+  const currentYear = new Date().getFullYear();
+  const cutoff = currentYear - 10;
+
+  // Layout: Course Code | Course Title | Recent Titles | Recent Volumes |
+  // Old Titles | Old Volumes | Total Titles | Total Volumes.
+  // Recent / Old combine eBooks + printed books + journals (printed and
+  // online). Volumes follow the existing rule: print = copies, digital = 1.
   ws.columns = [
     { width: 14 }, { width: 50 },
-    ...typeCols.map(() => ({ width: 16 })),
+    { width: 16 }, { width: 16 },
+    { width: 16 }, { width: 16 },
     { width: 14 }, { width: 14 },
   ];
 
@@ -82,14 +115,24 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   ws.getRow(r - 1).font = { bold: true };
   ws.getCell(r++, 1).value = "Summary of Professional Resources";
   ws.getRow(r - 1).font = { italic: true };
+  ws.getCell(r++, 1).value =
+    `Combined totals across eBooks, printed books, and journals. ` +
+    `Recent = published ${cutoff}-${currentYear}; Older = before ${cutoff} or unknown year.`;
+  ws.getRow(r - 1).font = { italic: true, size: 10 };
   r++;
 
-  const header = ["Course Code", "Course Title", ...typeCols, "Total Titles", "Total Volumes"];
+  const header = [
+    "Course Code", "Course Title",
+    `Recent Titles (${cutoff}-${currentYear})`,
+    "Recent Volumes",
+    `Older Titles (< ${cutoff})`,
+    "Older Volumes",
+    "Total Titles", "Total Volumes",
+  ];
   ws.getRow(r).values = header;
   ws.getRow(r).font = { bold: true };
   r++;
 
-  // Running totals per column for the Program Totals row.
   const colTotals: number[] = Array(header.length - 2).fill(0);
 
   for (const sec of b.bySection) {
@@ -99,22 +142,22 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
       r++;
     }
     for (const sub of sec.subjects) {
-      const cells: (string | number)[] = [sub.subject.course_code || "", sub.subject.course_title || ""];
-      let typeIdx = 0;
-      for (const t of RESOURCE_TYPES) {
-        const tot = bucketTotals(sub.buckets[t.id]);
-        cells.push(tot.titles);
-        colTotals[typeIdx] += tot.titles; typeIdx++;
-        if (t.medium === "print") {
-          cells.push(tot.volumes);
-          colTotals[typeIdx] += tot.volumes; typeIdx++;
-        }
-      }
+      const split = subjectTotalsByAge(sub.buckets, currentYear);
       const all = subjectTotals(sub.buckets);
-      cells.push(all.titles, all.volumes);
-      colTotals[typeIdx] += all.titles; typeIdx++;
-      colTotals[typeIdx] += all.volumes;
+      const cells: (string | number)[] = [
+        sub.subject.course_code || "",
+        sub.subject.course_title || "",
+        split.recent.titles,
+        split.recent.volumes,
+        split.old.titles,
+        split.old.volumes,
+        all.titles,
+        all.volumes,
+      ];
       ws.getRow(r).values = cells;
+      for (let i = 0; i < colTotals.length; i++) {
+        colTotals[i] += Number(cells[i + 2]) || 0;
+      }
       r++;
     }
   }

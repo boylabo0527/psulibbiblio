@@ -168,6 +168,7 @@ export default function ProgramsTab() {
                   programCampus={biblio.campus}
                   onRemove={(titleId) => changeAssignment(sub.subject.id, titleId, false)}
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
+                  onSaved={load}
                 />
               ))}
             </div>
@@ -179,35 +180,30 @@ export default function ProgramsTab() {
 }
 
 function SubjectBlock({
-  detail, programCampus, onRemove, onAdd,
+  detail, programCampus, onRemove, onAdd, onSaved,
 }: {
   detail: SubjectDetail;
   programCampus: string;
   onRemove: (titleId: number) => void;
   onAdd: (titleId: number) => void;
+  onSaved: () => void;
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
   let totalTitles = 0;
   let totalVolumes = 0;
+  // Volumes are a print-only count (= number of copies). Digital titles
+  // (eBooks, online journals) don't contribute volumes.
   for (const t of RESOURCE_TYPES) {
     const list = buckets[t.id] ?? [];
     totalTitles += list.length;
     if (t.medium === "print") {
       for (const b of list) totalVolumes += Math.max(1, b.copies ?? 1);
-    } else {
-      totalVolumes += list.length;
     }
   }
 
   return (
     <div className="mb-5 border-l-4 border-psu-light pl-3">
-      <div className="flex items-baseline gap-2">
-        <span className="font-semibold">{detail.subject.course_code}</span>
-        <span className="font-semibold">{detail.subject.course_title}</span>
-      </div>
-      {detail.subject.description && (
-        <p className="text-xs text-slate-600 mb-2 leading-relaxed">{detail.subject.description}</p>
-      )}
+      <SubjectHeader subject={detail.subject} onSaved={onSaved} />
       {RESOURCE_TYPES.map((t) => (
         <BookSection
           key={t.id}
@@ -221,6 +217,114 @@ function SubjectBlock({
         <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
       </p>
       <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
+    </div>
+  );
+}
+
+function SubjectHeader({
+  subject, onSaved,
+}: {
+  subject: SubjectDetail["subject"];
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [code, setCode] = useState(subject.course_code || "");
+  const [title, setTitle] = useState(subject.course_title || "");
+  const [description, setDescription] = useState(subject.description || "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCode(subject.course_code || "");
+    setTitle(subject.course_title || "");
+    setDescription(subject.description || "");
+  }, [subject.course_code, subject.course_title, subject.description]);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/subjects/${subject.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ course_code: code, course_title: title, description }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        setErr(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setEditing(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancel() {
+    setCode(subject.course_code || "");
+    setTitle(subject.course_title || "");
+    setDescription(subject.description || "");
+    setErr(null);
+    setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <>
+        <div className="flex items-baseline gap-2">
+          <span className="font-semibold">{subject.course_code}</span>
+          <span className="font-semibold">{subject.course_title}</span>
+          <button
+            className="text-[11px] text-psu underline ml-1"
+            onClick={() => setEditing(true)}
+            title="Fix typos in course code, title, or description"
+          >
+            edit
+          </button>
+        </div>
+        {subject.description && (
+          <p className="text-xs text-slate-600 mb-2 leading-relaxed">{subject.description}</p>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded p-2 mb-2 space-y-2">
+      <div className="flex gap-2">
+        <input
+          className="input text-xs w-32"
+          placeholder="Course code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+        />
+        <input
+          className="input text-xs flex-1"
+          placeholder="Course title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </div>
+      <textarea
+        className="input text-xs w-full"
+        placeholder="Course description"
+        rows={4}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+      {err && <p className="text-xs text-red-600">{err}</p>}
+      <div className="flex gap-2">
+        <button className="btn text-xs" disabled={saving} onClick={save}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button className="btn-outline text-xs" disabled={saving} onClick={cancel}>Cancel</button>
+        <span className="text-[11px] text-slate-500 self-center">
+          Re-run Match if the description change should affect book assignments.
+        </span>
+      </div>
     </div>
   );
 }
