@@ -47,3 +47,22 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     );
   }
 }
+
+export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+  try {
+    const id = parseInt(params.id, 10);
+    if (!Number.isFinite(id)) {
+      return NextResponse.json({ error: "Invalid title id" }, { status: 400 });
+    }
+    const db = serviceClient();
+    // assignments cascade on titles.id.
+    const { error } = await db.from("titles").delete().eq("id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}

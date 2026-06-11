@@ -4,12 +4,14 @@ import UploadTab from "@/components/UploadTab";
 import MatchTab from "@/components/MatchTab";
 import ProgramsTab from "@/components/ProgramsTab";
 import DashboardTab from "@/components/DashboardTab";
+import CleanupTab from "@/components/CleanupTab";
 
 const tabs = [
   { id: "upload", label: "1. Upload" },
   { id: "match", label: "2. Match" },
   { id: "programs", label: "3. Programs & Export" },
   { id: "dashboard", label: "4. Dashboard" },
+  { id: "cleanup", label: "5. Cleanup" },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
 
@@ -44,6 +46,7 @@ export default function Home() {
         {tab === "match" && <MatchTab />}
         {tab === "programs" && <ProgramsTab />}
         {tab === "dashboard" && <DashboardTab />}
+        {tab === "cleanup" && <CleanupTab />}
       </section>
 
       <footer className="text-center text-xs text-slate-500 py-4">
