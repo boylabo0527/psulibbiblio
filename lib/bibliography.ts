@@ -1,6 +1,6 @@
 import { serviceClient } from "./supabase";
 import type { ProgramBibliography } from "./exports";
-import { RESOURCE_TYPES, type ResourceTypeId } from "./resources";
+import { RESOURCE_BY_ID, RESOURCE_TYPES, type ResourceTypeId } from "./resources";
 import type { SubjectRow, TitleRow } from "./types";
 
 const PAGE = 1000;
@@ -34,13 +34,23 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
       .range(from, to),
   );
 
-  type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId } };
+  type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
   const assignments = await paged<Joined>((from, to) =>
     db.from("assignments")
-      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url)")
+      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
       .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
       .range(from, to),
   );
+
+  // Printed titles only belong to a program if their campus matches the
+  // program's campus (or is blank, treated as legacy / cross-campus).
+  const programCampus = (progRow as { campus?: string }).campus ?? "";
+  const includeTitle = (t: { format: ResourceTypeId; campus?: string }) => {
+    const rt = RESOURCE_BY_ID[t.format];
+    if (!rt?.campusScoped) return true;
+    const tc = (t.campus ?? "").trim();
+    return tc === "" || tc === programCampus;
+  };
 
   type Buckets = Record<ResourceTypeId, TitleRow[]>;
   const emptyBuckets = (): Buckets =>
@@ -51,6 +61,7 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
   for (const a of assignments) {
     const bucket = bySubject.get(a.subject_id);
     if (!bucket) continue;
+    if (!includeTitle(a.titles)) continue;
     const fmt = a.titles.format;
     if (!(fmt in bucket)) continue;
     bucket[fmt].push(a.titles);

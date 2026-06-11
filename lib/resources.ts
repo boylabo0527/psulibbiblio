@@ -15,6 +15,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Paid / Subscribed eBooks",
     sectionLabel: "Subscribed eBooks (Kavita)",
     kind: "book",  access: "paid", medium: "digital",
+    campusScoped: false,
     dedupBy: "isbn-or-tuple",
   },
   {
@@ -22,6 +23,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Open Source eBooks",
     sectionLabel: "Open Source eBooks",
     kind: "book",  access: "open", medium: "digital",
+    campusScoped: false,
     dedupBy: "isbn-or-tuple",
   },
   {
@@ -29,6 +31,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Printed Books",
     sectionLabel: "Printed Books",
     kind: "book",  access: "paid", medium: "print",
+    campusScoped: true,
     dedupBy: "callno-title-author",
   },
   {
@@ -36,6 +39,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Printed Journals",
     sectionLabel: "Printed Journals",
     kind: "journal", access: "paid", medium: "print",
+    campusScoped: true,
     dedupBy: "callno-title-issn",
   },
   {
@@ -43,6 +47,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Subscribed Online Journals",
     sectionLabel: "Subscribed Online Journals",
     kind: "journal", access: "paid", medium: "digital",
+    campusScoped: false,
     dedupBy: "issn-or-title",
   },
   {
@@ -50,6 +55,7 @@ export const RESOURCE_TYPES = [
     uiLabel: "Open Source Online Journals",
     sectionLabel: "Open Source Online Journals",
     kind: "journal", access: "open", medium: "digital",
+    campusScoped: false,
     dedupBy: "issn-or-title",
   },
 ] as const;

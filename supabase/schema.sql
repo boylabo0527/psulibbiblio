@@ -60,12 +60,14 @@ create table if not exists titles (
   copies     int  default 1,
   url        text default '',
   subjects   text default '',
+  campus     text default '',
   created_at timestamptz default now()
 );
 create index if not exists titles_format_idx on titles (format);
 create index if not exists titles_isbn_idx   on titles (isbn);
 create index if not exists titles_issn_idx   on titles (issn);
 create index if not exists titles_callno_idx on titles (call_no);
+create index if not exists titles_campus_idx on titles (campus);
 create index if not exists titles_title_idx  on titles (title);
 
 -- Assignment of a title to a subject. manual=1 means a librarian pinned

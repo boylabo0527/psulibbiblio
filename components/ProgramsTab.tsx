@@ -121,6 +121,7 @@ export default function ProgramsTab() {
                 <SubjectBlock
                   key={sub.subject.id}
                   detail={sub}
+                  programCampus={biblio.program.campus}
                   onRemove={(titleId) => changeAssignment(sub.subject.id, titleId, false)}
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
                 />
@@ -134,8 +135,13 @@ export default function ProgramsTab() {
 }
 
 function SubjectBlock({
-  detail, onRemove, onAdd,
-}: { detail: SubjectDetail; onRemove: (titleId: number) => void; onAdd: (titleId: number) => void }) {
+  detail, programCampus, onRemove, onAdd,
+}: {
+  detail: SubjectDetail;
+  programCampus: string;
+  onRemove: (titleId: number) => void;
+  onAdd: (titleId: number) => void;
+}) {
   const buckets = detail.buckets ?? ({} as Buckets);
   let totalTitles = 0;
   let totalVolumes = 0;
@@ -170,7 +176,7 @@ function SubjectBlock({
       <p className="text-xs text-slate-700 mt-1">
         <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
       </p>
-      <AddBook subjectId={detail.subject.id} onAdded={onAdd} />
+      <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
     </div>
   );
 }
@@ -212,7 +218,9 @@ function BookSection({
   );
 }
 
-function AddBook({ subjectId, onAdded }: { subjectId: number; onAdded: (titleId: number) => void }) {
+function AddBook({
+  subjectId, programCampus, onAdded,
+}: { subjectId: number; programCampus: string; onAdded: (titleId: number) => void }) {
   const [q, setQ] = useState("");
   const [format, setFormat] = useState<"" | ResourceTypeId>("");
   const [hits, setHits] = useState<Title[]>([]);
@@ -222,6 +230,7 @@ function AddBook({ subjectId, onAdded }: { subjectId: number; onAdded: (titleId:
     if (!q.trim()) { setHits([]); return; }
     const params = new URLSearchParams({ q });
     if (format) params.set("format", format);
+    if (programCampus) params.set("campus", programCampus);
     const data = await fetch(`/api/titles/search?${params}`).then((r) => r.json());
     setHits(data.titles ?? []);
   }

@@ -252,20 +252,26 @@ export default function UploadTab() {
       />
       <FileCard
         title="4. Printed Books"
-        hint="Library catalog rows for printed books. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
+        hint="Library catalog rows for printed books. Campus-specific — the campus you pick here tags every row in the file. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
         endpoint="/api/upload/book_printed"
         templates={[
           { label: "printed_books_template.xlsx", href: "/templates/printed_books_template.xlsx" },
           { label: "printed_books_template.csv",  href: "/templates/printed_books_template.csv" },
         ]}
+        extraFields={[
+          { name: "campus", label: "Campus (required)", placeholder: "e.g. Main Campus, PSU-Coron" },
+        ]}
       />
       <FileCard
         title="5. Printed Journals"
-        hint="Print journal subscriptions. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher."
+        hint="Print journal subscriptions. Campus-specific. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher."
         endpoint="/api/upload/journal_printed"
         templates={[
           { label: "journals_printed_template.xlsx", href: "/templates/journals_printed_template.xlsx" },
           { label: "journals_printed_template.csv",  href: "/templates/journals_printed_template.csv" },
+        ]}
+        extraFields={[
+          { name: "campus", label: "Campus (required)", placeholder: "e.g. Main Campus, PSU-Coron" },
         ]}
       />
       <FileCard

@@ -14,6 +14,7 @@ const BATCH = 500;
 export async function POST(req: Request, { params }: { params: { type: string } }) {
   const form = await req.formData();
   const file = form.get("file");
+  const campusInput = ((form.get("campus") as string | null) ?? "").trim();
 
   const stream = ndjsonStream(async (send) => {
     if (!isResourceTypeId(params.type)) {
@@ -21,6 +22,11 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     }
     const rt = RESOURCE_BY_ID[params.type];
     if (!(file instanceof File)) throw new Error("Missing file");
+    // Printed types must carry a campus so reports can scope to it.
+    if (rt.campusScoped && !campusInput) {
+      throw new Error(`This resource type (${rt.uiLabel}) is campus-specific. Please pick a campus before uploading.`);
+    }
+    const campus = rt.campusScoped ? campusInput : "";
     send({ phase: "parsing" });
     const buf = Buffer.from(await file.arrayBuffer());
 
@@ -42,12 +48,17 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     const db = serviceClient();
 
     // Pre-fetch existing titles of this format so re-uploads dedup.
+    // Printed types dedup within the same campus only (so a Coron printed
+    // copy doesn't block a Main Campus printed copy of the same call no).
     type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string };
     const existing = await pageThrough<Existing>(
-      (from, to) => db.from("titles")
-        .select("isbn, issn, call_no, title, author, year")
-        .eq("format", rt.id)
-        .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
+      (from, to) => {
+        let q = db.from("titles")
+          .select("isbn, issn, call_no, title, author, year")
+          .eq("format", rt.id);
+        if (rt.campusScoped) q = q.eq("campus", campus);
+        return q.range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>;
+      },
     );
     send({ phase: "deduping", existing: existing.length });
 
@@ -132,6 +143,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           copies: r.copies ?? 1,
           url: r.url ?? "",
           subjects: r.subjects ?? "",
+          campus,
         });
       }
       if (toInsert.length) {
