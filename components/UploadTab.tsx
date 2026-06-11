@@ -1,5 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
+import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 
 type ProgressEvent =
   | { phase: "parsing" }
@@ -74,11 +75,23 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     startTicking();
 
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
+      let body: BodyInit;
+      let headers: Record<string, string> = {};
 
-      const res = await fetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
+      if (isSpreadsheet(file.name)) {
+        // Parse spreadsheet in the browser to avoid Vercel's 4.5 MB payload limit.
+        const buf = await file.arrayBuffer();
+        const rows = parseSheetRows(file.name, buf);
+        body = JSON.stringify({ rows, filename: file.name, ...extras });
+        headers = { "Content-Type": "application/json" };
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
+        body = fd;
+      }
+
+      const res = await fetch(endpoint, { method: "POST", body, headers, signal: controller.signal });
       if (!res.ok || !res.body) {
         const text = await res.text();
         update({ phase: "error", error: text || `HTTP ${res.status}` });

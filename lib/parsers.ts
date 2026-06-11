@@ -7,6 +7,7 @@
  */
 import * as XLSX from "xlsx";
 import type { TitleRow, SubjectRow } from "./types";
+import type { ResourceType } from "./resources";
 
 const EBOOK_ALIASES: Record<string, string[]> = {
   title: ["title", "book title", "publication_title", "publication title", "name"],
@@ -217,6 +218,48 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
       isbn: map.isbn ? r[map.isbn] : "",
       copies,
       campus: map.campus ? (r[map.campus] || "").trim() : undefined,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Build TitleRows from raw rows already parsed by the browser
+// ---------------------------------------------------------------------------
+export function buildTitleRowsFromRaw(
+  filename: string,
+  rows: Record<string, string>[],
+  rt: ResourceType,
+): TitleRow[] {
+  if (rows.length === 0) return [];
+  const aliases = rt.kind === "journal" ? JOURNAL_ALIASES
+    : rt.medium === "print" ? PRINTED_ALIASES
+    : EBOOK_ALIASES;
+  const map = buildHeaderMap(Object.keys(rows[0]), aliases);
+  if (!map.title) {
+    throw new Error(`Could not find a title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: TitleRow[] = [];
+  for (const r of rows) {
+    const title = (r[map.title] ?? "").trim();
+    if (!title) continue;
+    let copies = 1;
+    if (map.copies) {
+      const n = parseInt(r[map.copies] ?? "0", 10);
+      if (Number.isFinite(n) && n > 0) copies = n;
+    }
+    out.push({
+      title,
+      author: map.author ? r[map.author] : "",
+      publisher: map.publisher ? r[map.publisher] : "",
+      year: map.year ? r[map.year] : "",
+      isbn: map.isbn ? r[map.isbn] : "",
+      issn: map.issn ? r[map.issn] : "",
+      call_no: map.call_no ? r[map.call_no] : "",
+      url: map.url ? r[map.url] : "",
+      subjects: map.subjects ? r[map.subjects] : "",
+      copies,
+      campus: map.campus ? (r[map.campus] ?? "").trim() : undefined,
     });
   }
   return out;

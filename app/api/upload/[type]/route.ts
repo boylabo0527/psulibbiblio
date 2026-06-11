@@ -1,4 +1,4 @@
-import { parseEbookTitles, parseJournals, parsePrintedBooks } from "@/lib/parsers";
+import { parseEbookTitles, parseJournals, parsePrintedBooks, buildTitleRowsFromRaw } from "@/lib/parsers";
 import { pageThrough } from "@/lib/paging";
 import { ndjsonStream } from "@/lib/streaming";
 import { RESOURCE_BY_ID, isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
@@ -12,33 +12,48 @@ export const maxDuration = 300;
 const BATCH = 500;
 
 export async function POST(req: Request, { params }: { params: { type: string } }) {
-  const form = await req.formData();
-  const file = form.get("file");
-  const campusInput = ((form.get("campus") as string | null) ?? "").trim();
+  // Accept either pre-parsed JSON rows (sent by the browser after client-side
+  // spreadsheet parsing) or a raw file via multipart/form-data.
+  const isJson = (req.headers.get("content-type") ?? "").includes("application/json");
+
+  let campusInput = "";
+  let preRows: Record<string, string>[] | null = null;
+  let file: File | null = null;
+
+  if (isJson) {
+    const body = await req.json() as { rows: Record<string, string>[]; filename?: string; campus?: string };
+    preRows = body.rows ?? [];
+    campusInput = (body.campus ?? "").trim();
+    // Create a dummy filename for format detection in buildTitleRowsFromRaw
+    file = { name: body.filename ?? "upload.xlsx" } as File;
+  } else {
+    const form = await req.formData();
+    file = form.get("file") as File | null;
+    campusInput = ((form.get("campus") as string | null) ?? "").trim();
+  }
 
   const stream = ndjsonStream(async (send) => {
     if (!isResourceTypeId(params.type)) {
       throw new Error(`Unknown resource type: ${params.type}`);
     }
     const rt = RESOURCE_BY_ID[params.type];
-    if (!(file instanceof File)) throw new Error("Missing file");
-    // Printed types must carry a campus. We accept either:
-    //   - the UI dropdown value (applied to every row in the file), or
-    //   - a per-row "Campus" column in the file (wins per row).
-    // At least one source must produce a non-empty value per row, else reject.
+    if (!file) throw new Error("Missing file");
     const defaultCampus = rt.campusScoped ? campusInput : "";
     send({ phase: "parsing" });
-    const buf = Buffer.from(await file.arrayBuffer());
 
-    // Pick parser by resource kind. Books use the existing parsers; journals
-    // use the dedicated journal parser that maps issn/call_no aliases.
     let records: TitleRow[];
-    if (rt.kind === "journal") {
-      records = await parseJournals(file.name, buf);
-    } else if (rt.medium === "print") {
-      records = await parsePrintedBooks(file.name, buf);
+    if (preRows) {
+      // Client already parsed the spreadsheet; just apply column aliases.
+      records = buildTitleRowsFromRaw(file.name, preRows, rt);
     } else {
-      records = await parseEbookTitles(file.name, buf);
+      const buf = Buffer.from(await (file as File).arrayBuffer());
+      if (rt.kind === "journal") {
+        records = await parseJournals(file.name, buf);
+      } else if (rt.medium === "print") {
+        records = await parsePrintedBooks(file.name, buf);
+      } else {
+        records = await parseEbookTitles(file.name, buf);
+      }
     }
     send({ phase: "parsed", total: records.length });
     if (!records.length) {
