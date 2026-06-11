@@ -37,17 +37,28 @@ function ProgramsCleanup() {
       `All subjects in the dropped programs will be moved over, then the duplicates deleted.`,
     )) return;
     setBusy(true);
+    setErr(null);
     try {
       const res = await fetch("/api/programs/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keep_id: keepId, drop_ids: dropIds }),
       });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      const text = await res.text();
+      let data: { error?: string; moved_subjects?: number; deleted_programs?: number } = {};
+      try { data = JSON.parse(text); } catch { /* non-JSON response — keep raw text */ }
+      if (!res.ok || data.error) {
+        throw new Error(data.error || text || `HTTP ${res.status}`);
+      }
       await load();
+      alert(
+        `Merged. Moved ${data.moved_subjects ?? 0} subject(s); ` +
+        `deleted ${data.deleted_programs ?? 0} program(s).`,
+      );
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(msg);
+      alert(`Merge failed: ${msg}`);
     } finally {
       setBusy(false);
     }
@@ -59,13 +70,20 @@ function ProgramsCleanup() {
       : `Delete "${name}"?`;
     if (!confirm(msg)) return;
     setBusy(true);
+    setErr(null);
     try {
       const res = await fetch(`/api/programs/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      const text = await res.text();
+      let data: { error?: string } = {};
+      try { data = JSON.parse(text); } catch { /* non-JSON response — keep raw text */ }
+      if (!res.ok || data.error) {
+        throw new Error(data.error || text || `HTTP ${res.status}`);
+      }
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(msg);
+      alert(`Delete failed: ${msg}`);
     } finally {
       setBusy(false);
     }
