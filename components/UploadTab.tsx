@@ -220,16 +220,14 @@ export default function UploadTab() {
     <>
       <FileCard
         title="1. Upload Subjects (per program)"
-        hint="Spreadsheet with one row per subject. Recognized columns: program, campus, college, section (e.g. MAJOR COURSES), course code, course title, description. If 'program' is missing from the file, set the program override below."
+        hint="Curriculum subjects. Recognized columns: program, course code, course title, description. Subjects are NOT campus-specific — the same BA Political Science curriculum applies to every PSU campus."
         endpoint="/api/upload/subjects"
         templates={[
           { label: "subjects_template.xlsx", href: "/templates/subjects_template.xlsx" },
           { label: "subjects_template.csv", href: "/templates/subjects_template.csv" },
         ]}
         extraFields={[
-          { name: "program", label: "Program override", placeholder: "e.g. BA Political Science" },
-          { name: "campus", label: "Campus override", placeholder: "Main Campus" },
-          { name: "college", label: "College override", placeholder: "College of Arts and Humanities" },
+          { name: "program", label: "Program override", placeholder: "e.g. BA Political Science (only if file has no 'program' column)" },
         ]}
       />
       <FileCard
@@ -252,26 +250,26 @@ export default function UploadTab() {
       />
       <FileCard
         title="4. Printed Books"
-        hint="Library catalog rows for printed books. Campus-specific — the campus you pick here tags every row in the file. Recognized columns: Call No., Author, Title, Year, Copies, Publisher."
+        hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/book_printed"
         templates={[
           { label: "printed_books_template.xlsx", href: "/templates/printed_books_template.xlsx" },
           { label: "printed_books_template.csv",  href: "/templates/printed_books_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (required)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
         ]}
       />
       <FileCard
         title="5. Printed Journals"
-        hint="Print journal subscriptions. Campus-specific. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher."
+        hint="Print journal subscriptions. Campus-specific. Per-row Campus column wins over the dropdown. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/journal_printed"
         templates={[
           { label: "journals_printed_template.xlsx", href: "/templates/journals_printed_template.xlsx" },
           { label: "journals_printed_template.csv",  href: "/templates/journals_printed_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (required)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
         ]}
       />
       <FileCard

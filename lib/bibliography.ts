@@ -20,15 +20,18 @@ async function paged<T>(
   return out;
 }
 
-export async function loadProgramBibliography(programId: number): Promise<ProgramBibliography> {
+export async function loadProgramBibliography(
+  programId: number,
+  campus = "",
+): Promise<ProgramBibliography> {
   const db = serviceClient();
   const { data: progRow, error: progErr } = await db
-    .from("programs").select("id, campus, college, name").eq("id", programId).single();
+    .from("programs").select("id, name").eq("id", programId).single();
   if (progErr) throw progErr;
 
   const subjects = await paged<SubjectRow>((from, to) =>
     db.from("subjects")
-      .select("id, program_id, section, course_code, course_title, description, sort_order")
+      .select("id, program_id, course_code, course_title, description, sort_order")
       .eq("program_id", programId)
       .order("sort_order", { ascending: true })
       .range(from, to),
@@ -42,14 +45,15 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
       .range(from, to),
   );
 
-  // Printed titles only belong to a program if their campus matches the
-  // program's campus (or is blank, treated as legacy / cross-campus).
-  const programCampus = (progRow as { campus?: string }).campus ?? "";
+  // Printed titles are included only when their campus matches the report's
+  // campus (or is blank, for legacy / cross-campus rows). Digital titles
+  // (eBooks, online journals) are always included.
   const includeTitle = (t: { format: ResourceTypeId; campus?: string }) => {
     const rt = RESOURCE_BY_ID[t.format];
     if (!rt?.campusScoped) return true;
+    if (!campus) return true; // no campus picked => show everything
     const tc = (t.campus ?? "").trim();
-    return tc === "" || tc === programCampus;
+    return tc === "" || tc === campus;
   };
 
   type Buckets = Record<ResourceTypeId, TitleRow[]>;
@@ -72,20 +76,19 @@ export async function loadProgramBibliography(programId: number): Promise<Progra
     for (const t of RESOURCE_TYPES) sortBooks(bucket[t.id]);
   }
 
-  const sectionOrder: string[] = [];
-  const sectionMap = new Map<string, typeof subjects>();
-  for (const s of subjects) {
-    const key = s.section || "";
-    if (!sectionMap.has(key)) { sectionMap.set(key, []); sectionOrder.push(key); }
-    sectionMap.get(key)!.push(s);
-  }
-  const bySection = sectionOrder.map((section) => ({
-    section,
-    subjects: sectionMap.get(section)!.map((subject) => ({
+  // Sections were dropped from the curriculum schema; emit a single
+  // unlabeled section that contains every subject in upload order.
+  const bySection = [{
+    section: "",
+    subjects: subjects.map((subject) => ({
       subject,
       buckets: bySubject.get(subject.id!)!,
     })),
-  }));
+  }];
 
-  return { program: progRow as ProgramBibliography["program"], bySection };
+  return {
+    program: progRow as ProgramBibliography["program"],
+    campus,
+    bySection,
+  };
 }

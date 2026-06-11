@@ -18,6 +18,8 @@ export type SubjectDetail = {
 
 export type ProgramBibliography = {
   program: ProgramRow;
+  /** Campus the report is generated for. Empty = "all campuses". */
+  campus: string;
   bySection: { section: string; subjects: SubjectDetail[] }[];
 };
 
@@ -73,8 +75,8 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
   ws.getRow(r - 1).font = { bold: true };
-  ws.getCell(r++, 1).value = b.program.campus || "";
-  ws.getCell(r++, 1).value = b.program.college || "Library Services";
+  ws.getCell(r++, 1).value = b.campus || "All Campuses";
+  ws.getCell(r++, 1).value = "Library Services";
   r++;
   ws.getCell(r++, 1).value = b.program.name;
   ws.getRow(r - 1).font = { bold: true };
@@ -133,8 +135,8 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
   ws.getRow(r - 1).font = { bold: true };
-  ws.getCell(r++, 1).value = b.program.campus || "";
-  ws.getCell(r++, 1).value = b.program.college || "Library Services";
+  ws.getCell(r++, 1).value = b.campus || "All Campuses";
+  ws.getCell(r++, 1).value = "Library Services";
   r++;
   ws.getCell(r++, 1).value = b.program.name;
   ws.getRow(r - 1).font = { bold: true };
@@ -233,8 +235,8 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
 
   const children: import("docx").FileChild[] = [];
   children.push(new Paragraph({ text: "PALAWAN STATE UNIVERSITY", heading: HeadingLevel.TITLE }));
-  if (b.program.campus) children.push(new Paragraph({ text: b.program.campus }));
-  children.push(new Paragraph({ text: b.program.college || "Library Services" }));
+  children.push(new Paragraph({ text: b.campus || "All Campuses" }));
+  children.push(new Paragraph({ text: "Library Services" }));
   children.push(new Paragraph({ text: b.program.name, heading: HeadingLevel.HEADING_1 }));
   children.push(new Paragraph({ text: "Professional Resources" }));
 
@@ -343,8 +345,8 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
   // Header
   doc.font("Helvetica-Bold").fontSize(14).text("PALAWAN STATE UNIVERSITY", { align: "left" });
   doc.font("Helvetica").fontSize(10);
-  if (b.program.campus) doc.text(b.program.campus);
-  doc.text(b.program.college || "Library Services");
+  doc.text(b.campus || "All Campuses");
+  doc.text("Library Services");
   doc.moveDown(0.5);
   doc.font("Helvetica-Bold").fontSize(13).text(b.program.name);
   doc.font("Helvetica-Oblique").fontSize(10).text("Professional Resources");

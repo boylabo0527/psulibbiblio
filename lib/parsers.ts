@@ -26,13 +26,11 @@ const PRINTED_ALIASES: Record<string, string[]> = {
   copies: ["copy", "copies", "no. of copies", "volumes"],
   publisher: ["publisher", "publisher_name"],
   isbn: ["isbn", "isbn-13", "isbn13"],
+  campus: ["campus", "branch", "library"],
 };
 
 const SUBJECT_ALIASES: Record<string, string[]> = {
   program: ["program", "programme", "program / degree", "degree"],
-  campus: ["campus"],
-  college: ["college", "school", "faculty"],
-  section: ["section", "category", "course type", "type"],
   course_code: ["course code", "code", "course_code", "subject code"],
   course_title: ["course title", "course", "title", "subject title", "subject"],
   description: ["description", "course description", "syllabus", "synopsis"],
@@ -156,6 +154,7 @@ const JOURNAL_ALIASES: Record<string, string[]> = {
   call_no: ["call no", "call no.", "call number", "callno", "classification"],
   copies: ["copy", "copies", "subscriptions", "no. of copies", "volumes"],
   url: ["url", "title_url", "link", "homepage"],
+  campus: ["campus", "branch", "library"],
 };
 
 export async function parseJournals(filename: string, buf: Buffer): Promise<TitleRow[]> {
@@ -183,6 +182,8 @@ export async function parseJournals(filename: string, buf: Buffer): Promise<Titl
       call_no: map.call_no ? r[map.call_no] : "",
       url: map.url ? r[map.url] : "",
       copies,
+      // campus is optional; if absent the upload route fills it from the UI dropdown.
+      campus: map.campus ? (r[map.campus] || "").trim() : undefined,
     });
   }
   return out;
@@ -215,6 +216,7 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
       publisher: map.publisher ? r[map.publisher] : "",
       isbn: map.isbn ? r[map.isbn] : "",
       copies,
+      campus: map.campus ? (r[map.campus] || "").trim() : undefined,
     });
   }
   return out;
@@ -223,7 +225,7 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
 // ---------------------------------------------------------------------------
 // Subjects (per-program course list)
 // ---------------------------------------------------------------------------
-export type ParsedSubject = SubjectRow & { program?: string; campus?: string; college?: string };
+export type ParsedSubject = SubjectRow & { program?: string };
 
 export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
   const rows = rowsFromWorkbook(readSheet(filename, buf));
@@ -240,9 +242,6 @@ export async function parseSubjects(filename: string, buf: Buffer): Promise<Pars
     if (!courseTitle && !courseCode) continue;
     out.push({
       program: map.program ? r[map.program] : "",
-      campus: map.campus ? r[map.campus] : "",
-      college: map.college ? r[map.college] : "",
-      section: map.section ? r[map.section] : "",
       course_code: courseCode,
       course_title: courseTitle || courseCode,
       description: map.description ? r[map.description] : "",

@@ -16,22 +16,20 @@ drop table if exists courses     cascade;  -- old name; harmless if absent
 drop table if exists titles      cascade;
 drop table if exists programs    cascade;
 
--- A program belongs to a campus / college.
+-- A program is curriculum-only (no campus). The same program can exist
+-- physically at multiple campuses; campus matters only for printed titles.
 create table if not exists programs (
   id         bigserial primary key,
-  campus     text default '',
-  college    text default '',
   name       text not null,            -- e.g. "BA Political Science"
   created_at timestamptz default now()
 );
-create unique index if not exists programs_unique on programs (campus, college, name);
+create unique index if not exists programs_unique on programs (name);
 
--- A subject (course) sits under a program. Optional section header
--- groups subjects (e.g. "MAJOR COURSES", "PROFESSIONAL ELECTIVES").
+-- A subject (course) sits under a program. Sections / curricular groupings
+-- were dropped to keep the upload CSV minimal.
 create table if not exists subjects (
   id           bigserial primary key,
   program_id   bigint not null references programs(id) on delete cascade,
-  section      text default '',          -- e.g. "MAJOR COURSES"
   course_code  text default '',          -- e.g. "PSM 1"
   course_title text not null,            -- e.g. "Fundamentals of Political Science"
   description  text default '',

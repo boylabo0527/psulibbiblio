@@ -4,13 +4,14 @@ import { loadProgramBibliography } from "@/lib/bibliography";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad program id" }, { status: 400 });
     }
-    const data = await loadProgramBibliography(id);
+    const campus = (new URL(req.url).searchParams.get("campus") ?? "").trim();
+    const data = await loadProgramBibliography(id, campus);
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json(

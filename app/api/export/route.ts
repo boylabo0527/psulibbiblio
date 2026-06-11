@@ -19,13 +19,14 @@ export async function GET(req: Request) {
     const u = new URL(req.url);
     const programId = parseInt(u.searchParams.get("program_id") ?? "", 10);
     const fmt = (u.searchParams.get("fmt") ?? "xlsx").toLowerCase();
+    const campus = (u.searchParams.get("campus") ?? "").trim();
     if (!Number.isFinite(programId)) {
       return new Response(JSON.stringify({ error: "program_id is required" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
-    const data = await loadProgramBibliography(programId);
-    const baseName = safeName(data.program.name);
+    const data = await loadProgramBibliography(programId, campus);
+    const baseName = safeName(`${data.program.name}${campus ? "_" + campus : ""}`);
 
     let body: Buffer; let media: string; let ext: string;
     switch (fmt) {

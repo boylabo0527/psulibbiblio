@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const db = serviceClient();
     const { data, error } = await db.from("programs")
-      .select("id, campus, college, name").order("name");
+      .select("id, name").order("name");
     if (error) throw error;
     return NextResponse.json({ programs: data ?? [] });
   } catch (err) {

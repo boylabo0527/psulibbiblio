@@ -15,19 +15,17 @@ export type TitleRow = {
   copies?: number;
   url?: string;
   subjects?: string;
+  campus?: string;
 };
 
 export type ProgramRow = {
   id?: number;
-  campus?: string;
-  college?: string;
   name: string;
 };
 
 export type SubjectRow = {
   id?: number;
   program_id?: number;
-  section?: string;
   course_code?: string;
   course_title: string;
   description?: string;

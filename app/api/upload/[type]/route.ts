@@ -22,11 +22,11 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     }
     const rt = RESOURCE_BY_ID[params.type];
     if (!(file instanceof File)) throw new Error("Missing file");
-    // Printed types must carry a campus so reports can scope to it.
-    if (rt.campusScoped && !campusInput) {
-      throw new Error(`This resource type (${rt.uiLabel}) is campus-specific. Please pick a campus before uploading.`);
-    }
-    const campus = rt.campusScoped ? campusInput : "";
+    // Printed types must carry a campus. We accept either:
+    //   - the UI dropdown value (applied to every row in the file), or
+    //   - a per-row "Campus" column in the file (wins per row).
+    // At least one source must produce a non-empty value per row, else reject.
+    const defaultCampus = rt.campusScoped ? campusInput : "";
     send({ phase: "parsing" });
     const buf = Buffer.from(await file.arrayBuffer());
 
@@ -48,23 +48,21 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     const db = serviceClient();
 
     // Pre-fetch existing titles of this format so re-uploads dedup.
-    // Printed types dedup within the same campus only (so a Coron printed
-    // copy doesn't block a Main Campus printed copy of the same call no).
-    type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string };
+    // Printed types include the campus in the dedup key so the same call
+    // number can exist at Main Campus AND PSU-Coron without colliding.
+    type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string; campus: string };
     const existing = await pageThrough<Existing>(
-      (from, to) => {
-        let q = db.from("titles")
-          .select("isbn, issn, call_no, title, author, year")
-          .eq("format", rt.id);
-        if (rt.campusScoped) q = q.eq("campus", campus);
-        return q.range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>;
-      },
+      (from, to) => db.from("titles")
+        .select("isbn, issn, call_no, title, author, year, campus")
+        .eq("format", rt.id)
+        .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
     );
     send({ phase: "deduping", existing: existing.length });
 
     const isbnSeen = new Set<string>();
     const issnSeen = new Set<string>();
     const tupleSeen = new Set<string>();
+    const campusKey = (c: string) => (rt.campusScoped ? `|${c}` : "");
     for (const e of existing) {
       switch (rt.dedupBy) {
         case "isbn-or-tuple":
@@ -72,10 +70,10 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           else tupleSeen.add(`${e.title}|${e.author}|${e.year}`);
           break;
         case "callno-title-author":
-          tupleSeen.add(`${e.call_no}|${e.title}|${e.author}`);
+          tupleSeen.add(`${e.call_no}|${e.title}|${e.author}${campusKey(e.campus ?? "")}`);
           break;
         case "callno-title-issn":
-          tupleSeen.add(`${e.call_no}|${e.title}|${e.issn}`);
+          tupleSeen.add(`${e.call_no}|${e.title}|${e.issn}${campusKey(e.campus ?? "")}`);
           break;
         case "issn-or-title":
           if (e.issn) issnSeen.add(e.issn);
@@ -84,7 +82,13 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       }
     }
 
-    const shouldKeep = (r: TitleRow): boolean => {
+    const rowCampus = (r: TitleRow): string => {
+      if (!rt.campusScoped) return "";
+      const fromRow = (r.campus ?? "").trim();
+      return fromRow || defaultCampus;
+    };
+
+    const shouldKeep = (r: TitleRow, c: string): boolean => {
       switch (rt.dedupBy) {
         case "isbn-or-tuple": {
           const isbn = (r.isbn ?? "").trim();
@@ -99,13 +103,13 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           return true;
         }
         case "callno-title-author": {
-          const key = `${r.call_no ?? ""}|${r.title}|${r.author ?? ""}`;
+          const key = `${r.call_no ?? ""}|${r.title}|${r.author ?? ""}${campusKey(c)}`;
           if (tupleSeen.has(key)) return false;
           tupleSeen.add(key);
           return true;
         }
         case "callno-title-issn": {
-          const key = `${r.call_no ?? ""}|${r.title}|${r.issn ?? ""}`;
+          const key = `${r.call_no ?? ""}|${r.title}|${r.issn ?? ""}${campusKey(c)}`;
           if (tupleSeen.has(key)) return false;
           tupleSeen.add(key);
           return true;
@@ -130,7 +134,13 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       const batchInput = records.slice(i, i + BATCH);
       const toInsert = [];
       for (const r of batchInput) {
-        if (!shouldKeep(r)) { skipped++; continue; }
+        const c = rowCampus(r);
+        if (rt.campusScoped && !c) {
+          throw new Error(
+            `Row "${r.title}" has no campus — set a campus in the upload card or add a "Campus" column to the file.`,
+          );
+        }
+        if (!shouldKeep(r, c)) { skipped++; continue; }
         toInsert.push({
           format: rt.id,
           title: r.title,
@@ -143,7 +153,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           copies: r.copies ?? 1,
           url: r.url ?? "",
           subjects: r.subjects ?? "",
-          campus,
+          campus: c,
         });
       }
       if (toInsert.length) {
