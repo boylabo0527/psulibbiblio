@@ -82,7 +82,13 @@ export async function POST(req: Request) {
       titles: titles.length,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err));
+    console.error("match/run error:", err);
+    let msg: string;
+    if (err instanceof Error) {
+      msg = err.message;
+    } else {
+      try { msg = JSON.stringify(err); } catch { msg = String(err); }
+    }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
