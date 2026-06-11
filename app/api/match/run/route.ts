@@ -36,7 +36,7 @@ export async function POST(req: Request) {
 
     const subjects = await fetchAll<SubjectRow>(
       db, "subjects",
-      "id, program_id, section, course_code, course_title, description",
+      "id, program_id, course_code, course_title, description",
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
     const titles = await fetchAll<TitleRow>(
