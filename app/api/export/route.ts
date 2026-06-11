@@ -43,7 +43,7 @@ export async function GET(req: Request) {
       },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
+    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err)) }), {
       status: 500, headers: { "Content-Type": "application/json" },
     });
   }

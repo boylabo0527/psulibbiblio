@@ -34,6 +34,6 @@ export async function GET(req: Request) {
     if (error) throw error;
     return NextResponse.json({ titles: data ?? [] });
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ error: err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err)) }, { status: 500 });
   }
 }

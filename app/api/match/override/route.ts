@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err));
     return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
