@@ -75,11 +75,10 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     startTicking();
 
     try {
-      if (isSpreadsheet(file.name)) {
+      if (isSpreadsheet(file)) {
         // Parse in the browser and POST rows as JSON batches (≤1 000 rows each)
         // to stay well under Vercel's 4.5 MB per-request payload limit.
-        const buf = await file.arrayBuffer();
-        const allRows = parseSheetRows(file.name, buf);
+        const allRows = await parseSheetRows(file);
         const BATCH = 1_000;
         const total = allRows.length;
         let inserted = 0;

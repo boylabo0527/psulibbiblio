@@ -1,5 +1,3 @@
-import * as XLSX from "xlsx";
-
 function cellToString(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "number") {
@@ -9,23 +7,36 @@ function cellToString(v: unknown): string {
   return String(v).trim();
 }
 
-/** Parse a spreadsheet file (xls/xlsx/csv) in the browser and return raw rows. */
-export function parseSheetRows(filename: string, buf: ArrayBuffer): Record<string, string>[] {
-  const ext = (filename.split(".").pop() ?? "").toLowerCase();
-  let wb: XLSX.WorkBook;
-  if (ext === "csv") {
+const SPREADSHEET_EXTS = new Set(["xls", "xlsx", "csv"]);
+const SPREADSHEET_MIME = new Set([
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "application/csv",
+]);
+
+export function isSpreadsheet(file: File): boolean {
+  const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+  return SPREADSHEET_EXTS.has(ext) || SPREADSHEET_MIME.has(file.type);
+}
+
+/** Parse a spreadsheet file in the browser using a dynamic xlsx import. */
+export async function parseSheetRows(file: File): Promise<Record<string, string>[]> {
+  // Dynamic import so Next.js doesn't try to resolve xlsx during SSR.
+  const XLSX = await import("xlsx");
+  const buf = await file.arrayBuffer();
+  const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+
+  let wb: import("xlsx").WorkBook;
+  if (ext === "csv" || file.type === "text/csv" || file.type === "application/csv") {
     wb = XLSX.read(new TextDecoder().decode(buf), { type: "string" });
   } else {
     wb = XLSX.read(new Uint8Array(buf), { type: "array" });
   }
+
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: true });
   return rows.map((r) =>
     Object.fromEntries(Object.entries(r).map(([k, v]) => [k, cellToString(v)])),
   );
-}
-
-export function isSpreadsheet(filename: string): boolean {
-  const ext = (filename.split(".").pop() ?? "").toLowerCase();
-  return ext === "xls" || ext === "xlsx" || ext === "csv";
 }
