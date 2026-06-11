@@ -13,7 +13,7 @@ export const RESOURCE_TYPES = [
   {
     id: "ebook_paid",
     uiLabel: "Paid / Subscribed eBooks",
-    sectionLabel: "Subscribed eBooks (Kavita)",
+    sectionLabel: "Subscribed eBooks",
     kind: "book",  access: "paid", medium: "digital",
     campusScoped: false,
     dedupBy: "isbn-or-tuple",
