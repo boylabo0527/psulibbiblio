@@ -25,6 +25,7 @@ export default function ProgramsTab() {
   const [campuses, setCampuses] = useState<string[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [campus, setCampus] = useState<string>("");
+  const [citationStyle, setCitationStyle] = useState<string>("apa7");
   const [biblio, setBiblio] = useState<Bibliography | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -80,6 +81,7 @@ export default function ProgramsTab() {
     if (!selected) return;
     const p = new URLSearchParams({ program_id: String(selected), fmt });
     if (campus) p.set("campus", campus);
+    if (fmt.startsWith("citations-")) p.set("style", citationStyle);
     try {
       const res = await apiFetch(`/api/export?${p.toString()}`);
       if (!res.ok) {
@@ -142,12 +144,25 @@ export default function ProgramsTab() {
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm text-slate-600">Export this program's bibliography:</span>
+          <span className="text-sm text-slate-600">Master report:</span>
           {["xlsx", "csv", "pdf", "docx"].map((fmt) => (
             <button key={fmt} className="btn-outline uppercase text-xs" disabled={!selected} onClick={() => download(fmt)}>
               {fmt}
             </button>
           ))}
+          <span className="text-sm text-slate-600 ml-3">Citations:</span>
+          <select className="input text-xs" value={citationStyle} onChange={(e) => setCitationStyle(e.target.value)}>
+            <option value="apa7">APA 7</option>
+            <option value="mla9">MLA 9</option>
+            <option value="chicago">Chicago</option>
+            <option value="harvard">Harvard</option>
+          </select>
+          <button className="btn-outline text-xs uppercase" disabled={!selected} onClick={() => download("citations-docx")}>
+            DOCX
+          </button>
+          <button className="btn-outline text-xs uppercase" disabled={!selected} onClick={() => download("citations-txt")}>
+            TXT
+          </button>
         </div>
       </div>
 
@@ -216,9 +231,7 @@ function SubjectBlock({
         <span className="font-semibold">{detail.subject.course_code}</span>
         <span className="font-semibold">{detail.subject.course_title}</span>
       </div>
-      {detail.subject.description && (
-        <p className="text-xs text-slate-600 mb-2 leading-relaxed">{detail.subject.description}</p>
-      )}
+      <SubjectDescription subject={detail.subject} />
       {RESOURCE_TYPES.map((t) => (
         <BookSection
           key={t.id}
@@ -233,6 +246,70 @@ function SubjectBlock({
       </p>
       <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
     </div>
+  );
+}
+
+function SubjectDescription({
+  subject,
+}: {
+  subject: { id: number; course_code: string; course_title: string; description: string };
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(subject.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [text, setText] = useState(subject.description ?? "");
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/subjects/${subject.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: draft }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      setText(draft);
+      setEditing(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setSaving(false); }
+  }
+
+  if (editing) {
+    return (
+      <div className="mb-2">
+        <textarea
+          className="input w-full text-xs leading-relaxed"
+          rows={4}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <div className="flex gap-2 mt-1">
+          <button className="btn text-xs" disabled={saving} onClick={save}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button className="btn-outline text-xs" disabled={saving} onClick={() => { setDraft(text); setEditing(false); }}>
+            Cancel
+          </button>
+          {err && <span className="text-red-700 text-xs self-center">{err}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <p
+      className="text-xs text-slate-600 mb-2 leading-relaxed cursor-pointer hover:bg-slate-50 rounded px-1 -mx-1"
+      title="Click to edit description"
+      onClick={() => { setDraft(text); setEditing(true); }}
+    >
+      {text || <span className="italic text-slate-400">Click to add a description…</span>}
+    </p>
   );
 }
 
@@ -251,25 +328,90 @@ function BookSection({
             <th className="text-left p-1">Title</th>
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
-            <th className="p-1 w-8"></th>
+            <th className="p-1 w-20"></th>
           </tr>
         </thead>
         <tbody>
           {books.map((b) => (
-            <tr key={b.id} className="border-t border-slate-100">
-              {showIdent && <td className="p-1">{b.call_no || b.issn}</td>}
-              <td className="p-1">{b.author}</td>
-              <td className="p-1">{b.title}</td>
-              <td className="p-1">{b.year}</td>
-              <td className="p-1">{b.copies ?? 1}</td>
-              <td className="p-1">
-                <button className="text-red-600 text-xs" onClick={() => onRemove(b.id)}>remove</button>
-              </td>
-            </tr>
+            <EditableTitleRow key={b.id} book={b} showIdent={showIdent} onRemove={onRemove} />
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function EditableTitleRow({
+  book, showIdent, onRemove,
+}: { book: Title; showIdent: boolean; onRemove: (id: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [local, setLocal] = useState<Title>(book);
+  const [draft, setDraft] = useState<Title>(book);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/titles/${book.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          call_no: draft.call_no, issn: draft.issn, author: draft.author,
+          title: draft.title, year: draft.year,
+          copies: Number(draft.copies) || 1,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      setLocal(draft);
+      setEditing(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setSaving(false); }
+  }
+
+  if (editing) {
+    return (
+      <tr className="border-t border-slate-100 bg-amber-50">
+        {showIdent && (
+          <td className="p-1">
+            <input className="input text-xs w-full" value={draft.call_no ?? draft.issn ?? ""}
+              onChange={(e) => setDraft({ ...draft, call_no: e.target.value, issn: draft.issn })} />
+          </td>
+        )}
+        <td className="p-1"><input className="input text-xs w-full" value={draft.author ?? ""} onChange={(e) => setDraft({ ...draft, author: e.target.value })} /></td>
+        <td className="p-1"><input className="input text-xs w-full" value={draft.title ?? ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></td>
+        <td className="p-1"><input className="input text-xs w-full" value={draft.year ?? ""} onChange={(e) => setDraft({ ...draft, year: e.target.value })} /></td>
+        <td className="p-1"><input type="number" min={1} className="input text-xs w-full" value={draft.copies ?? 1} onChange={(e) => setDraft({ ...draft, copies: Number(e.target.value) })} /></td>
+        <td className="p-1">
+          <div className="flex gap-1">
+            <button className="text-psu text-xs" disabled={saving} onClick={save}>{saving ? "…" : "save"}</button>
+            <button className="text-slate-500 text-xs" disabled={saving} onClick={() => { setDraft(local); setEditing(false); }}>cancel</button>
+          </div>
+          {err && <div className="text-red-600 text-[10px]">{err}</div>}
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="border-t border-slate-100">
+      {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
+      <td className="p-1">{local.author}</td>
+      <td className="p-1">{local.title}</td>
+      <td className="p-1">{local.year}</td>
+      <td className="p-1">{local.copies ?? 1}</td>
+      <td className="p-1">
+        <div className="flex gap-2">
+          <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
+          <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+        </div>
+      </td>
+    </tr>
   );
 }
 
