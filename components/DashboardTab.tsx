@@ -29,7 +29,7 @@ export default function DashboardTab() {
   const [err, setErr] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  // Fetch global totals and program list once.
+  // Fetch global totals and program list once; pre-select first program.
   useEffect(() => {
     apiFetch("/api/dashboard")
       .then((r) => r.json())
@@ -37,7 +37,11 @@ export default function DashboardTab() {
       .catch(() => {});
     apiFetch("/api/programs")
       .then((r) => r.json())
-      .then((j) => setPrograms(j.programs ?? []))
+      .then((j) => {
+        const list: Program[] = j.programs ?? [];
+        setPrograms(list);
+        if (list.length > 0) setProgramId(String(list[0].id));
+      })
       .catch(() => {});
   }, []);
 
@@ -58,21 +62,28 @@ export default function DashboardTab() {
       .finally(() => setLoading(false));
   }, [programId, campus]);
 
-  async function exportCitations(fmt: "citations-docx" | "citations-txt") {
+  async function exportCitations(
+    fmt: "citations-docx" | "citations-txt",
+    subjectId?: number,
+    subjectLabel?: string,
+  ) {
     if (!programId) return;
     setExporting(true);
     try {
       const p = new URLSearchParams({ program_id: programId, fmt, style: citationStyle });
       if (campus) p.set("campus", campus);
+      if (subjectId) { p.set("subject_id", String(subjectId)); p.set("subject_label", subjectLabel ?? ""); }
       const res = await apiFetch(`/api/export?${p}`);
       if (!res.ok) { setErr(await res.text()); return; }
       const blob = await res.blob();
       const prog = programs.find((p) => String(p.id) === programId);
-      const name = (prog?.name ?? "program").replace(/[^A-Za-z0-9_-]+/g, "_");
+      const baseName = subjectLabel
+        ? subjectLabel.replace(/[^A-Za-z0-9_-]+/g, "_")
+        : (prog?.name ?? "program").replace(/[^A-Za-z0-9_-]+/g, "_");
       const ext = fmt === "citations-docx" ? "docx" : "txt";
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${name}_citations.${ext}`;
+      a.download = `${baseName}_citations.${ext}`;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(a.href);
     } catch (e) {
@@ -189,10 +200,13 @@ export default function DashboardTab() {
                         ))}
                         <th className="py-1 pl-2 text-right font-semibold">Titles</th>
                         <th className="py-1 pl-1 text-right font-semibold">Vols</th>
+                        <th className="py-1 pl-2 w-20"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {grp.rows.map((s) => (
+                      {grp.rows.map((s) => {
+                        const label = [s.course_code, s.course_title].filter(Boolean).join("_");
+                        return (
                         <tr key={s.subject_id} className="border-b border-slate-100 hover:bg-slate-50">
                           <td className="py-1 pr-2 text-slate-500">{s.course_code}</td>
                           <td className="py-1 pr-2">{s.course_title}</td>
@@ -203,8 +217,19 @@ export default function DashboardTab() {
                           ))}
                           <td className="py-1 pl-2 text-right font-semibold tabular-nums">{s.total_titles}</td>
                           <td className="py-1 pl-1 text-right tabular-nums text-slate-600">{s.total_volumes}</td>
+                          <td className="py-1 pl-2">
+                            <button
+                              className="text-psu text-[10px] underline whitespace-nowrap disabled:opacity-40"
+                              disabled={exporting || s.total_titles === 0}
+                              onClick={() => exportCitations("citations-docx", s.subject_id, label)}
+                              title={`Export ${citationStyle.toUpperCase()} citations for this subject`}
+                            >
+                              cite
+                            </button>
+                          </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

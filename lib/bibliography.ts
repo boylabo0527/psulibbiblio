@@ -23,19 +23,22 @@ async function paged<T>(
 export async function loadProgramBibliography(
   programId: number,
   campus = "",
+  subjectId?: number,
 ): Promise<ProgramBibliography> {
   const db = serviceClient();
   const { data: progRow, error: progErr } = await db
     .from("programs").select("id, name").eq("id", programId).single();
   if (progErr) throw progErr;
 
-  const subjects = await paged<SubjectRow>((from, to) =>
-    db.from("subjects")
+  const subjects = await paged<SubjectRow>((from, to) => {
+    let q = db.from("subjects")
       .select("id, program_id, course_code, course_title, description, sort_order")
       .eq("program_id", programId)
       .order("sort_order", { ascending: true })
-      .range(from, to),
-  );
+      .range(from, to);
+    if (subjectId) q = q.eq("id", subjectId);
+    return q;
+  });
 
   type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
   const assignments = await paged<Joined>((from, to) =>

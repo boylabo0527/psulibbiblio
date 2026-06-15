@@ -33,8 +33,15 @@ export async function GET(req: Request) {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
-    const data = await loadProgramBibliography(programId, campus);
-    const baseName = safeName(`${data.program.name}${campus ? "_" + campus : ""}`);
+    const subjectIdParam = parseInt(u.searchParams.get("subject_id") ?? "", 10);
+    const subjectId = Number.isFinite(subjectIdParam) ? subjectIdParam : undefined;
+    const subjectLabel = u.searchParams.get("subject_label") ?? "";
+    const data = await loadProgramBibliography(programId, campus, subjectId);
+    const baseName = safeName(
+      subjectId && subjectLabel
+        ? subjectLabel
+        : `${data.program.name}${campus ? "_" + campus : ""}`,
+    );
 
     let body: Buffer; let media: string; let ext: string;
     switch (fmt) {
