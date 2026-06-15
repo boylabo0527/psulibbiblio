@@ -62,9 +62,118 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     }
     const db = serviceClient();
 
-    // Pre-fetch existing titles of this format so re-uploads dedup.
-    // Printed types include the campus in the dedup key so the same call
-    // number can exist at Main Campus AND PSU-Coron without colliding.
+    const rowCampus = (r: TitleRow): string => {
+      if (!rt.campusScoped) return "";
+      const fromRow = (r.campus ?? "").trim();
+      return fromRow || defaultCampus;
+    };
+
+    // Validate campus on all rows up front.
+    for (const r of records) {
+      const c = rowCampus(r);
+      if (rt.campusScoped && !c) {
+        throw new Error(
+          `Row "${r.title}" has no campus — set a campus in the upload card or add a "Campus" column to the file.`,
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Accession mode (Printed Books): each row = 1 physical copy.
+    // Rows with the same call_no+title+author+campus within the file are
+    // aggregated (copies summed). Titles already in the DB get their copy
+    // count incremented rather than skipped.
+    // -----------------------------------------------------------------------
+    if (rt.accessionMode) {
+      // Step 1: aggregate incoming rows by key, summing copies.
+      const keyOf = (r: TitleRow, c: string) =>
+        `${(r.call_no ?? "").trim()}|${r.title.trim()}|${(r.author ?? "").trim()}|${c}`;
+
+      type AggRow = { row: TitleRow; campus: string; copies: number };
+      const aggMap = new Map<string, AggRow>();
+      for (const r of records) {
+        const c = rowCampus(r);
+        const k = keyOf(r, c);
+        const agg = aggMap.get(k);
+        if (agg) {
+          agg.copies += r.copies ?? 1;
+        } else {
+          aggMap.set(k, { row: r, campus: c, copies: r.copies ?? 1 });
+        }
+      }
+
+      // Step 2: fetch existing titles with id + copies so we can increment.
+      type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number };
+      const existing = await pageThrough<Existing>(
+        (from, to) => db.from("titles")
+          .select("id, call_no, title, author, campus, copies")
+          .eq("format", rt.id)
+          .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
+      );
+      send({ phase: "deduping", existing: existing.length });
+
+      const existingMap = new Map<string, Existing>();
+      for (const e of existing) {
+        existingMap.set(`${(e.call_no ?? "").trim()}|${e.title.trim()}|${(e.author ?? "").trim()}|${e.campus ?? ""}`, e);
+      }
+
+      // Step 3: split aggregated rows into inserts vs copy-count updates.
+      const toInsert: Record<string, unknown>[] = [];
+      const toUpdate: { id: number; copies: number }[] = [];
+
+      for (const [k, { row, campus: c, copies }] of aggMap) {
+        const ex = existingMap.get(k);
+        if (ex) {
+          toUpdate.push({ id: ex.id, copies: ex.copies + copies });
+        } else {
+          const row2: Record<string, unknown> = {
+            format: rt.id,
+            title: row.title,
+            author: row.author ?? "",
+            publisher: row.publisher ?? "",
+            year: row.year ?? "",
+            isbn: row.isbn ?? "",
+            issn: row.issn ?? "",
+            call_no: row.call_no ?? "",
+            copies,
+            url: row.url ?? "",
+            subjects: row.subjects ?? "",
+            campus: c,
+          };
+          toInsert.push(row2);
+        }
+      }
+
+      let inserted = 0;
+      let updated = 0;
+
+      // Batch inserts.
+      for (let i = 0; i < toInsert.length; i += BATCH) {
+        const slice = toInsert.slice(i, i + BATCH);
+        const { data, error } = await db.from("titles").insert(slice).select("id");
+        if (error) throw error;
+        inserted += data?.length ?? 0;
+        send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
+      }
+
+      // Batch copy-count updates (one per row; group into chunks to avoid too many requests).
+      for (let i = 0; i < toUpdate.length; i += BATCH) {
+        const slice = toUpdate.slice(i, i + BATCH);
+        for (const { id, copies } of slice) {
+          const { error } = await db.from("titles").update({ copies }).eq("id", id);
+          if (error) throw error;
+          updated++;
+        }
+        send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
+      }
+
+      send({ phase: "done", received: records.length, inserted, skipped: updated });
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Standard dedup mode (all other resource types).
+    // -----------------------------------------------------------------------
     type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string; campus: string };
     const selectCols = rt.campusScoped
       ? "isbn, issn, call_no, title, author, year, campus"
@@ -99,12 +208,6 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           break;
       }
     }
-
-    const rowCampus = (r: TitleRow): string => {
-      if (!rt.campusScoped) return "";
-      const fromRow = (r.campus ?? "").trim();
-      return fromRow || defaultCampus;
-    };
 
     const shouldKeep = (r: TitleRow, c: string): boolean => {
       switch (rt.dedupBy) {
@@ -153,11 +256,6 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       const toInsert = [];
       for (const r of batchInput) {
         const c = rowCampus(r);
-        if (rt.campusScoped && !c) {
-          throw new Error(
-            `Row "${r.title}" has no campus — set a campus in the upload card or add a "Campus" column to the file.`,
-          );
-        }
         if (!shouldKeep(r, c)) { skipped++; continue; }
         const row: Record<string, unknown> = {
           format: rt.id,
