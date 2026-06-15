@@ -11,3 +11,4 @@ out/
 __pycache__/
 data/exports/
 next-env.d.ts
+.claude/
