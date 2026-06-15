@@ -164,7 +164,25 @@ export default function PurchaseRequestTab() {
         </p>
 
         <div className="mb-3">
-          <div className="text-xs font-medium text-slate-600 mb-2">Programs (select one or more):</div>
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-xs font-medium text-slate-600">Programs (select one or more):</span>
+            {campus && (
+              <button className="text-xs text-psu underline" onClick={() => {
+                const atCampus = programs.filter(p => isProgramAtCampus(p.name, campus));
+                setSelectedPrograms(new Set(atCampus.map(p => p.id)));
+              }}>
+                Select all {campus} programs
+              </button>
+            )}
+            {!campus && (
+              <button className="text-xs text-psu underline" onClick={() =>
+                setSelectedPrograms(new Set(programs.map(p => p.id)))
+              }>Select all</button>
+            )}
+            {selectedPrograms.size > 0 && (
+              <button className="text-xs text-slate-400 underline" onClick={() => setSelectedPrograms(new Set())}>Clear</button>
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
             {(campus ? programs.filter(p => isProgramAtCampus(p.name, campus)) : programs).map(p => (
               <label key={p.id} className={

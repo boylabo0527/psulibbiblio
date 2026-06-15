@@ -156,7 +156,7 @@ export default function DashboardTab() {
           <label className="label">
             Program
             <select className="input ml-1 min-w-[240px]" value={programId ?? ""} onChange={(e) => setProgramId(e.target.value)}>
-              <option value="">All programs</option>
+              <option value="">{campus ? `All ${campus} programs` : "All PSU programs"}</option>
               {visiblePrograms.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
