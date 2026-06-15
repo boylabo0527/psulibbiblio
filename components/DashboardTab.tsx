@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { RESOURCE_TYPES } from "@/lib/resources";
 import type { ResourceTypeId } from "@/lib/resources";
 import { PSU_CAMPUSES } from "@/lib/campuses";
+import { isProgramAtCampus } from "@/lib/campus-program-map";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
 
@@ -37,6 +38,11 @@ export default function DashboardTab() {
       })
       .catch(() => { setProgramId(""); });
   }, []);
+
+  // When campus changes, reset program to the first one offered at that campus.
+  const visiblePrograms = campus
+    ? programs.filter(p => isProgramAtCampus(p.name, campus))
+    : programs;
 
   // Fetch per-subject counts whenever filters change (skip until programs loaded).
   useEffect(() => {
@@ -151,12 +157,23 @@ export default function DashboardTab() {
             Program
             <select className="input ml-1 min-w-[240px]" value={programId ?? ""} onChange={(e) => setProgramId(e.target.value)}>
               <option value="">All programs</option>
-              {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {visiblePrograms.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
           <label className="label">
             Campus
-            <select className="input ml-1 min-w-[180px]" value={campus} onChange={(e) => setCampus(e.target.value)}>
+            <select className="input ml-1 min-w-[180px]" value={campus} onChange={(e) => {
+              const c = e.target.value;
+              setCampus(c);
+              // If current program is not offered at the new campus, switch to first available
+              if (c && programId) {
+                const cur = programs.find(p => String(p.id) === programId);
+                if (cur && !isProgramAtCampus(cur.name, c)) {
+                  const first = programs.find(p => isProgramAtCampus(p.name, c));
+                  setProgramId(first ? String(first.id) : "");
+                }
+              }
+            }}>
               <option value="">All campuses</option>
               {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>

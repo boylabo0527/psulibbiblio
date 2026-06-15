@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { PSU_CAMPUSES } from "@/lib/campuses";
+import { isProgramAtCampus } from "@/lib/campus-program-map";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 
 type Program = { id: number; name: string };
@@ -165,7 +166,7 @@ export default function PurchaseRequestTab() {
         <div className="mb-3">
           <div className="text-xs font-medium text-slate-600 mb-2">Programs (select one or more):</div>
           <div className="flex flex-wrap gap-2">
-            {programs.map(p => (
+            {(campus ? programs.filter(p => isProgramAtCampus(p.name, campus)) : programs).map(p => (
               <label key={p.id} className={
                 "flex items-center gap-1.5 cursor-pointer rounded border px-3 py-1.5 text-xs transition " +
                 (selectedPrograms.has(p.id)
@@ -182,7 +183,16 @@ export default function PurchaseRequestTab() {
         <div className="flex flex-wrap gap-3 mb-4">
           <label className="label">
             Campus
-            <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => setCampus(e.target.value)}>
+            <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => {
+              const c = e.target.value;
+              setCampus(c);
+              // Remove selected programs not offered at this campus
+              if (c) setSelectedPrograms(prev => {
+                const next = new Set(prev);
+                programs.forEach(p => { if (next.has(p.id) && !isProgramAtCampus(p.name, c)) next.delete(p.id); });
+                return next;
+              });
+            }}>
               <option value="">All campuses</option>
               {PSU_CAMPUSES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
