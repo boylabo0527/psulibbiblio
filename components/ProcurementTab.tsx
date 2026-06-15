@@ -49,11 +49,18 @@ export default function ProcurementTab() {
       .finally(() => setLoading(false));
   }, [programId, campus]);
 
+  // When "All [campus] programs" is selected, filter rows to programs offered at that campus.
+  const validProgramIds = campus && !programId
+    ? new Set(visiblePrograms.map(p => p.id))
+    : null;
+  const displayRows = validProgramIds ? rows.filter(r => validProgramIds.has(r.program_id)) : rows;
+
   const filtered = useMemo(() => {
-    if (view === "compliant") return rows.filter((r) => r.compliant);
-    if (view === "needs") return rows.filter((r) => !r.compliant);
-    return rows;
-  }, [rows, view]);
+    if (view === "compliant") return displayRows.filter((r) => r.compliant);
+    if (view === "needs") return displayRows.filter((r) => !r.compliant);
+    return displayRows;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayRows, view]);
 
   const grouped = filtered.reduce<{ program: string; program_id: number; rows: ProcurementRow[] }[]>((acc, r) => {
     const last = acc[acc.length - 1];
@@ -62,14 +69,14 @@ export default function ProcurementTab() {
     return acc;
   }, []);
 
-  const total = rows.length;
-  const compliantCount = rows.filter((r) => r.compliant).length;
+  const total = displayRows.length;
+  const compliantCount = displayRows.filter((r) => r.compliant).length;
   const needsCount = total - compliantCount;
-  const totalGap = rows.reduce((a, r) => a + r.gap, 0);
+  const totalGap = displayRows.reduce((a, r) => a + r.gap, 0);
   const complianceRate = total > 0 ? Math.round((compliantCount / total) * 100) : 0;
 
   const byType = RESOURCE_TYPES.reduce<Record<ResourceTypeId, number>>((acc, rt) => {
-    acc[rt.id] = rows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
+    acc[rt.id] = displayRows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
 

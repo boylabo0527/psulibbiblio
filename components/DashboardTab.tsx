@@ -63,12 +63,20 @@ export default function DashboardTab() {
   }, [programId, campus]);
 
   // Derive summary totals from the filtered subjects data.
-  const summaryPrograms = new Set(subjects.map((s) => s.program_id)).size;
-  const summarySubjects = subjects.length;
-  const summaryTitles = subjects.reduce((a, s) => a + s.total_titles, 0);
-  const summaryVolumes = subjects.reduce((a, s) => a + s.total_volumes, 0);
+  // When "All [campus] programs" is selected (programId=""), limit to programs offered at that campus.
+  const validProgramIds = campus && !programId
+    ? new Set(visiblePrograms.map(p => p.id))
+    : null;
+  const displaySubjects = validProgramIds
+    ? subjects.filter(s => validProgramIds.has(s.program_id))
+    : subjects;
+
+  const summaryPrograms = new Set(displaySubjects.map((s) => s.program_id)).size;
+  const summarySubjects = displaySubjects.length;
+  const summaryTitles = displaySubjects.reduce((a, s) => a + s.total_titles, 0);
+  const summaryVolumes = displaySubjects.reduce((a, s) => a + s.total_volumes, 0);
   const byType = RESOURCE_TYPES.reduce<Record<ResourceTypeId, number>>((acc, rt) => {
-    acc[rt.id] = subjects.reduce((a, s) => a + (s.counts[rt.id] ?? 0), 0);
+    acc[rt.id] = displaySubjects.reduce((a, s) => a + (s.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
 
@@ -105,7 +113,7 @@ export default function DashboardTab() {
   }
 
   // Group subjects by program for display.
-  const grouped = subjects.reduce<{ program: string; program_id: number; rows: SubjectSummaryRow[] }[]>((acc, s) => {
+  const grouped = displaySubjects.reduce<{ program: string; program_id: number; rows: SubjectSummaryRow[] }[]>((acc, s) => {
     const last = acc[acc.length - 1];
     if (last && last.program_id === s.program_id) last.rows.push(s);
     else acc.push({ program: s.program, program_id: s.program_id, rows: [s] });
@@ -200,7 +208,7 @@ export default function DashboardTab() {
         {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}
 
-        {!loading && subjects.length === 0 && (
+        {!loading && displaySubjects.length === 0 && (
           <p className="text-slate-500 text-sm">No subjects found. Upload subjects first.</p>
         )}
 
@@ -250,7 +258,7 @@ export default function DashboardTab() {
               </div>
             ))}
             <div className="flex justify-end gap-6 text-xs font-semibold text-psu mt-2 pt-2 border-t border-slate-200">
-              <span>{subjects.length} subjects</span>
+              <span>{displaySubjects.length} subjects</span>
               <span>{summaryTitles.toLocaleString()} titles</span>
               <span>{summaryVolumes.toLocaleString()} volumes</span>
             </div>
