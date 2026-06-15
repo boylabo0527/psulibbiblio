@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
+import { RESOURCE_TYPES } from "@/lib/resources";
+import type { ResourceTypeId } from "@/lib/resources";
 import { PSU_CAMPUSES } from "@/lib/campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
@@ -193,41 +194,31 @@ export default function DashboardTab() {
                       <tr className="border-b border-slate-200 text-slate-500 text-left">
                         <th className="py-1 pr-2 w-24">Code</th>
                         <th className="py-1 pr-2">Subject</th>
-                        {RESOURCE_TYPES.map((rt) => (
-                          <th key={rt.id} className="py-1 px-1 text-right whitespace-nowrap" title={rt.uiLabel}>
-                            {rt.sectionLabel.split(" ").slice(-1)[0]}
-                          </th>
-                        ))}
-                        <th className="py-1 pl-2 text-right font-semibold">Titles</th>
-                        <th className="py-1 pl-1 text-right font-semibold">Vols</th>
-                        <th className="py-1 pl-2 w-20"></th>
+                        <th className="py-1 px-2 text-right">Titles</th>
+                        <th className="py-1 px-2 text-right">Volumes</th>
+                        <th className="py-1 pl-2 w-24 text-right">Citation</th>
                       </tr>
                     </thead>
                     <tbody>
                       {grp.rows.map((s) => {
                         const label = [s.course_code, s.course_title].filter(Boolean).join("_");
                         return (
-                        <tr key={s.subject_id} className="border-b border-slate-100 hover:bg-slate-50">
-                          <td className="py-1 pr-2 text-slate-500">{s.course_code}</td>
-                          <td className="py-1 pr-2">{s.course_title}</td>
-                          {RESOURCE_TYPES.map((rt) => (
-                            <td key={rt.id} className="py-1 px-1 text-right tabular-nums">
-                              {s.counts[rt.id] ? s.counts[rt.id] : <span className="text-slate-300">—</span>}
+                          <tr key={s.subject_id} className="border-b border-slate-100 hover:bg-slate-50">
+                            <td className="py-1.5 pr-2 text-slate-500">{s.course_code}</td>
+                            <td className="py-1.5 pr-2">{s.course_title}</td>
+                            <td className="py-1.5 px-2 text-right font-semibold tabular-nums">{s.total_titles}</td>
+                            <td className="py-1.5 px-2 text-right tabular-nums text-slate-600">{s.total_volumes}</td>
+                            <td className="py-1.5 pl-2 text-right">
+                              <button
+                                className="text-psu text-[11px] underline whitespace-nowrap disabled:opacity-30"
+                                disabled={exporting || s.total_titles === 0}
+                                onClick={() => exportCitations("citations-docx", s.subject_id, label)}
+                                title={`Download ${citationStyle.toUpperCase()} citation list`}
+                              >
+                                Export
+                              </button>
                             </td>
-                          ))}
-                          <td className="py-1 pl-2 text-right font-semibold tabular-nums">{s.total_titles}</td>
-                          <td className="py-1 pl-1 text-right tabular-nums text-slate-600">{s.total_volumes}</td>
-                          <td className="py-1 pl-2">
-                            <button
-                              className="text-psu text-[10px] underline whitespace-nowrap disabled:opacity-40"
-                              disabled={exporting || s.total_titles === 0}
-                              onClick={() => exportCitations("citations-docx", s.subject_id, label)}
-                              title={`Export ${citationStyle.toUpperCase()} citations for this subject`}
-                            >
-                              cite
-                            </button>
-                          </td>
-                        </tr>
+                          </tr>
                         );
                       })}
                     </tbody>
