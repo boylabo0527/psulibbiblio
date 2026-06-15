@@ -3,10 +3,10 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
 
+const ACCREDITATION_MIN = 5;
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-export const ACCREDITATION_MIN = 5; // minimum unique titles required per subject
 
 export type ProcurementRow = {
   subject_id: number;

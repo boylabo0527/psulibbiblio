@@ -5,7 +5,8 @@ import type { ResourceTypeId } from "@/lib/resources";
 import { PSU_CAMPUSES } from "@/lib/campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
-import { ACCREDITATION_MIN } from "@/app/api/procurement/route";
+
+const ACCREDITATION_MIN = 5;
 
 type Program = { id: number; name: string };
 type ViewFilter = "all" | "compliant" | "needs";
