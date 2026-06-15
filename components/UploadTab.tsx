@@ -26,12 +26,33 @@ type FileStatus = {
 
 const STALL_MS = 10_000;
 
+const PSU_CAMPUSES = [
+  "Main Campus",
+  "PSU-PCAT CUYO",
+  "PSU-ARACELI",
+  "PSU-BALABAC",
+  "PSU-BATARAZA",
+  "PSU-BROOKES POINT",
+  "PSU-CORON",
+  "PSU-DUMARAN",
+  "PSU-EL NIDO",
+  "PSU-LINAPACAN",
+  "PSU-NARRA",
+  "PSU-QUEZON",
+  "PSU-RIZAL",
+  "PSU-ROXAS",
+  "PSU-SAN VICENTE",
+  "PSU-SOFRONIO ESPANOLA",
+  "PSU-TAYTAY",
+  "Manalo Campus",
+];
+
 type Props = {
   title: string;
   hint: string;
   endpoint: string;
   templates?: { label: string; href: string }[];
-  extraFields?: { name: string; label: string; placeholder?: string }[];
+  extraFields?: { name: string; label: string; type?: "text" | "campus" }[];
 };
 
 async function consumeNdjson(
@@ -205,12 +226,24 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
       {extraFields?.map((f) => (
         <div key={f.name} className="mb-2">
           <label className="label">{f.label}</label>
-          <input
-            className="input w-72"
-            placeholder={f.placeholder}
-            value={extras[f.name] ?? ""}
-            onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
-          />
+          {f.type === "campus" ? (
+            <select
+              className="input w-72"
+              value={extras[f.name] ?? ""}
+              onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
+            >
+              <option value="">— select campus —</option>
+              {PSU_CAMPUSES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input w-72"
+              value={extras[f.name] ?? ""}
+              onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
+            />
+          )}
         </div>
       ))}
       <div className="flex items-center gap-2 flex-wrap">
@@ -327,7 +360,7 @@ export default function UploadTab() {
           { label: "printed_books_template.csv",  href: "/templates/printed_books_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", type: "campus" },
         ]}
       />
       <FileCard
@@ -339,7 +372,7 @@ export default function UploadTab() {
           { label: "journals_printed_template.csv",  href: "/templates/journals_printed_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", type: "campus" },
         ]}
       />
       <FileCard
