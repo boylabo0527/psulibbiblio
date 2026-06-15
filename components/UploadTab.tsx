@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { apiFetch } from "@/lib/api-client";
 
 type ProgressEvent =
   | { phase: "parsing" }
@@ -90,7 +91,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         for (let i = 0; i < allRows.length; i += BATCH) {
           if (controller.signal.aborted) break;
           const rows = allRows.slice(i, i + BATCH);
-          const res = await fetch(endpoint, {
+          const res = await apiFetch(endpoint, {
             method: "POST",
             body: JSON.stringify({ rows, filename: file.name, ...extras }),
             headers: { "Content-Type": "application/json" },
@@ -116,7 +117,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         const fd = new FormData();
         fd.append("file", file);
         for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
-        const res = await fetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
+        const res = await apiFetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
         if (!res.ok) {
           const text = await res.text();
           patchFile(index, { phase: "error", error: text || `HTTP ${res.status}` });
@@ -281,7 +282,7 @@ export default function UploadTab() {
   async function reset() {
     if (!confirm("Wipe all programs, subjects, titles, and assignments?")) return;
     setResetResult("Resetting...");
-    const r = await fetch("/api/admin/reset", { method: "POST" });
+    const r = await apiFetch("/api/admin/reset", { method: "POST" });
     setResetResult(JSON.stringify(await r.json(), null, 2));
   }
 

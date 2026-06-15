@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-client";
 
-type Program = { id: number; name: string; campus: string; college: string };
+type Program = { id: number; name: string };
 
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -12,7 +13,7 @@ export default function MatchTab() {
   const [result, setResult] = useState("");
 
   useEffect(() => {
-    fetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
+    apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
 
   async function run() {
@@ -21,7 +22,7 @@ export default function MatchTab() {
     try {
       const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
       if (programId) params.set("program_id", programId);
-      const r = await fetch(`/api/match/run?${params}`, { method: "POST" });
+      const r = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
       setResult(JSON.stringify(await r.json(), null, 2));
     } catch (e) {
       setResult(String(e));
@@ -43,7 +44,7 @@ export default function MatchTab() {
           <select className="input ml-1" value={programId} onChange={(e) => setProgramId(e.target.value)}>
             <option value="">All programs</option>
             {programs.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}{p.campus ? ` — ${p.campus}` : ""}</option>
+              <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </label>

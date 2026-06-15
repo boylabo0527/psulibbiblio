@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
+import { apiFetch } from "@/lib/api-client";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -31,7 +32,7 @@ export default function ProgramsTab() {
   // Fetch the list of campuses that appear on printed-resource rows so the
   // picker doesn't require the librarian to remember exact spellings.
   useEffect(() => {
-    fetch("/api/campuses")
+    apiFetch("/api/campuses")
       .then(async (r) => {
         const j = await r.json().catch(() => ({}));
         if (r.ok) setCampuses(j.campuses ?? []);
@@ -40,7 +41,7 @@ export default function ProgramsTab() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/programs")
+    apiFetch("/api/programs")
       .then(async (r) => {
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { setErr(j.error || `HTTP ${r.status}`); return; }
@@ -59,7 +60,7 @@ export default function ProgramsTab() {
       const params = new URLSearchParams();
       if (campus) params.set("campus", campus);
       const url = `/api/programs/${selected}/bibliography${params.toString() ? "?" + params.toString() : ""}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) {
         setErr(data.error || `HTTP ${res.status}`);
@@ -75,15 +76,33 @@ export default function ProgramsTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  function download(fmt: string) {
+  async function download(fmt: string) {
     if (!selected) return;
     const p = new URLSearchParams({ program_id: String(selected), fmt });
     if (campus) p.set("campus", campus);
-    window.location.href = `/api/export?${p.toString()}`;
+    try {
+      const res = await apiFetch(`/api/export?${p.toString()}`);
+      if (!res.ok) {
+        const text = await res.text();
+        setErr(text || `HTTP ${res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      const safe = (biblio?.program.name ?? "program").replace(/[^A-Za-z0-9_\-]+/g, "_");
+      a.download = `${safe}${campus ? "_" + campus.replace(/[^A-Za-z0-9_\-]+/g, "_") : ""}.${fmt}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function changeAssignment(subjectId: number, titleId: number, keep: boolean) {
-    await fetch("/api/match/override", {
+    await apiFetch("/api/match/override", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subject_id: subjectId, title_id: titleId, keep }),
@@ -267,7 +286,7 @@ function AddBook({
     const params = new URLSearchParams({ q });
     if (format) params.set("format", format);
     if (programCampus) params.set("campus", programCampus);
-    const data = await fetch(`/api/titles/search?${params}`).then((r) => r.json());
+    const data = await apiFetch(`/api/titles/search?${params}`).then((r) => r.json());
     setHits(data.titles ?? []);
   }
 
