@@ -52,7 +52,7 @@ type Props = {
   hint: string;
   endpoint: string;
   templates?: { label: string; href: string }[];
-  extraFields?: { name: string; label: string; type?: "text" | "campus" }[];
+  extraFields?: { name: string; label: string; type?: "text" | "campus"; placeholder?: string }[];
 };
 
 async function consumeNdjson(
