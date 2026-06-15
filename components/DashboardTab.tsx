@@ -22,7 +22,8 @@ const CITATION_STYLES = [
 export default function DashboardTab() {
   const [totals, setTotals] = useState<Totals | null>(null);
   const [programs, setPrograms] = useState<Program[]>([]);
-  const [programId, setProgramId] = useState<string>("");
+  // null = programs not yet loaded (prevents fetching all subjects before preselection)
+  const [programId, setProgramId] = useState<string | null>(null);
   const [campus, setCampus] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState("apa7");
   const [subjects, setSubjects] = useState<SubjectSummaryRow[]>([]);
@@ -41,13 +42,15 @@ export default function DashboardTab() {
       .then((j) => {
         const list: Program[] = j.programs ?? [];
         setPrograms(list);
-        if (list.length > 0) setProgramId(String(list[0].id));
+        // Pre-select first program; never default to "all".
+        setProgramId(list.length > 0 ? String(list[0].id) : "");
       })
       .catch(() => {});
   }, []);
 
-  // Fetch per-subject counts whenever filters change.
+  // Fetch per-subject counts whenever filters change (skip until programs loaded).
   useEffect(() => {
+    if (programId === null) return;
     setLoading(true);
     setErr(null);
     const p = new URLSearchParams();
@@ -67,11 +70,14 @@ export default function DashboardTab() {
     fmt: "citations-docx" | "citations-txt",
     subjectId?: number,
     subjectLabel?: string,
+    subjectProgramId?: number,   // use subject's own program_id for per-row export
   ) {
-    if (!programId) return;
+    // For per-subject export use that subject's program; for whole-program use filter.
+    const pid = subjectProgramId ? String(subjectProgramId) : programId;
+    if (!pid) return;
     setExporting(true);
     try {
-      const p = new URLSearchParams({ program_id: programId, fmt, style: citationStyle });
+      const p = new URLSearchParams({ program_id: pid, fmt, style: citationStyle });
       if (campus) p.set("campus", campus);
       if (subjectId) { p.set("subject_id", String(subjectId)); p.set("subject_label", subjectLabel ?? ""); }
       const res = await apiFetch(`/api/export?${p}`);
@@ -80,7 +86,7 @@ export default function DashboardTab() {
       const prog = programs.find((p) => String(p.id) === programId);
       const baseName = subjectLabel
         ? subjectLabel.replace(/[^A-Za-z0-9_-]+/g, "_")
-        : (prog?.name ?? "program").replace(/[^A-Za-z0-9_-]+/g, "_");
+        : (programs.find((p) => String(p.id) === pid)?.name ?? "program").replace(/[^A-Za-z0-9_-]+/g, "_");
       const ext = fmt === "citations-docx" ? "docx" : "txt";
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -143,7 +149,7 @@ export default function DashboardTab() {
         <div className="flex flex-wrap gap-3 mb-4">
           <label className="label">
             Program
-            <select className="input ml-1 min-w-[240px]" value={programId} onChange={(e) => setProgramId(e.target.value)}>
+            <select className="input ml-1 min-w-[240px]" value={programId ?? ""} onChange={(e) => setProgramId(e.target.value)}>
               <option value="">All programs</option>
               {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
@@ -212,7 +218,7 @@ export default function DashboardTab() {
                               <button
                                 className="text-psu text-[11px] underline whitespace-nowrap disabled:opacity-30"
                                 disabled={exporting || s.total_titles === 0}
-                                onClick={() => exportCitations("citations-docx", s.subject_id, label)}
+                                onClick={() => exportCitations("citations-docx", s.subject_id, label, s.program_id)}
                                 title={`Download ${citationStyle.toUpperCase()} citation list`}
                               >
                                 Export
