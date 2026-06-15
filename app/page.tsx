@@ -5,6 +5,8 @@ import MatchTab from "@/components/MatchTab";
 import ProgramsTab from "@/components/ProgramsTab";
 import DashboardTab from "@/components/DashboardTab";
 import ProcurementTab from "@/components/ProcurementTab";
+import CanvassingTab from "@/components/CanvassingTab";
+import PurchaseRequestTab from "@/components/PurchaseRequestTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -13,7 +15,9 @@ const tabs = [
   { id: "upload",    label: "Upload",              publicTab: false },
   { id: "match",     label: "Match",               publicTab: false },
   { id: "programs",    label: "Programs & Export",   publicTab: false },
-  { id: "procurement", label: "Procurement Analysis", publicTab: false },
+  { id: "procurement",      label: "Procurement Analysis", publicTab: false },
+  { id: "canvassing",       label: "Market Canvassing",   publicTab: false },
+  { id: "purchase-request", label: "Purchase Request",    publicTab: false },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
 
@@ -90,6 +94,10 @@ export default function Home() {
           <ProgramsTab />
         ) : tab === "procurement" ? (
           <ProcurementTab />
+        ) : tab === "canvassing" ? (
+          <CanvassingTab />
+        ) : tab === "purchase-request" ? (
+          <PurchaseRequestTab />
         ) : null}
       </section>
 
