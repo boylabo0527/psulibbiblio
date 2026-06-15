@@ -33,7 +33,7 @@ export const RESOURCE_TYPES = [
     kind: "book",  access: "paid", medium: "print",
     campusScoped: true,
     dedupBy: "callno-title-author",
-    accessionMode: true,  // each row = 1 accession; duplicates accumulate copies
+    accessionMode: true as boolean,  // each row = 1 accession; duplicates accumulate copies
   },
   {
     id: "journal_printed",

@@ -105,7 +105,11 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
             return;
           }
           await consumeNdjson(res, (ev) => {
-            if (ev.phase === "done") {
+            if (ev.phase === "deduping") {
+              patchFile(index, { phase: "deduping" });
+            } else if (ev.phase === "inserting") {
+              patchFile(index, { phase: "inserting", inserted: inserted + ev.inserted, skipped: skipped + ev.skipped, total });
+            } else if (ev.phase === "done") {
               inserted += ev.inserted;
               skipped += ev.skipped;
               patchFile(index, { phase: "inserting", inserted, skipped, total });
@@ -240,18 +244,18 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
       {queue.length > 0 && (
         <ul className="mt-3 space-y-2">
           {queue.map((fs, i) => {
-            const skippedSuffix = fs.skipped > 0
-              ? `, skipped ${fs.skipped.toLocaleString()} dup${fs.skipped === 1 ? "" : "s"}`
+            const updatedSuffix = fs.skipped > 0
+              ? ` · ${fs.skipped.toLocaleString()} copy count${fs.skipped === 1 ? "" : "s"} updated`
               : "";
             const label = ({
               idle: "Waiting…",
               queued: "Queued",
-              uploading: "Uploading…",
-              parsing: "Parsing…",
-              parsed: `Parsed ${fs.total.toLocaleString()} rows`,
-              deduping: "Deduplicating…",
-              inserting: `${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${skippedSuffix}`,
-              done: `Done — ${fs.inserted.toLocaleString()} inserted${skippedSuffix}`,
+              uploading: "Reading file…",
+              parsing: "Parsing rows…",
+              parsed: `Parsed ${fs.total.toLocaleString()} rows — checking database…`,
+              deduping: `Checking ${fs.total.toLocaleString()} rows against database…`,
+              inserting: `Saving ${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${updatedSuffix}`,
+              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}`,
               error: `Error: ${fs.error}`,
             } as Record<FilePhase, string>)[fs.phase];
 
