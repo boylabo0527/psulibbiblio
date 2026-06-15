@@ -3,40 +3,24 @@ import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { PSU_CAMPUSES } from "@/lib/campuses";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
-import type { ProcurementRow } from "@/app/api/procurement/route";
 
 type Program = { id: number; name: string };
 
-type DraftItem = {
-  canvassing_id: number;
-  title: string;
-  author: string;
-  publisher: string;
-  year: string;
-  supplier: string;
-  unit: string;
-  stock_prop_no: string;
-  unit_cost: number;
-  quantity: number;
-  subject_label: string; // which subject gap this addresses
-};
+type DraftItem = CanvassingRow & { selected: boolean; draftQty: number };
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
+function today() { return new Date().toISOString().slice(0, 10); }
 
 export default function PurchaseRequestTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
-  const [program, setProgram] = useState("");
+  const [selectedPrograms, setSelectedPrograms] = useState<Set<number>>(new Set());
   const [campus, setCampus] = useState("");
   const [budget, setBudget] = useState("");
-  const [procRows, setProcRows] = useState<ProcurementRow[]>([]); // subjects with gaps
-  const [canvassRows, setCanvassRows] = useState<CanvassingRow[]>([]);
-  const [loadingData, setLoadingData] = useState(false);
+  const [allMatched, setAllMatched] = useState<CanvassingRow[]>([]);
   const [draft, setDraft] = useState<Map<number, DraftItem>>(new Map());
+  const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   // PR header
   const [prNo, setPrNo] = useState("");
@@ -50,80 +34,52 @@ export default function PurchaseRequestTab() {
 
   useEffect(() => {
     apiFetch("/api/programs").then(r => r.json())
-      .then(j => setPrograms(j.programs ?? [])).catch(() => {});
+      .then(j => {
+        const list: Program[] = j.programs ?? [];
+        setPrograms(list);
+      }).catch(() => {});
   }, []);
 
-  async function loadData() {
-    if (!program) { setErr("Select a program first."); return; }
-    setLoadingData(true); setErr(null); setDraft(new Map()); setDataLoaded(false);
-    try {
-      const p = new URLSearchParams({ program_id: program });
-      if (campus) p.set("campus", campus);
-      const [procRes, canvRes] = await Promise.all([
-        apiFetch(`/api/procurement?${p}`).then(r => r.json()),
-        apiFetch(`/api/canvassing`).then(r => r.json()),  // all canvassing, no program filter
-      ]);
-      if (procRes.error) throw new Error(procRes.error);
-      if (canvRes.error) throw new Error(canvRes.error);
-
-      const gaps: ProcurementRow[] = (procRes.rows ?? []).filter((r: ProcurementRow) => !r.compliant);
-      const canvass: CanvassingRow[] = canvRes.rows ?? [];
-      setProcRows(gaps);
-      setCanvassRows(canvass);
-
-      // Auto-generate draft: for each canvassing title, pre-select it
-      // assigned to the subject with the largest gap that isn't yet filled.
-      const budgetVal = parseFloat(budget) || Infinity;
-      const gapCopy = gaps.map(g => ({ ...g, remaining: g.gap }));
-      const initialDraft = new Map<number, DraftItem>();
-      let spent = 0;
-
-      // Sort canvassing by unit_cost ascending (maximize coverage within budget)
-      const sorted = [...canvass].sort((a, b) => a.unit_cost - b.unit_cost);
-      for (const cv of sorted) {
-        const itemCost = cv.unit_cost * cv.quantity;
-        if (spent + itemCost > budgetVal) continue;
-        // Find the gap subject needing the most titles
-        const target = gapCopy.filter(g => g.remaining > 0).sort((a, b) => b.remaining - a.remaining)[0];
-        const label = target
-          ? [target.course_code, target.course_title].filter(Boolean).join(" — ")
-          : "";
-        if (target) target.remaining = Math.max(0, target.remaining - 1);
-
-        initialDraft.set(cv.id, {
-          canvassing_id: cv.id,
-          title: cv.title, author: cv.author, publisher: cv.publisher,
-          year: cv.year, supplier: cv.supplier, unit: cv.unit,
-          stock_prop_no: cv.stock_prop_no,
-          unit_cost: cv.unit_cost, quantity: cv.quantity,
-          subject_label: label,
-        });
-        spent += itemCost;
-      }
-      setDraft(initialDraft);
-      setDataLoaded(true);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoadingData(false);
-    }
+  function toggleProgram(id: number) {
+    setSelectedPrograms(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   }
 
-  function toggleItem(cv: CanvassingRow) {
+  async function loadItems() {
+    if (selectedPrograms.size === 0) { setErr("Select at least one program."); return; }
+    setLoading(true); setErr(null); setLoaded(false);
+    try {
+      // Fetch all matched canvassing entries (subject_id assigned)
+      const res = await apiFetch("/api/canvassing").then(r => r.json());
+      if (res.error) throw new Error(res.error);
+      const all: CanvassingRow[] = res.rows ?? [];
+      // Filter: must have a subject assigned and belong to selected programs
+      const matched = all.filter(r =>
+        r.subject_id !== null &&
+        r.program_id !== null &&
+        selectedPrograms.has(r.program_id)
+      );
+      setAllMatched(matched);
+      // Initialize draft with all matched items selected
+      const initDraft = new Map<number, DraftItem>();
+      for (const r of matched) {
+        initDraft.set(r.id, { ...r, selected: true, draftQty: r.quantity });
+      }
+      setDraft(initDraft);
+      setLoaded(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  }
+
+  function toggleItem(id: number) {
     setDraft(prev => {
       const next = new Map(prev);
-      if (next.has(cv.id)) {
-        next.delete(cv.id);
-      } else {
-        next.set(cv.id, {
-          canvassing_id: cv.id,
-          title: cv.title, author: cv.author, publisher: cv.publisher,
-          year: cv.year, supplier: cv.supplier, unit: cv.unit,
-          stock_prop_no: cv.stock_prop_no,
-          unit_cost: cv.unit_cost, quantity: cv.quantity,
-          subject_label: "",
-        });
-      }
+      const item = next.get(id);
+      if (item) next.set(id, { ...item, selected: !item.selected });
       return next;
     });
   }
@@ -132,35 +88,50 @@ export default function PurchaseRequestTab() {
     setDraft(prev => {
       const next = new Map(prev);
       const item = next.get(id);
-      if (item) next.set(id, { ...item, quantity: Math.max(1, qty) });
+      if (item) next.set(id, { ...item, draftQty: Math.max(1, qty) });
       return next;
     });
   }
 
-  const draftItems = useMemo(() => Array.from(draft.values()), [draft]);
-  const grandTotal = draftItems.reduce((s, i) => s + i.unit_cost * i.quantity, 0);
+  const selectedItems = useMemo(() => Array.from(draft.values()).filter(i => i.selected), [draft]);
+  const grandTotal = selectedItems.reduce((s, i) => s + i.unit_cost * i.draftQty, 0);
   const budgetVal = parseFloat(budget) || 0;
   const overBudget = budgetVal > 0 && grandTotal > budgetVal;
-  const remaining = budgetVal > 0 ? budgetVal - grandTotal : null;
 
-  // Gap coverage: how many subjects would be helped by selected items
-  const subjectsHelped = new Set(draftItems.map(i => i.subject_label).filter(Boolean)).size;
+  // Group selected items by program → subject
+  const grouped = useMemo(() => {
+    const byProg = new Map<string, { program_id: number; subjects: Map<string, { label: string; items: DraftItem[] }> }>();
+    for (const item of selectedItems) {
+      if (!byProg.has(item.program)) byProg.set(item.program, { program_id: item.program_id!, subjects: new Map() });
+      const subjKey = item.subject_label || "General";
+      const prog = byProg.get(item.program)!;
+      if (!prog.subjects.has(subjKey)) prog.subjects.set(subjKey, { label: subjKey, items: [] });
+      prog.subjects.get(subjKey)!.items.push(item);
+    }
+    return Array.from(byProg.entries());
+  }, [selectedItems]);
 
   async function generate() {
-    if (draftItems.length === 0) return;
+    if (selectedItems.length === 0) return;
     setGenerating(true); setErr(null);
     try {
       const body = {
         entityName: "PALAWAN STATE UNIVERSITY",
         office, fundCluster, prNo,
-        date: new Date(date).toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" }),
+        date: new Date(date + "T00:00:00").toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" }),
         rcCode, purpose, requestedBy, approvedBy,
-        items: draftItems.map((i, idx) => ({
+        items: selectedItems.map((i, idx) => ({
           stock_prop_no: i.stock_prop_no || String(idx + 1),
           unit: i.unit,
-          description: [i.title, i.author && `by ${i.author}`, i.publisher, i.year, i.subject_label && `(${i.subject_label})`]
-            .filter(Boolean).join(", "),
-          quantity: i.quantity,
+          description: [
+            i.title,
+            i.author && `by ${i.author}`,
+            i.publisher,
+            i.year,
+            i.subject_label && `[${i.subject_label}]`,
+            i.program && `(${i.program})`,
+          ].filter(Boolean).join(", "),
+          quantity: i.draftQty,
           unit_cost: i.unit_cost,
         })),
       };
@@ -173,30 +144,42 @@ export default function PurchaseRequestTab() {
       const blob = await res.blob();
       const fname = `PR_${(prNo || "draft").replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = fname;
+      a.href = URL.createObjectURL(blob); a.download = fname;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(a.href);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setGenerating(false);
-    }
+    } finally { setGenerating(false); }
   }
 
   return (
     <div className="space-y-4">
-      {/* Step 1: Filters + Budget */}
+      {/* Step 1: Select programs + campus + budget */}
       <div className="card">
-        <h2 className="text-psu font-semibold mb-4">Step 1 — Select Program, Campus & Budget</h2>
+        <h2 className="text-psu font-semibold mb-1">Step 1 — Select Programs & Budget</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Select one or more programs to consolidate into a single Purchase Request.
+          Only titles already matched to subject gaps in the Canvassing tab will appear.
+        </p>
+
+        <div className="mb-3">
+          <div className="text-xs font-medium text-slate-600 mb-2">Programs (select one or more):</div>
+          <div className="flex flex-wrap gap-2">
+            {programs.map(p => (
+              <label key={p.id} className={
+                "flex items-center gap-1.5 cursor-pointer rounded border px-3 py-1.5 text-xs transition " +
+                (selectedPrograms.has(p.id)
+                  ? "bg-psu text-white border-psu"
+                  : "border-slate-300 text-slate-600 hover:border-psu hover:text-psu")
+              }>
+                <input type="checkbox" className="hidden" checked={selectedPrograms.has(p.id)} onChange={() => toggleProgram(p.id)} />
+                {p.name}
+              </label>
+            ))}
+          </div>
+        </div>
+
         <div className="flex flex-wrap gap-3 mb-4">
-          <label className="label">
-            Program *
-            <select className="input ml-1 min-w-[220px]" value={program} onChange={e => setProgram(e.target.value)}>
-              <option value="">— select program —</option>
-              {programs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </label>
           <label className="label">
             Campus
             <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => setCampus(e.target.value)}>
@@ -206,49 +189,25 @@ export default function PurchaseRequestTab() {
           </label>
           <label className="label">
             Available Budget (PHP)
-            <input
-              className="input ml-1 w-44" type="number" min="0" step="100"
-              placeholder="e.g. 50000"
-              value={budget} onChange={e => setBudget(e.target.value)}
-            />
+            <input className="input ml-1 w-44" type="number" min="0" step="100"
+              placeholder="e.g. 50000" value={budget} onChange={e => setBudget(e.target.value)} />
           </label>
           <div className="flex items-end">
-            <button className="btn-outline text-sm" onClick={loadData} disabled={!program || loadingData}>
-              {loadingData ? "Loading…" : "Load Procurement Gaps & Canvassing"}
+            <button className="btn-outline text-sm" onClick={loadItems} disabled={loading || selectedPrograms.size === 0}>
+              {loading ? "Loading…" : "Load Matched Titles"}
             </button>
           </div>
         </div>
         {err && <p className="text-red-700 text-sm">{err}</p>}
-        {dataLoaded && procRows.length === 0 && (
-          <p className="text-green-700 text-sm">All subjects for this program are already compliant — no procurement needed.</p>
-        )}
-        {dataLoaded && canvassRows.length === 0 && (
-          <p className="text-amber-700 text-sm">No canvassing entries found for this program. Upload titles in the Market Canvassing tab first.</p>
-        )}
-        {dataLoaded && procRows.length > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
-            <div className="bg-red-50 border border-red-200 rounded p-3">
-              <div className="text-xs text-red-700">Subjects with gaps</div>
-              <div className="text-xl font-semibold text-red-700">{procRows.length}</div>
-            </div>
-            <div className="bg-amber-50 border border-amber-200 rounded p-3">
-              <div className="text-xs text-amber-700">Total titles needed</div>
-              <div className="text-xl font-semibold text-amber-700">{procRows.reduce((s, r) => s + r.gap, 0)}</div>
-            </div>
-            <div className="bg-psu-light rounded p-3">
-              <div className="text-xs text-slate-600">Canvassed titles</div>
-              <div className="text-xl font-semibold text-psu">{canvassRows.length}</div>
-            </div>
-            <div className="bg-psu-light rounded p-3">
-              <div className="text-xs text-slate-600">Auto-selected for PR</div>
-              <div className="text-xl font-semibold text-psu">{draft.size}</div>
-            </div>
-          </div>
+        {loaded && allMatched.length === 0 && (
+          <p className="text-amber-700 text-sm">
+            No matched titles found for the selected program(s). Go to the Market Canvassing tab to assign canvassed titles to subject gaps first.
+          </p>
         )}
       </div>
 
       {/* Step 2: PR Header */}
-      {dataLoaded && (
+      {loaded && allMatched.length > 0 && (
         <div className="card">
           <h2 className="text-psu font-semibold mb-4">Step 2 — Purchase Request Header</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -288,27 +247,24 @@ export default function PurchaseRequestTab() {
         </div>
       )}
 
-      {/* Step 3: Item selection / draft */}
-      {dataLoaded && canvassRows.length > 0 && (
+      {/* Step 3: Review items grouped by program → subject */}
+      {loaded && allMatched.length > 0 && (
         <div className="card">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-            <h2 className="text-psu font-semibold">Step 3 — Review & Modify Draft PR</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <h2 className="text-psu font-semibold">Step 3 — Review & Finalize Items</h2>
             <div className="flex gap-2 text-xs">
-              <button className="btn-outline" onClick={() =>
-                setDraft(new Map(canvassRows.map(r => [r.id, {
-                  canvassing_id: r.id, title: r.title, author: r.author,
-                  publisher: r.publisher, year: r.year, supplier: r.supplier,
-                  unit: r.unit, stock_prop_no: r.stock_prop_no,
-                  unit_cost: r.unit_cost, quantity: r.quantity, subject_label: "",
-                }])))
-              }>Select all</button>
-              <button className="btn-outline" onClick={() => setDraft(new Map())}>Clear all</button>
+              <button className="btn-outline" onClick={() => setDraft(prev => {
+                const next = new Map(prev);
+                next.forEach((v, k) => next.set(k, { ...v, selected: true }));
+                return next;
+              })}>Select all</button>
+              <button className="btn-outline" onClick={() => setDraft(prev => {
+                const next = new Map(prev);
+                next.forEach((v, k) => next.set(k, { ...v, selected: false }));
+                return next;
+              })}>Clear all</button>
             </div>
           </div>
-          <p className="text-xs text-slate-500 mb-3">
-            Titles are pre-selected to cover the most subjects with gaps within your budget.
-            Check/uncheck to modify. Adjust quantities as needed.
-          </p>
 
           {/* Budget bar */}
           {budgetVal > 0 && (
@@ -319,88 +275,78 @@ export default function PurchaseRequestTab() {
                 </span>
                 <span className={overBudget ? "text-red-600 font-semibold" : "text-slate-700"}>
                   ₱{grandTotal.toLocaleString("en-PH", { minimumFractionDigits: 2 })} / ₱{budgetVal.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
-                  {remaining !== null && !overBudget && ` (₱${remaining.toLocaleString("en-PH", { minimumFractionDigits: 2 })} remaining)`}
+                  {!overBudget && <span className="ml-1 text-slate-500">(₱{(budgetVal - grandTotal).toLocaleString("en-PH", { minimumFractionDigits: 2 })} remaining)</span>}
                 </span>
               </div>
               <div className="w-full bg-slate-200 rounded-full h-2">
-                <div className="h-2 rounded-full transition-all"
-                  style={{
-                    width: `${Math.min(100, (grandTotal / budgetVal) * 100)}%`,
-                    backgroundColor: overBudget ? "#dc2626" : grandTotal / budgetVal > 0.9 ? "#d97706" : "#1e40af",
-                  }}
-                />
+                <div className="h-2 rounded-full transition-all" style={{
+                  width: `${Math.min(100, (grandTotal / budgetVal) * 100)}%`,
+                  backgroundColor: overBudget ? "#dc2626" : grandTotal / budgetVal > 0.9 ? "#d97706" : "#1e40af",
+                }} />
               </div>
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500 text-left">
-                  <th className="py-1 pr-2 w-6"></th>
-                  <th className="py-1 pr-2">Title / Author</th>
-                  <th className="py-1 pr-2">Subject (gap addressed)</th>
-                  <th className="py-1 pr-2">Supplier</th>
-                  <th className="py-1 pr-2">Unit</th>
-                  <th className="py-1 px-2 text-right">Unit Cost</th>
-                  <th className="py-1 px-2 text-right w-20">Qty</th>
-                  <th className="py-1 pl-2 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {canvassRows.map(r => {
-                  const sel = draft.get(r.id);
-                  const qty = sel?.quantity ?? r.quantity;
-                  return (
-                    <tr key={r.id} className={"border-b border-slate-100 " + (sel ? "bg-psu-light" : "hover:bg-slate-50")}>
-                      <td className="py-1.5 pr-2">
-                        <input type="checkbox" checked={!!sel} onChange={() => toggleItem(r)} />
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <div className="font-medium">{r.title}</div>
-                        {r.author && <div className="text-slate-500">{r.author}{r.year ? `, ${r.year}` : ""}</div>}
-                      </td>
-                      <td className="py-1.5 pr-2 text-slate-500 text-[11px]">
-                        {sel?.subject_label || <span className="text-slate-300">—</span>}
-                      </td>
-                      <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
-                      <td className="py-1.5 pr-2 text-slate-600">{r.unit}</td>
-                      <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-                      <td className="py-1.5 px-2">
-                        {sel ? (
-                          <input type="number" min="1" className="input w-16 text-right text-xs py-0.5"
-                            value={qty} onChange={e => setQty(r.id, Number(e.target.value))} />
-                        ) : (
-                          <span className="text-right block tabular-nums text-slate-400">{r.quantity}</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pl-2 text-right font-semibold tabular-nums">
-                        {sel ? `₱${(r.unit_cost * qty).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {/* Grouped by program → subject */}
+          {grouped.map(([progName, { subjects }]) => (
+            <div key={progName} className="mb-6">
+              <h3 className="text-sm font-semibold text-psu mb-2 pb-1 border-b border-slate-200">{progName}</h3>
+              {Array.from(subjects.entries()).map(([subjKey, { label, items }]) => (
+                <div key={subjKey} className="mb-3 ml-2">
+                  <div className="text-xs font-medium text-slate-600 mb-1">{label}</div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-400 text-left">
+                        <th className="py-0.5 pr-2 w-6"></th>
+                        <th className="py-0.5 pr-2">Title</th>
+                        <th className="py-0.5 pr-2">Author</th>
+                        <th className="py-0.5 pr-2">Supplier</th>
+                        <th className="py-0.5 px-2 text-right">Unit Cost</th>
+                        <th className="py-0.5 px-2 w-20 text-right">Qty</th>
+                        <th className="py-0.5 pl-2 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map(item => (
+                        <tr key={item.id} className={"border-b border-slate-100 " + (item.selected ? "bg-psu-light" : "opacity-50")}>
+                          <td className="py-1 pr-2">
+                            <input type="checkbox" checked={item.selected} onChange={() => toggleItem(item.id)} />
+                          </td>
+                          <td className="py-1 pr-2 font-medium">{item.title}{item.year ? ` (${item.year})` : ""}</td>
+                          <td className="py-1 pr-2 text-slate-600">{item.author}</td>
+                          <td className="py-1 pr-2 text-slate-600">{item.supplier}</td>
+                          <td className="py-1 px-2 text-right tabular-nums">₱{item.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                          <td className="py-1 px-2">
+                            {item.selected ? (
+                              <input type="number" min="1" className="input w-14 text-right text-xs py-0.5"
+                                value={item.draftQty} onChange={e => setQty(item.id, Number(e.target.value))} />
+                            ) : (
+                              <span className="text-right block tabular-nums text-slate-400">{item.draftQty}</span>
+                            )}
+                          </td>
+                          <td className="py-1 pl-2 text-right font-semibold tabular-nums">
+                            {item.selected ? `₱${(item.unit_cost * item.draftQty).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       )}
 
       {/* Step 4: Generate */}
-      {dataLoaded && (
+      {loaded && allMatched.length > 0 && (
         <div className="card">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex gap-6">
               <div>
                 <div className="text-xs text-slate-500">Selected items</div>
-                <div className="text-2xl font-semibold text-psu">{draftItems.length}</div>
+                <div className="text-2xl font-semibold text-psu">{selectedItems.length}</div>
               </div>
-              {subjectsHelped > 0 && (
-                <div>
-                  <div className="text-xs text-slate-500">Subjects helped</div>
-                  <div className="text-2xl font-semibold text-green-700">{subjectsHelped}</div>
-                </div>
-              )}
               <div>
                 <div className="text-xs text-slate-500">Grand Total</div>
                 <div className={`text-2xl font-semibold ${overBudget ? "text-red-600" : "text-psu"}`}>
@@ -408,17 +354,16 @@ export default function PurchaseRequestTab() {
                 </div>
               </div>
             </div>
-            <div className="flex flex-col items-end gap-2">
+            <div className="flex flex-col items-end gap-1">
               {err && <p className="text-red-700 text-xs max-w-xs text-right">{err}</p>}
               {overBudget && <p className="text-red-600 text-xs">Total exceeds budget — uncheck items to reduce.</p>}
               <button
                 className="btn-outline text-sm px-6 py-2 font-semibold disabled:opacity-40"
-                disabled={generating || draftItems.length === 0 || overBudget}
+                disabled={generating || selectedItems.length === 0 || overBudget}
                 onClick={generate}
               >
                 {generating ? "Generating…" : "Generate Purchase Request XLSX"}
               </button>
-              {draftItems.length === 0 && <p className="text-xs text-slate-400">Select at least one item</p>}
             </div>
           </div>
         </div>
