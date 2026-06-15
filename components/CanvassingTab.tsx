@@ -58,24 +58,27 @@ function mapRow(raw: Record<string, string>): ParsedRow {
   };
 }
 
-const MIGRATION_SQL = `-- Run in Supabase SQL Editor (Project → SQL Editor → New query):
-create table canvassing (
-  id bigint generated always as identity primary key,
-  title text not null,
-  author text, publisher text, year text, isbn text,
-  subject_id bigint references subjects(id),
-  program_id bigint references programs(id),
-  supplier text, unit text default 'copy',
-  stock_prop_no text,
-  unit_cost numeric(10,2) default 0,
-  quantity integer default 1,
-  canvass_date date,
-  notes text,
-  created_at timestamptz default now()
-);
-alter table canvassing enable row level security;
-create policy "service role full access" on canvassing
-  using (true) with check (true);`;
+const MIGRATION_SQL = `-- If the table already exists, just add the missing column:
+alter table canvassing add column if not exists canvass_date date;
+
+-- If the table does not exist at all, run this instead:
+-- create table canvassing (
+--   id bigint generated always as identity primary key,
+--   title text not null,
+--   author text, publisher text, year text, isbn text,
+--   subject_id bigint references subjects(id),
+--   program_id bigint references programs(id),
+--   supplier text, unit text default 'copy',
+--   stock_prop_no text,
+--   unit_cost numeric(10,2) default 0,
+--   quantity integer default 1,
+--   canvass_date date,
+--   notes text,
+--   created_at timestamptz default now()
+-- );
+-- alter table canvassing enable row level security;
+-- create policy "service role full access" on canvassing
+--   using (true) with check (true);`;
 
 export default function CanvassingTab() {
   const [rows, setRows] = useState<CanvassingRow[]>([]);
