@@ -2,6 +2,7 @@
 import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
+import { PSU_CAMPUSES } from "@/lib/campuses";
 
 type ProgressEvent =
   | { phase: "parsing" }
@@ -26,26 +27,6 @@ type FileStatus = {
 
 const STALL_MS = 10_000;
 
-const PSU_CAMPUSES = [
-  "Main Campus",
-  "PSU-PCAT CUYO",
-  "PSU-ARACELI",
-  "PSU-BALABAC",
-  "PSU-BATARAZA",
-  "PSU-BROOKES POINT",
-  "PSU-CORON",
-  "PSU-DUMARAN",
-  "PSU-EL NIDO",
-  "PSU-LINAPACAN",
-  "PSU-NARRA",
-  "PSU-QUEZON",
-  "PSU-RIZAL",
-  "PSU-ROXAS",
-  "PSU-SAN VICENTE",
-  "PSU-SOFRONIO ESPANOLA",
-  "PSU-TAYTAY",
-  "Manalo Campus",
-];
 
 type Props = {
   title: string;

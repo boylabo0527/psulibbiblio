@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
+import { PSU_CAMPUSES } from "@/lib/campuses";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -22,24 +23,12 @@ type Bibliography = {
 
 export default function ProgramsTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
-  const [campuses, setCampuses] = useState<string[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [campus, setCampus] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState<string>("apa7");
   const [biblio, setBiblio] = useState<Bibliography | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  // Fetch the list of campuses that appear on printed-resource rows so the
-  // picker doesn't require the librarian to remember exact spellings.
-  useEffect(() => {
-    apiFetch("/api/campuses")
-      .then(async (r) => {
-        const j = await r.json().catch(() => ({}));
-        if (r.ok) setCampuses(j.campuses ?? []);
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -128,16 +117,14 @@ export default function ProgramsTab() {
           </label>
           <label className="label">
             Campus
-            <input
+            <select
               className="input ml-1 min-w-[180px]"
-              list="campuses-list"
-              placeholder="All campuses"
               value={campus}
               onChange={(e) => setCampus(e.target.value)}
-            />
-            <datalist id="campuses-list">
-              {campuses.map((c) => <option key={c} value={c} />)}
-            </datalist>
+            >
+              <option value="">All campuses</option>
+              {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
           </label>
           <span className="text-xs text-slate-500">
             Campus only filters printed materials. Digital resources show for all campuses.
