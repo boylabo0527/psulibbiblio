@@ -4,6 +4,24 @@ import { apiFetch } from "@/lib/api-client";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 
+async function downloadTemplate(fmt: "xlsx" | "csv") {
+  const XLSX = await import("xlsx");
+  const headers = ["Title", "Author", "Publisher", "Year", "ISBN", "Supplier", "Price", "Unit", "Quantity", "Stock No", "Notes"];
+  const example = ["Introduction to Philosophy", "Popkin, Richard", "Cengage", "2020", "978-0-123456-78-9", "National Book Store", "850.00", "copy", "1", "", ""];
+  const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+  ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Canvassing");
+  const type = fmt === "xlsx" ? "xlsx" : "csv";
+  const buf = XLSX.write(wb, { type: "buffer", bookType: type });
+  const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `canvassing_template.${fmt}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 type Program = { id: number; name: string };
 
 const UNIT_OPTIONS = ["copy", "piece", "set", "volume", "title"];
@@ -85,7 +103,7 @@ export default function CanvassingTab() {
       .then(r => r.json())
       .then(j => {
         if (j.error) {
-          if (j.error.includes("does not exist") || j.error.includes("relation")) setNeedsMigration(true);
+          if (j.error.includes("does not exist") || j.error.includes("relation") || j.error.includes("schema cache") || j.error.includes("canvassing")) setNeedsMigration(true);
           else setErr(j.error);
         } else setRows(j.rows ?? []);
       })
@@ -144,12 +162,20 @@ export default function CanvassingTab() {
   if (needsMigration) {
     return (
       <div className="card">
-        <h2 className="text-psu font-semibold mb-2">Market Canvassing</h2>
-        <p className="text-sm text-amber-700 mb-3">The <code>canvassing</code> table does not exist yet. Run this SQL in your Supabase SQL editor:</p>
-        <pre className="bg-slate-900 text-green-300 text-xs rounded p-4 overflow-x-auto whitespace-pre-wrap">{MIGRATION_SQL}</pre>
-        <button className="btn-outline mt-4 text-sm" onClick={() => { setNeedsMigration(false); reload(); }}>
-          Retry after running migration
-        </button>
+        <h2 className="text-psu font-semibold mb-2">Market Canvassing — Setup Required</h2>
+        <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3">
+          <p className="text-sm font-semibold text-amber-800 mb-1">The <code>canvassing</code> table does not exist in your Supabase database.</p>
+          <p className="text-xs text-amber-700">Go to your <strong>Supabase project → SQL Editor</strong>, paste the SQL below, and click Run. Then come back and click Retry.</p>
+        </div>
+        <pre className="bg-slate-900 text-green-300 text-xs rounded p-4 overflow-x-auto whitespace-pre-wrap select-all">{MIGRATION_SQL}</pre>
+        <div className="flex gap-3 mt-4">
+          <button className="btn-outline text-sm" onClick={() => { setNeedsMigration(false); reload(); }}>
+            Retry after running migration
+          </button>
+          <button className="text-sm text-slate-500 underline" onClick={() => { navigator.clipboard.writeText(MIGRATION_SQL); }}>
+            Copy SQL
+          </button>
+        </div>
       </div>
     );
   }
@@ -161,11 +187,16 @@ export default function CanvassingTab() {
       {/* Upload card */}
       <div className="card">
         <h2 className="text-psu font-semibold mb-1">Upload Canvassing File</h2>
-        <p className="text-xs text-slate-500 mb-3">
+        <p className="text-xs text-slate-500 mb-1">
           Upload an Excel or CSV file with market-canvassed titles. Expected columns:
           <span className="font-medium"> Title, Author, Publisher, Year, Price, Supplier</span>
           &nbsp;(+ optional: ISBN, Unit, Quantity, Stock No, Notes)
         </p>
+        <div className="flex gap-2 mb-3">
+          <span className="text-xs text-slate-400">Download template:</span>
+          <button className="text-xs text-psu underline" onClick={() => downloadTemplate("xlsx")}>XLSX</button>
+          <button className="text-xs text-psu underline" onClick={() => downloadTemplate("csv")}>CSV</button>
+        </div>
 
         <div className="flex flex-wrap gap-3 mb-3">
           <label className="label">
