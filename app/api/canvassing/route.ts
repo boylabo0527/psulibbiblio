@@ -20,6 +20,7 @@ export type CanvassingRow = {
   stock_prop_no: string;
   unit_cost: number;
   quantity: number;
+  canvass_date: string;
   notes: string;
   created_at: string;
 };
@@ -33,6 +34,7 @@ export async function GET(req: Request) {
 
     let q = db.from("canvassing")
       .select("*, subjects(course_code, course_title, program_id), programs(name)")
+      .order("canvass_date", { ascending: false })
       .order("created_at", { ascending: false });
     if (subjectId) q = q.eq("subject_id", Number(subjectId));
     else if (programId) q = q.eq("program_id", Number(programId));
@@ -59,64 +61,13 @@ export async function GET(req: Request) {
         stock_prop_no: (r.stock_prop_no as string) ?? "",
         unit_cost: Number(r.unit_cost ?? 0),
         quantity: Number(r.quantity ?? 1),
+        canvass_date: (r.canvass_date as string) ?? "",
         notes: (r.notes as string) ?? "",
         created_at: (r.created_at as string) ?? "",
       };
     });
 
     return NextResponse.json({ rows });
-  } catch (err) {
-    return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });
-  }
-}
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const db = serviceClient();
-    const { data, error } = await db.from("canvassing").insert({
-      title: body.title,
-      author: body.author ?? null,
-      publisher: body.publisher ?? null,
-      year: body.year ?? null,
-      isbn: body.isbn ?? null,
-      subject_id: body.subject_id ?? null,
-      program_id: body.program_id ?? null,
-      supplier: body.supplier ?? null,
-      unit: body.unit ?? "copy",
-      stock_prop_no: body.stock_prop_no ?? null,
-      unit_cost: Number(body.unit_cost ?? 0),
-      quantity: Number(body.quantity ?? 1),
-      notes: body.notes ?? null,
-    }).select().single();
-    if (error) throw error;
-    return NextResponse.json({ row: data });
-  } catch (err) {
-    return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });
-  }
-}
-
-export async function PATCH(req: Request) {
-  try {
-    const body = await req.json();
-    const db = serviceClient();
-    const { data, error } = await db.from("canvassing").update({
-      title: body.title,
-      author: body.author ?? null,
-      publisher: body.publisher ?? null,
-      year: body.year ?? null,
-      isbn: body.isbn ?? null,
-      subject_id: body.subject_id ?? null,
-      program_id: body.program_id ?? null,
-      supplier: body.supplier ?? null,
-      unit: body.unit ?? "copy",
-      stock_prop_no: body.stock_prop_no ?? null,
-      unit_cost: Number(body.unit_cost ?? 0),
-      quantity: Number(body.quantity ?? 1),
-      notes: body.notes ?? null,
-    }).eq("id", Number(body.id)).select().single();
-    if (error) throw error;
-    return NextResponse.json({ row: data });
   } catch (err) {
     return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });
   }

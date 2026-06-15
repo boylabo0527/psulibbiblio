@@ -61,7 +61,7 @@ export default function PurchaseRequestTab() {
       if (campus) p.set("campus", campus);
       const [procRes, canvRes] = await Promise.all([
         apiFetch(`/api/procurement?${p}`).then(r => r.json()),
-        apiFetch(`/api/canvassing?program_id=${program}`).then(r => r.json()),
+        apiFetch(`/api/canvassing`).then(r => r.json()),  // all canvassing, no program filter
       ]);
       if (procRes.error) throw new Error(procRes.error);
       if (canvRes.error) throw new Error(canvRes.error);

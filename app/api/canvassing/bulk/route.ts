@@ -6,9 +6,9 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
-    const { program_id, rows } = await req.json();
-    if (!program_id || !Array.isArray(rows) || rows.length === 0) {
-      return NextResponse.json({ error: "program_id and rows are required" }, { status: 400 });
+    const { rows, canvass_date } = await req.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return NextResponse.json({ error: "rows array is required" }, { status: 400 });
     }
     const db = serviceClient();
     const inserts = rows.map((r: Record<string, unknown>) => ({
@@ -23,7 +23,8 @@ export async function POST(req: Request) {
       unit_cost: Number(r.unit_cost ?? 0),
       quantity: Math.max(1, Number(r.quantity ?? 1)),
       notes: String(r.notes ?? "").trim() || null,
-      program_id: Number(program_id),
+      canvass_date: (canvass_date as string) || null,
+      program_id: null,
       subject_id: null,
     })).filter(r => r.title !== "");
 
