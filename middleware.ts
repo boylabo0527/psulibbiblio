@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  *  /api/* requires a valid Supabase access token in the Authorization
  *  header. The Dashboard tab on the public homepage is wired to the
  *  endpoints listed below. */
-const PUBLIC_API = ["/api/health", "/api/dashboard"];
+const PUBLIC_API = ["/api/health", "/api/dashboard", "/api/export", "/api/programs"];
 
 function isPublic(pathname: string): boolean {
   for (const p of PUBLIC_API) {
