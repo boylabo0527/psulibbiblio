@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { runMatch } from "@/lib/matcher";
+import { runMatch, subjectText, titleText } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
+import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import type { SubjectRow, TitleRow } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -8,6 +9,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const PAGE = 1000;
+const EMBED_BATCH = 64;
+const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
 
 async function fetchAll<T>(
   db: ReturnType<typeof serviceClient>, table: string, columns: string,
@@ -26,6 +29,43 @@ async function fetchAll<T>(
   return out;
 }
 
+/** Compute (or reuse cached) embeddings for subjects and titles. Any failure
+ *  here — model unavailable, out of time, whatever — is caught by the
+ *  caller, which falls back to BM25-only matching rather than failing the
+ *  whole run. */
+async function computeEmbeddings(
+  db: ReturnType<typeof serviceClient>,
+  subjects: SubjectRow[],
+  titles: (TitleRow & { id: number; embedding: number[] | null })[],
+): Promise<{ subjectEmbeddings: Map<number, number[]>; titleEmbeddings: Map<number, number[]> }> {
+  const subjectEmbeddings = new Map<number, number[]>();
+  const subjVecs = await embedTexts(subjects.map((s) => subjectText(s)));
+  subjects.forEach((s, i) => subjectEmbeddings.set(s.id!, subjVecs[i]));
+
+  const titleEmbeddings = new Map<number, number[]>();
+  const missing: { id: number; text: string }[] = [];
+  for (const t of titles) {
+    if (Array.isArray(t.embedding) && t.embedding.length > 0) {
+      titleEmbeddings.set(t.id, t.embedding);
+    } else {
+      missing.push({ id: t.id, text: titleText(t) });
+    }
+  }
+
+  for (let i = 0; i < missing.length; i += EMBED_BATCH) {
+    const batch = missing.slice(i, i + EMBED_BATCH);
+    const vecs = await embedTexts(batch.map((m) => m.text));
+    const upsertRows = batch.map((m, k) => {
+      titleEmbeddings.set(m.id, vecs[k]);
+      return { id: m.id, embedding: vecs[k] };
+    });
+    const { error } = await db.from("titles").upsert(upsertRows, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  return { subjectEmbeddings, titleEmbeddings };
+}
+
 export async function POST(req: Request) {
   try {
     const url = new URL(req.url);
@@ -39,9 +79,9 @@ export async function POST(req: Request) {
       "id, program_id, course_code, course_title, description",
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    const titles = await fetchAll<TitleRow>(
+    const titles = await fetchAll<TitleRow & { id: number; embedding: number[] | null }>(
       db, "titles",
-      "id, format, title, author, publisher, year, subjects",
+      "id, format, title, author, publisher, year, subjects, embedding",
     );
     if (!subjects.length || !titles.length) {
       return NextResponse.json(
@@ -50,7 +90,26 @@ export async function POST(req: Request) {
       );
     }
 
-    const results = runMatch(subjects, titles, { topK, minScore });
+    let subjectEmbeddings: Map<number, number[]> | undefined;
+    let titleEmbeddings: Map<number, number[]> | undefined;
+    let semanticUsed = false;
+    if (embeddingsEnabled()) {
+      try {
+        const computed = await computeEmbeddings(db, subjects, titles);
+        subjectEmbeddings = computed.subjectEmbeddings;
+        titleEmbeddings = computed.titleEmbeddings;
+        semanticUsed = true;
+      } catch (embedErr) {
+        console.error("Embeddings unavailable this run, falling back to BM25-only:", embedErr);
+      }
+    }
+
+    const results = runMatch(subjects, titles, {
+      topK, minScore,
+      semanticWeight: SEMANTIC_WEIGHT,
+      subjectEmbeddings, titleEmbeddings,
+      cosineSim: semanticUsed ? cosineSim : undefined,
+    });
 
     // Drop prior auto assignments for these subjects; keep manual rows.
     const subjectIds = subjects.map((s) => s.id!);
@@ -80,6 +139,7 @@ export async function POST(req: Request) {
       matches: results.length,
       subjects: subjects.length,
       titles: titles.length,
+      semantic_used: semanticUsed,
     });
   } catch (err) {
     console.error("match/run error:", err);

@@ -18,12 +18,16 @@ export default function MatchTab() {
 
   async function run() {
     setBusy(true);
-    setResult("Running...");
+    setResult("Running... (first run after a deploy is slower — it downloads the embedding model once)");
     try {
       const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
       if (programId) params.set("program_id", programId);
       const r = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
-      setResult(JSON.stringify(await r.json(), null, 2));
+      const j = await r.json();
+      const note = j.semantic_used === false
+        ? "\n\n(Semantic matching wasn't available this run — fell back to keyword matching (BM25) only. Safe to ignore unless this persists.)"
+        : "";
+      setResult(JSON.stringify(j, null, 2) + note);
     } catch (e) {
       setResult(String(e));
     } finally {
@@ -35,8 +39,8 @@ export default function MatchTab() {
     <div className="card">
       <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
-        TF-IDF + cosine on the subject description. Auto-assigns the top K books (eBooks + Printed) per subject.
-        Manual additions and pins are preserved.
+        Hybrid keyword (BM25) + semantic (sentence embedding) matching on the subject description.
+        Auto-assigns the top K books (eBooks + Printed) per subject. Manual additions and pins are preserved.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <label className="label">

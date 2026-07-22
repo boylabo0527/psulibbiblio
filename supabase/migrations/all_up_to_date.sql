@@ -3,9 +3,9 @@
 -- existing programs, subjects, titles, and assignments are kept.
 --
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
--- 04_curriculum_only_programs.sql + 05_campus_program_management.sql in
--- order. If you've already run some of those individually, running this
--- on top is still safe.
+-- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
+-- 06_title_embeddings.sql in order. If you've already run some of those
+-- individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -65,3 +65,8 @@ insert into campuses (name) values
   ('PSU-RIZAL'), ('PSU-ROXAS'), ('PSU-SAN VICENTE'), ('PSU-SOFRONIO ESPANOLA'),
   ('PSU-TAYTAY'), ('Manalo Campus')
 on conflict (name) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 06: cached title embeddings for hybrid (BM25 + semantic) matching
+-- ---------------------------------------------------------------------------
+alter table titles add column if not exists embedding jsonb;
