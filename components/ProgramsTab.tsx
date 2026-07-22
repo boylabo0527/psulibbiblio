@@ -345,7 +345,7 @@ function BookSection({
         </thead>
         <tbody>
           {books.map((b) => (
-            <EditableTitleRow key={b.id} book={b} showIdent={showIdent} onRemove={onRemove} onReload={onReload} />
+            <EditableTitleRow key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload} />
           ))}
         </tbody>
       </table>
@@ -354,13 +354,37 @@ function BookSection({
 }
 
 function EditableTitleRow({
-  book, showIdent, onRemove, onReload,
-}: { book: Title; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void }) {
+  book, siblings, showIdent, onRemove, onReload,
+}: { book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<Title>(book);
   const [draft, setDraft] = useState<Title>(book);
   const [err, setErr] = useState<string | null>(null);
+  const [combining, setCombining] = useState(false);
+  const [combineTarget, setCombineTarget] = useState("");
+  const [combineBusy, setCombineBusy] = useState(false);
+
+  async function combine() {
+    if (!combineTarget) return;
+    const target = siblings.find((s) => s.id === Number(combineTarget));
+    if (!confirm(`Combine "${book.title}" into "${target?.title ?? ""}"? Copies are summed and this row is removed.`)) return;
+    setCombineBusy(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/titles/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: book.id, target_id: Number(combineTarget) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onReload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setCombineBusy(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -416,20 +440,47 @@ function EditableTitleRow({
     );
   }
 
+  const others = siblings.filter((s) => s.id !== book.id);
+
   return (
-    <tr className="border-t border-slate-100">
-      {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
-      <td className="p-1">{local.author}</td>
-      <td className="p-1">{local.title}</td>
-      <td className="p-1">{local.year}</td>
-      <td className="p-1">{local.copies ?? 1}</td>
-      <td className="p-1">
-        <div className="flex gap-2">
-          <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
-          <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className="border-t border-slate-100">
+        {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
+        <td className="p-1">{local.author}</td>
+        <td className="p-1">{local.title}</td>
+        <td className="p-1">{local.year}</td>
+        <td className="p-1">{local.copies ?? 1}</td>
+        <td className="p-1">
+          <div className="flex gap-2">
+            <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
+            {others.length > 0 && (
+              <button className="text-slate-500 text-xs" onClick={() => setCombining((v) => !v)}>combine</button>
+            )}
+            <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+          </div>
+        </td>
+      </tr>
+      {combining && (
+        <tr className="border-t border-slate-100 bg-slate-50">
+          <td colSpan={showIdent ? 6 : 5} className="p-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Combine this into:</span>
+              <select className="input text-xs" value={combineTarget} onChange={(e) => setCombineTarget(e.target.value)}>
+                <option value="">— select title —</option>
+                {others.map((o) => (
+                  <option key={o.id} value={o.id}>{o.title} {o.author ? `— ${o.author}` : ""}</option>
+                ))}
+              </select>
+              <button className="text-psu text-xs" disabled={combineBusy || !combineTarget} onClick={combine}>
+                {combineBusy ? "…" : "Combine"}
+              </button>
+              <button className="text-slate-400 text-xs" onClick={() => setCombining(false)}>cancel</button>
+              {err && <span className="text-red-600 text-xs">{err}</span>}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

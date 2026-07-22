@@ -1,0 +1,45 @@
+import { NextResponse } from "next/server";
+import { serviceClient } from "@/lib/supabase";
+import { mergeTitles, type MergeableTitle } from "@/lib/merge-titles";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/** POST /api/titles/merge — manually combine two titles the user has
+ *  identified as duplicates (e.g. a minor typo in author/title/call no.)
+ *  without needing to edit one to force an exact match. Body:
+ *  { source_id, target_id }. Both must share a format. Copies are summed
+ *  onto whichever row is older, assignments move over, the other is deleted. */
+export async function POST(req: Request) {
+  try {
+    const body = await req.json() as { source_id?: number; target_id?: number };
+    const sourceId = body.source_id;
+    const targetId = body.target_id;
+    if (!Number.isFinite(sourceId) || !Number.isFinite(targetId)) {
+      return NextResponse.json({ error: "source_id and target_id are required" }, { status: 400 });
+    }
+    if (sourceId === targetId) {
+      return NextResponse.json({ error: "source_id and target_id must differ" }, { status: 400 });
+    }
+    const db = serviceClient();
+    const { data: rows, error } = await db.from("titles")
+      .select("id, format, call_no, title, author, campus, copies")
+      .in("id", [sourceId, targetId]);
+    if (error) throw error;
+    if (!rows || rows.length !== 2) {
+      return NextResponse.json({ error: "One or both titles were not found" }, { status: 404 });
+    }
+    const [a, b] = rows as MergeableTitle[];
+    if (a.format !== b.format) {
+      return NextResponse.json({ error: "Titles must be the same resource type to combine" }, { status: 400 });
+    }
+
+    const merged = await mergeTitles(db, a, b);
+    return NextResponse.json({ title: merged });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}

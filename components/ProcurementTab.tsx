@@ -81,6 +81,26 @@ export default function ProcurementTab() {
     return acc;
   }, {} as Record<ResourceTypeId, number>);
 
+  async function exportReport(fmt: "xlsx" | "csv") {
+    const XLSX = await import("xlsx");
+    const headers = ["Program", "Code", "Subject", "Total Titles", `Recent (${cutoffYear}+)`, "Required", "Gap", "Status"];
+    const aoa = [headers, ...filtered.map((r) => [
+      r.program, r.course_code, r.course_title, r.total_titles, r.recent_titles,
+      ACCREDITATION_MIN, r.gap, r.compliant ? "OK" : r.total_titles >= ACCREDITATION_MIN ? "Outdated" : "Procure",
+    ])];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Procurement");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });
+    const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
+    const a = document.createElement("a");
+    const scope = programId ? (programs.find((p) => String(p.id) === programId)?.name ?? "program") : (campus || "all_programs");
+    a.href = URL.createObjectURL(blob);
+    a.download = `procurement_${scope.replace(/[^A-Za-z0-9_-]+/g, "_")}_${view}.${fmt}`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -179,7 +199,7 @@ export default function ProcurementTab() {
               "Recent" = titles published {cutoffYear} or later · Gap = titles still needed to reach {ACCREDITATION_MIN}
             </p>
           </div>
-          <div className="flex gap-1 text-xs">
+          <div className="flex flex-wrap items-center gap-1 text-xs">
             {([
               { id: "needs",     label: `Needs procurement (${needsCount})` },
               { id: "compliant", label: `Compliant (${compliantCount})` },
@@ -190,6 +210,12 @@ export default function ProcurementTab() {
                 {v.label}
               </button>
             ))}
+            <button className="btn-outline uppercase ml-2" disabled={filtered.length === 0} onClick={() => exportReport("xlsx")}>
+              xlsx
+            </button>
+            <button className="btn-outline uppercase" disabled={filtered.length === 0} onClick={() => exportReport("csv")}>
+              csv
+            </button>
           </div>
         </div>
 

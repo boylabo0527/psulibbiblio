@@ -36,6 +36,9 @@ export default function CampusValidationTab() {
   const [courseDraft, setCourseDraft] = useState<Course | null>(null);
   const [courseMergeTargets, setCourseMergeTargets] = useState<Record<number, string>>({});
   const [savingCourse, setSavingCourse] = useState(false);
+  const [newCourseCode, setNewCourseCode] = useState("");
+  const [newCourseTitle, setNewCourseTitle] = useState("");
+  const [addingCourse, setAddingCourse] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -266,6 +269,31 @@ export default function CampusValidationTab() {
     }
   }
 
+  async function addCourse() {
+    if (selected === null) return;
+    const code = newCourseCode.trim();
+    const title = newCourseTitle.trim();
+    if (!code && !title) return;
+    setAddingCourse(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/subjects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ program_id: selected, course_code: code, course_title: title }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setNewCourseCode("");
+      setNewCourseTitle("");
+      await loadCourses(selected);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAddingCourse(false);
+    }
+  }
+
   return (
     <>
       <div className="card">
@@ -412,6 +440,35 @@ export default function CampusValidationTab() {
 
                   <div className="mt-5 pt-4 border-t border-slate-200">
                     <p className="text-xs font-medium text-slate-600 mb-2">Courses in this program</p>
+                    <div className="flex flex-wrap items-end gap-2 mb-3">
+                      <label className="label">
+                        Course code
+                        <input
+                          className="input ml-1 text-xs w-28"
+                          placeholder="e.g. PSM 6"
+                          value={newCourseCode}
+                          onChange={(e) => setNewCourseCode(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") addCourse(); }}
+                        />
+                      </label>
+                      <label className="label">
+                        Course title
+                        <input
+                          className="input ml-1 text-xs w-56"
+                          placeholder="e.g. Local Governance"
+                          value={newCourseTitle}
+                          onChange={(e) => setNewCourseTitle(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") addCourse(); }}
+                        />
+                      </label>
+                      <button
+                        className="btn text-xs"
+                        disabled={addingCourse || (!newCourseCode.trim() && !newCourseTitle.trim())}
+                        onClick={addCourse}
+                      >
+                        {addingCourse ? "Adding…" : "Add course"}
+                      </button>
+                    </div>
                     {coursesLoading && <p className="text-xs text-slate-400">Loading courses…</p>}
                     {!coursesLoading && courses.length === 0 && (
                       <p className="text-xs text-slate-400">No courses yet.</p>
