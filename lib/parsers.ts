@@ -270,8 +270,7 @@ export function buildTitleRowsFromRaw(
 // ---------------------------------------------------------------------------
 export type ParsedSubject = SubjectRow & { program?: string };
 
-export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
-  const rows = rowsFromWorkbook(readSheet(filename, buf));
+function subjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
   if (rows.length === 0) return [];
   const map = buildHeaderMap(Object.keys(rows[0]), SUBJECT_ALIASES);
   if (!map.course_title && !map.course_code) {
@@ -292,4 +291,14 @@ export async function parseSubjects(filename: string, buf: Buffer): Promise<Pars
     });
   }
   return out;
+}
+
+export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
+  return subjectRowsFromRaw(rows);
+}
+
+/** Build ParsedSubject rows from rows already parsed by the browser. */
+export function buildSubjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
+  return subjectRowsFromRaw(rows);
 }
