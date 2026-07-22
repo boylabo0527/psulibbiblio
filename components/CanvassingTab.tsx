@@ -106,8 +106,13 @@ export default function CanvassingTab() {
       .then(j => {
         if (j.error) {
           const msg: string = j.error;
-          if (msg.includes("schema cache") || msg.includes("canvassing") || msg.includes("does not exist") || msg.includes("relation \""))
-            setNeedsMigration(true);
+          // Only treat this as "table/column missing" if the message actually
+          // says something doesn't exist AND names canvassing — a narrower
+          // match than before, so unrelated errors (e.g. a foreign-key
+          // violation from a stale program reference) show their real
+          // message instead of a misleading "run this migration" prompt.
+          const missingRelation = (msg.includes("does not exist") || msg.includes("schema cache")) && msg.toLowerCase().includes("canvassing");
+          if (missingRelation) setNeedsMigration(true);
           else setErr(msg);
         } else setRows(j.rows ?? []);
       })
@@ -224,6 +229,20 @@ export default function CanvassingTab() {
   const unassigned = useMemo(() => rows.filter(r => !r.subject_id), [rows]);
   const totalCost = assigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
 
+  // Gap subjects grouped by program for the dropdown.
+  // Computed unconditionally (before the needsMigration early return below) so
+  // every render calls the same hooks in the same order — hooks can't live
+  // after a conditional return, or React throws "rendered fewer hooks than
+  // expected" the moment needsMigration flips to true.
+  const gapsByProgram = useMemo(() => {
+    const map = new Map<string, { program_id: number; subjects: ProcurementRow[] }>();
+    for (const g of gaps) {
+      if (!map.has(g.program)) map.set(g.program, { program_id: g.program_id, subjects: [] });
+      map.get(g.program)!.subjects.push(g);
+    }
+    return Array.from(map.entries());
+  }, [gaps]);
+
   if (needsMigration) {
     return (
       <div className="card">
@@ -240,16 +259,6 @@ export default function CanvassingTab() {
       </div>
     );
   }
-
-  // Gap subjects grouped by program for the dropdown
-  const gapsByProgram = useMemo(() => {
-    const map = new Map<string, { program_id: number; subjects: ProcurementRow[] }>();
-    for (const g of gaps) {
-      if (!map.has(g.program)) map.set(g.program, { program_id: g.program_id, subjects: [] });
-      map.get(g.program)!.subjects.push(g);
-    }
-    return Array.from(map.entries());
-  }, [gaps]);
 
   return (
     <div className="space-y-4">
