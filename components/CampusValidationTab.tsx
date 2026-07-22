@@ -126,6 +126,20 @@ export default function CampusValidationTab() {
 
   const campusCount = (programId: number) => mappings.filter((m) => m.program_id === programId).length;
 
+  async function deleteProgram(p: Program) {
+    if (!confirm(`Delete program "${p.name}"? This only works if it has no subjects.`)) return;
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/programs/${p.id}`, { method: "DELETE" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      if (selected === p.id) setSelected(null);
+      await loadAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <>
       <div className="card">
@@ -183,10 +197,10 @@ export default function CampusValidationTab() {
                   <li className="p-2 text-xs text-slate-400">No programs yet.</li>
                 )}
                 {programs.map((p) => (
-                  <li key={p.id}>
+                  <li key={p.id} className="flex items-center">
                     <button
                       className={
-                        "w-full text-left px-2 py-1.5 text-sm hover:bg-slate-50 " +
+                        "flex-1 text-left px-2 py-1.5 text-sm hover:bg-slate-50 " +
                         (selected === p.id ? "bg-psu-light text-psu font-medium" : "")
                       }
                       onClick={() => setSelected(p.id)}
@@ -195,6 +209,13 @@ export default function CampusValidationTab() {
                       <span className="block text-xs text-slate-400">
                         {campusCount(p.id) === 0 ? "unmapped (shown everywhere)" : `${campusCount(p.id)} campus(es)`}
                       </span>
+                    </button>
+                    <button
+                      className="px-2 text-xs text-red-500 hover:text-red-700"
+                      title="Delete program (only if it has no subjects)"
+                      onClick={() => deleteProgram(p)}
+                    >
+                      delete
                     </button>
                   </li>
                 ))}
