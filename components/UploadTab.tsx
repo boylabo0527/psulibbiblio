@@ -2,7 +2,7 @@
 import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
-import { PSU_CAMPUSES } from "@/lib/campuses";
+import { useCampuses } from "@/lib/use-campuses";
 
 type ProgressEvent =
   | { phase: "parsing" }
@@ -65,6 +65,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [extras, setExtras] = useState<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const runningRef = useRef(false);
+  const campuses = useCampuses();
 
   function patchFile(index: number, patch: Partial<FileStatus>) {
     setQueue((prev) => prev.map((f, i) => i === index ? { ...f, ...patch } : f));
@@ -218,8 +219,8 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
               onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
             >
               <option value="">— select campus —</option>
-              {PSU_CAMPUSES.map((c) => (
-                <option key={c} value={c}>{c}</option>
+              {campuses.map((c) => (
+                <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           ) : (

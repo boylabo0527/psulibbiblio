@@ -1,8 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
-import { PSU_CAMPUSES } from "@/lib/campuses";
-import { isProgramAtCampus } from "@/lib/campus-program-map";
+import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 
 type Program = { id: number; name: string };
@@ -22,6 +21,8 @@ export default function PurchaseRequestTab() {
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const campuses = useCampuses();
+  const { isProgramAtCampus } = useProgramCampusMap();
 
   // PR header
   const [prNo, setPrNo] = useState("");
@@ -168,7 +169,7 @@ export default function PurchaseRequestTab() {
             <span className="text-xs font-medium text-slate-600">Programs (select one or more):</span>
             {campus && (
               <button className="text-xs text-psu underline" onClick={() => {
-                const atCampus = programs.filter(p => isProgramAtCampus(p.name, campus));
+                const atCampus = programs.filter(p => isProgramAtCampus(p.id, campus));
                 setSelectedPrograms(new Set(atCampus.map(p => p.id)));
               }}>
                 Select all {campus} programs
@@ -184,7 +185,7 @@ export default function PurchaseRequestTab() {
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(campus ? programs.filter(p => isProgramAtCampus(p.name, campus)) : programs).map(p => (
+            {(campus ? programs.filter(p => isProgramAtCampus(p.id, campus)) : programs).map(p => (
               <label key={p.id} className={
                 "flex items-center gap-1.5 cursor-pointer rounded border px-3 py-1.5 text-xs transition " +
                 (selectedPrograms.has(p.id)
@@ -207,12 +208,12 @@ export default function PurchaseRequestTab() {
               // Remove selected programs not offered at this campus
               if (c) setSelectedPrograms(prev => {
                 const next = new Set(prev);
-                programs.forEach(p => { if (next.has(p.id) && !isProgramAtCampus(p.name, c)) next.delete(p.id); });
+                programs.forEach(p => { if (next.has(p.id) && !isProgramAtCampus(p.id, c)) next.delete(p.id); });
                 return next;
               });
             }}>
               <option value="">All campuses</option>
-              {PSU_CAMPUSES.map(c => <option key={c} value={c}>{c}</option>)}
+              {campuses.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
           <label className="label">

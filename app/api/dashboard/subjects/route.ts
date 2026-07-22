@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
+import { yearInRange } from "@/lib/years";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,10 @@ export async function GET(req: Request) {
     const u = new URL(req.url);
     const programId = u.searchParams.get("program_id");
     const campus = (u.searchParams.get("campus") ?? "").trim();
+    const minYearParam = parseInt(u.searchParams.get("from_year") ?? "", 10);
+    const maxYearParam = parseInt(u.searchParams.get("to_year") ?? "", 10);
+    const minYear = Number.isFinite(minYearParam) ? minYearParam : undefined;
+    const maxYear = Number.isFinite(maxYearParam) ? maxYearParam : undefined;
     const db = serviceClient();
 
     // Subjects (optionally filtered by program).
@@ -47,15 +52,15 @@ export async function GET(req: Request) {
     const { data: programRows } = await db.from("programs").select("id, name");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
 
-    // Assignments with title format, campus, copies.
-    type AssignRow = { subject_id: number; titles: { format: string; campus: string; copies: number } | null };
+    // Assignments with title format, campus, copies, year.
+    type AssignRow = { subject_id: number; titles: { format: string; campus: string; copies: number; year: string } | null };
     const subjectIds = subjects.map((s) => s.id);
     const assignments: AssignRow[] = [];
     for (let i = 0; i < subjectIds.length; i += 200) {
       const chunk = subjectIds.slice(i, i + 200);
       const rows = await pageThrough<AssignRow>(
         (from, to) => db.from("assignments")
-          .select("subject_id, titles(format, campus, copies)")
+          .select("subject_id, titles(format, campus, copies, year)")
           .in("subject_id", chunk)
           .range(from, to) as unknown as PromiseLike<{ data: AssignRow[] | null; error: { message: string } | null }>,
       );
@@ -71,6 +76,7 @@ export async function GET(req: Request) {
       // Campus filter: printed types must match (or campus filter is empty).
       const isCampusScoped = t.format === "book_printed" || t.format === "journal_printed";
       if (isCampusScoped && campus && t.campus !== campus) continue;
+      if (!yearInRange(t.year, minYear, maxYear)) continue;
 
       const sid = a.subject_id;
       if (!countMap.has(sid)) countMap.set(sid, {});

@@ -2,8 +2,7 @@
 import { useEffect, useState } from "react";
 import { RESOURCE_TYPES } from "@/lib/resources";
 import type { ResourceTypeId } from "@/lib/resources";
-import { PSU_CAMPUSES } from "@/lib/campuses";
-import { isProgramAtCampus } from "@/lib/campus-program-map";
+import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
 
@@ -21,11 +20,15 @@ export default function DashboardTab() {
   // null = programs not yet loaded (prevents fetching all subjects before preselection)
   const [programId, setProgramId] = useState<string | null>(null);
   const [campus, setCampus] = useState<string>("");
+  const [fromYear, setFromYear] = useState<string>("");
+  const [toYear, setToYear] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState("apa7");
   const [subjects, setSubjects] = useState<SubjectSummaryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const campuses = useCampuses();
+  const { isProgramAtCampus } = useProgramCampusMap();
 
   // Fetch program list once; pre-select first program.
   useEffect(() => {
@@ -41,7 +44,7 @@ export default function DashboardTab() {
 
   // When campus changes, reset program to the first one offered at that campus.
   const visiblePrograms = campus
-    ? programs.filter(p => isProgramAtCampus(p.name, campus))
+    ? programs.filter(p => isProgramAtCampus(p.id, campus))
     : programs;
 
   // Fetch per-subject counts whenever filters change (skip until programs loaded).
@@ -52,6 +55,8 @@ export default function DashboardTab() {
     const p = new URLSearchParams();
     if (programId) p.set("program_id", programId);
     if (campus) p.set("campus", campus);
+    if (fromYear) p.set("from_year", fromYear);
+    if (toYear) p.set("to_year", toYear);
     apiFetch(`/api/dashboard/subjects?${p}`)
       .then((r) => r.json())
       .then((j) => {
@@ -60,7 +65,7 @@ export default function DashboardTab() {
       })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [programId, campus]);
+  }, [programId, campus, fromYear, toYear]);
 
   // Derive summary totals from the filtered subjects data.
   // When "All [campus] programs" is selected (programId=""), limit to programs offered at that campus.
@@ -92,6 +97,8 @@ export default function DashboardTab() {
     try {
       const p = new URLSearchParams({ program_id: pid, fmt, style: citationStyle });
       if (campus) p.set("campus", campus);
+      if (fromYear) p.set("from_year", fromYear);
+      if (toYear) p.set("to_year", toYear);
       if (subjectId) { p.set("subject_id", String(subjectId)); p.set("subject_label", subjectLabel ?? ""); }
       const res = await apiFetch(`/api/export?${p}`);
       if (!res.ok) { setErr(await res.text()); return; }
@@ -176,15 +183,29 @@ export default function DashboardTab() {
               // If current program is not offered at the new campus, switch to first available
               if (c && programId) {
                 const cur = programs.find(p => String(p.id) === programId);
-                if (cur && !isProgramAtCampus(cur.name, c)) {
-                  const first = programs.find(p => isProgramAtCampus(p.name, c));
+                if (cur && !isProgramAtCampus(cur.id, c)) {
+                  const first = programs.find(p => isProgramAtCampus(p.id, c));
                   setProgramId(first ? String(first.id) : "");
                 }
               }
             }}>
               <option value="">All campuses</option>
-              {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
+          </label>
+          <label className="label">
+            Year from
+            <input
+              type="number" className="input ml-1 w-24" placeholder="e.g. 2019"
+              value={fromYear} onChange={(e) => setFromYear(e.target.value)}
+            />
+          </label>
+          <label className="label">
+            Year to
+            <input
+              type="number" className="input ml-1 w-24" placeholder="e.g. 2026"
+              value={toYear} onChange={(e) => setToYear(e.target.value)}
+            />
           </label>
         </div>
 

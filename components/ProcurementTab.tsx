@@ -2,8 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { RESOURCE_TYPES } from "@/lib/resources";
 import type { ResourceTypeId } from "@/lib/resources";
-import { PSU_CAMPUSES } from "@/lib/campuses";
-import { isProgramAtCampus } from "@/lib/campus-program-map";
+import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 
@@ -23,7 +22,9 @@ export default function ProcurementTab() {
   const [err, setErr] = useState<string | null>(null);
 
   const cutoffYear = new Date().getFullYear() - RECENCY_YEARS;
-  const visiblePrograms = campus ? programs.filter(p => isProgramAtCampus(p.name, campus)) : programs;
+  const campuses = useCampuses();
+  const { isProgramAtCampus } = useProgramCampusMap();
+  const visiblePrograms = campus ? programs.filter(p => isProgramAtCampus(p.id, campus)) : programs;
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -108,14 +109,14 @@ export default function ProcurementTab() {
               setCampus(c);
               if (c && programId) {
                 const cur = programs.find(p => String(p.id) === programId);
-                if (cur && !isProgramAtCampus(cur.name, c)) {
-                  const first = programs.find(p => isProgramAtCampus(p.name, c));
+                if (cur && !isProgramAtCampus(cur.id, c)) {
+                  const first = programs.find(p => isProgramAtCampus(p.id, c));
                   setProgramId(first ? String(first.id) : "");
                 }
               }
             }}>
               <option value="">All campuses</option>
-              {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
         </div>
