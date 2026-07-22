@@ -63,13 +63,19 @@ async function consumeNdjson(
 
 function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [queue, setQueue] = useState<FileStatus[]>([]);
+  // Mirrors `queue` for the worker loop below, which needs to see files
+  // appended mid-run (React state updates aren't visible inside an
+  // already-running async loop closure).
+  const queueRef = useRef<FileStatus[]>([]);
+  const cursorRef = useRef(0);
   const [extras, setExtras] = useState<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const runningRef = useRef(false);
   const campuses = useCampuses();
 
   function patchFile(index: number, patch: Partial<FileStatus>) {
-    setQueue((prev) => prev.map((f, i) => i === index ? { ...f, ...patch } : f));
+    queueRef.current = queueRef.current.map((f, i) => i === index ? { ...f, ...patch } : f);
+    setQueue(queueRef.current);
   }
 
   async function uploadOne(fs: FileStatus, index: number, controller: AbortController) {
@@ -149,20 +155,26 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     }
   }
 
-  async function runQueue(items: FileStatus[]) {
+  // Processes queueRef from wherever the cursor left off, re-checking
+  // queueRef.current.length on every iteration — so files appended to the
+  // queue while this loop is already running (via onFilesSelected below)
+  // get picked up instead of requiring a fresh, separate run that would
+  // otherwise abort whatever was already uploading.
+  async function runQueue(controller: AbortController) {
     if (runningRef.current) return;
     runningRef.current = true;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    for (let i = 0; i < items.length; i++) {
-      if (controller.signal.aborted) break;
-      const current = items[i];
-      if (current.phase !== "queued") continue;
-      await uploadOne(current, i, controller);
+    try {
+      while (cursorRef.current < queueRef.current.length) {
+        if (controller.signal.aborted) break;
+        const i = cursorRef.current;
+        cursorRef.current++;
+        const current = queueRef.current[i];
+        if (current.phase !== "queued") continue;
+        await uploadOne(current, i, controller);
+      }
+    } finally {
+      runningRef.current = false;
     }
-    runningRef.current = false;
   }
 
   function onFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
@@ -171,22 +183,24 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     const newItems: FileStatus[] = files.map((f) => ({
       file: f, phase: "queued", inserted: 0, skipped: 0, total: 0, elapsedMs: 0,
     }));
-    setQueue(newItems);
-    // Start after state update.
-    setTimeout(() => runQueue(newItems), 0);
+    queueRef.current = [...queueRef.current, ...newItems];
+    setQueue(queueRef.current);
+    if (!abortRef.current) abortRef.current = new AbortController();
+    runQueue(abortRef.current);
     e.target.value = "";
   }
 
   function cancel() {
     abortRef.current?.abort();
+    abortRef.current = null;
     runningRef.current = false;
-    setQueue((prev) =>
-      prev.map((f) =>
-        f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
-          ? { ...f, phase: "error", error: "Cancelled" }
-          : f,
-      ),
+    cursorRef.current = queueRef.current.length;
+    queueRef.current = queueRef.current.map((f) =>
+      f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
+        ? { ...f, phase: "error", error: "Cancelled" }
+        : f,
     );
+    setQueue(queueRef.current);
   }
 
   const busy = queue.some((f) =>
