@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api-client";
 type Program = { id: number; name: string };
 type Campus = { id: number; name: string };
 type Mapping = { program_id: number; campus_id: number; campus_name: string };
+type Course = { id: number; course_code: string; course_title: string; description: string };
 
 export default function CampusValidationTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -19,6 +20,22 @@ export default function CampusValidationTab() {
   const [newCampus, setNewCampus] = useState("");
   const [addingProgram, setAddingProgram] = useState(false);
   const [addingCampus, setAddingCampus] = useState(false);
+
+  // Program rename
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  // Program merge
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [merging, setMerging] = useState(false);
+
+  // Courses (subjects) under the selected program
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+  const [editingCourseId, setEditingCourseId] = useState<number | null>(null);
+  const [courseDraft, setCourseDraft] = useState<Course | null>(null);
+  const [courseMergeTargets, setCourseMergeTargets] = useState<Record<number, string>>({});
+  const [savingCourse, setSavingCourse] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -42,12 +59,31 @@ export default function CampusValidationTab() {
     }
   }
 
+  async function loadCourses(programId: number) {
+    setCoursesLoading(true);
+    try {
+      const res = await apiFetch(`/api/programs/${programId}/bibliography`);
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) { setCourses([]); return; }
+      type Sec = { subjects: { subject: Course }[] };
+      const list: Course[] = (j.bySection ?? []).flatMap((sec: Sec) =>
+        sec.subjects.map((s) => s.subject),
+      );
+      setCourses(list);
+    } catch {
+      setCourses([]);
+    } finally {
+      setCoursesLoading(false);
+    }
+  }
+
   useEffect(() => { loadAll(); }, []);
 
   useEffect(() => {
-    if (selected === null) { setChecked(new Set()); return; }
+    if (selected === null) { setChecked(new Set()); setCourses([]); return; }
     const ids = mappings.filter((m) => m.program_id === selected).map((m) => m.campus_id);
     setChecked(new Set(ids));
+    loadCourses(selected);
   }, [selected, mappings]);
 
   function toggle(campusId: number) {
@@ -140,6 +176,96 @@ export default function CampusValidationTab() {
     }
   }
 
+  async function renameProgram(p: Program) {
+    const name = renameDraft.trim();
+    if (!name || name === p.name) { setRenamingId(null); return; }
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/programs/${p.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setRenamingId(null);
+      await loadAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function mergeProgram() {
+    if (selected === null || !mergeTarget) return;
+    const targetId = Number(mergeTarget);
+    const sourceName = programs.find((p) => p.id === selected)?.name ?? "";
+    const targetName = programs.find((p) => p.id === targetId)?.name ?? "";
+    if (!confirm(`Merge "${sourceName}" into "${targetName}"? All its subjects move to "${targetName}" and "${sourceName}" is deleted.`)) return;
+    setMerging(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/programs/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: selected, target_id: targetId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setMergeTarget("");
+      setSelected(targetId);
+      await loadAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  async function saveCourse(c: Course) {
+    if (!courseDraft) return;
+    setSavingCourse(true);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/subjects/${c.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          course_code: courseDraft.course_code,
+          course_title: courseDraft.course_title,
+          description: courseDraft.description,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setEditingCourseId(null);
+      if (selected !== null) await loadCourses(selected);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingCourse(false);
+    }
+  }
+
+  async function mergeCourse(c: Course) {
+    const targetId = Number(courseMergeTargets[c.id]);
+    if (!targetId) return;
+    const targetName = courses.find((x) => x.id === targetId)?.course_title ?? "";
+    if (!confirm(`Merge "${c.course_title}" into "${targetName}"? Its titles move over and this course is deleted.`)) return;
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/subjects/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: c.id, target_id: targetId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      if (selected !== null) await loadCourses(selected);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <>
       <div className="card">
@@ -189,7 +315,7 @@ export default function CampusValidationTab() {
 
       {!loading && (
         <div className="card">
-          <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] gap-4">
             <div>
               <h3 className="text-sm font-semibold text-slate-700 mb-2">Programs</h3>
               <ul className="border border-slate-200 rounded divide-y divide-slate-100 max-h-[480px] overflow-y-auto">
@@ -198,25 +324,48 @@ export default function CampusValidationTab() {
                 )}
                 {programs.map((p) => (
                   <li key={p.id} className="flex items-center">
-                    <button
-                      className={
-                        "flex-1 text-left px-2 py-1.5 text-sm hover:bg-slate-50 " +
-                        (selected === p.id ? "bg-psu-light text-psu font-medium" : "")
-                      }
-                      onClick={() => setSelected(p.id)}
-                    >
-                      {p.name}
-                      <span className="block text-xs text-slate-400">
-                        {campusCount(p.id) === 0 ? "unmapped (shown everywhere)" : `${campusCount(p.id)} campus(es)`}
-                      </span>
-                    </button>
-                    <button
-                      className="px-2 text-xs text-red-500 hover:text-red-700"
-                      title="Delete program (only if it has no subjects)"
-                      onClick={() => deleteProgram(p)}
-                    >
-                      delete
-                    </button>
+                    {renamingId === p.id ? (
+                      <div className="flex-1 flex items-center gap-1 px-2 py-1">
+                        <input
+                          className="input text-sm flex-1"
+                          value={renameDraft}
+                          autoFocus
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") renameProgram(p); if (e.key === "Escape") setRenamingId(null); }}
+                        />
+                        <button className="text-xs text-psu" onClick={() => renameProgram(p)}>save</button>
+                        <button className="text-xs text-slate-400" onClick={() => setRenamingId(null)}>cancel</button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          className={
+                            "flex-1 text-left px-2 py-1.5 text-sm hover:bg-slate-50 " +
+                            (selected === p.id ? "bg-psu-light text-psu font-medium" : "")
+                          }
+                          onClick={() => setSelected(p.id)}
+                        >
+                          {p.name}
+                          <span className="block text-xs text-slate-400">
+                            {campusCount(p.id) === 0 ? "unmapped (shown everywhere)" : `${campusCount(p.id)} campus(es)`}
+                          </span>
+                        </button>
+                        <button
+                          className="px-1.5 text-xs text-slate-500 hover:text-slate-700"
+                          title="Rename program"
+                          onClick={() => { setRenamingId(p.id); setRenameDraft(p.name); }}
+                        >
+                          rename
+                        </button>
+                        <button
+                          className="px-1.5 text-xs text-red-500 hover:text-red-700"
+                          title="Delete program (only if it has no subjects)"
+                          onClick={() => deleteProgram(p)}
+                        >
+                          delete
+                        </button>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -243,6 +392,98 @@ export default function CampusValidationTab() {
                   <button className="btn text-xs" disabled={saving} onClick={save}>
                     {saving ? "Saving…" : "Save campus offerings"}
                   </button>
+
+                  <div className="mt-5 pt-4 border-t border-slate-200">
+                    <p className="text-xs font-medium text-slate-600 mb-2">
+                      Combine this program into a duplicate — moves all its subjects over and deletes this one.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <select className="input text-xs" value={mergeTarget} onChange={(e) => setMergeTarget(e.target.value)}>
+                        <option value="">— select target program —</option>
+                        {programs.filter((p) => p.id !== selected).map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                      <button className="btn-outline text-xs" disabled={merging || !mergeTarget} onClick={mergeProgram}>
+                        {merging ? "Merging…" : "Merge into…"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 pt-4 border-t border-slate-200">
+                    <p className="text-xs font-medium text-slate-600 mb-2">Courses in this program</p>
+                    {coursesLoading && <p className="text-xs text-slate-400">Loading courses…</p>}
+                    {!coursesLoading && courses.length === 0 && (
+                      <p className="text-xs text-slate-400">No courses yet.</p>
+                    )}
+                    {!coursesLoading && courses.length > 0 && (
+                      <ul className="border border-slate-200 rounded divide-y divide-slate-100 max-h-[360px] overflow-y-auto">
+                        {courses.map((c) => (
+                          <li key={c.id} className="p-2">
+                            {editingCourseId === c.id && courseDraft ? (
+                              <div className="space-y-1">
+                                <input
+                                  className="input text-xs w-full"
+                                  placeholder="Course code"
+                                  value={courseDraft.course_code}
+                                  onChange={(e) => setCourseDraft({ ...courseDraft, course_code: e.target.value })}
+                                />
+                                <input
+                                  className="input text-xs w-full"
+                                  placeholder="Course title"
+                                  value={courseDraft.course_title}
+                                  onChange={(e) => setCourseDraft({ ...courseDraft, course_title: e.target.value })}
+                                />
+                                <textarea
+                                  className="input text-xs w-full"
+                                  rows={2}
+                                  placeholder="Description"
+                                  value={courseDraft.description}
+                                  onChange={(e) => setCourseDraft({ ...courseDraft, description: e.target.value })}
+                                />
+                                <div className="flex gap-2">
+                                  <button className="text-xs text-psu" disabled={savingCourse} onClick={() => saveCourse(c)}>save</button>
+                                  <button className="text-xs text-slate-400" onClick={() => setEditingCourseId(null)}>cancel</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-sm">
+                                  <span className="font-medium">{c.course_code}</span>{" "}
+                                  <span>{c.course_title}</span>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <button
+                                    className="text-xs text-slate-500 hover:text-slate-700"
+                                    onClick={() => { setEditingCourseId(c.id); setCourseDraft(c); }}
+                                  >
+                                    edit
+                                  </button>
+                                  <select
+                                    className="input text-xs"
+                                    value={courseMergeTargets[c.id] ?? ""}
+                                    onChange={(e) => setCourseMergeTargets((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                                  >
+                                    <option value="">merge into…</option>
+                                    {courses.filter((x) => x.id !== c.id).map((x) => (
+                                      <option key={x.id} value={x.id}>{x.course_code} {x.course_title}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    className="text-xs text-psu"
+                                    disabled={!courseMergeTargets[c.id]}
+                                    onClick={() => mergeCourse(c)}
+                                  >
+                                    go
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 </>
               )}
             </div>

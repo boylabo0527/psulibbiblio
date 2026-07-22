@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses } from "@/lib/use-campuses";
+import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 
 type ProgressEvent =
   | { phase: "parsing" }
@@ -297,14 +298,6 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
 }
 
 export default function UploadTab() {
-  const [resetResult, setResetResult] = useState("");
-  async function reset() {
-    if (!confirm("Wipe all programs, subjects, titles, and assignments?")) return;
-    setResetResult("Resetting...");
-    const r = await apiFetch("/api/admin/reset", { method: "POST" });
-    setResetResult(JSON.stringify(await r.json(), null, 2));
-  }
-
   return (
     <>
       <FileCard
@@ -379,11 +372,7 @@ export default function UploadTab() {
           { label: "journals_online_open_template.csv",  href: "/templates/journals_online_open_template.csv" },
         ]}
       />
-      <div className="card border-red-300">
-        <h2 className="text-red-700 font-semibold mb-2">Admin</h2>
-        <button className="btn bg-red-600 hover:bg-red-700" onClick={reset}>Wipe all data</button>
-        {resetResult && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs">{resetResult}</pre>}
-      </div>
+      <BulkDeleteAdmin />
     </>
   );
 }
