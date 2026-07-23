@@ -119,6 +119,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           .select("id, call_no, title, author, campus, copies, barcodes")
           .eq("format", rt.id)
           .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
+        (count) => send({ phase: "deduping", existing: count }),
       );
       send({ phase: "deduping", existing: existing.length });
 
@@ -206,6 +207,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
         .select(selectCols)
         .eq("format", rt.id)
         .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
+      (count) => send({ phase: "deduping", existing: count }),
     );
     send({ phase: "deduping", existing: existing.length });
 

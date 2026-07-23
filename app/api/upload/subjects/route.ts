@@ -47,6 +47,7 @@ export async function POST(req: Request) {
       (from, to) => db.from("subjects")
         .select("program_id, course_code, course_title")
         .range(from, to) as unknown as PromiseLike<{ data: { program_id: number; course_code: string; course_title: string }[] | null; error: { message: string } | null }>,
+      (count) => send({ phase: "deduping", existing: count }),
     );
     send({ phase: "deduping", existing: existing.length });
     const seen = new Set(existing.map((e) => `${e.program_id}|${e.course_code}|${e.course_title}`));

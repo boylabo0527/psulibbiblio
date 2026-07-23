@@ -16,6 +16,7 @@ type FileStatus = {
   total: number;
   programs?: number;
   duplicates?: number;
+  existingChecked?: number;
   error?: string;
   elapsedMs: number;
 };
@@ -85,7 +86,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
           }
           await consumeNdjson(res, (ev) => {
             if (ev.phase === "deduping") {
-              patchFile(index, { phase: "deduping" });
+              patchFile(index, { phase: "deduping", existingChecked: ev.existing });
             } else if (ev.phase === "inserting") {
               patchFile(index, { phase: "inserting", inserted: inserted + ev.inserted, skipped: skipped + ev.skipped, total });
             } else if (ev.phase === "done") {
@@ -111,7 +112,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         }
         await consumeNdjson(res, (ev) => {
           if (ev.phase === "parsed") patchFile(index, { phase: ev.phase, total: ev.total });
-          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase });
+          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase, existingChecked: ev.existing });
           else if (ev.phase === "inserting") patchFile(index, { phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total });
           else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, duplicates: ev.duplicates, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
           else if (ev.phase === "error") patchFile(index, { phase: "error", error: ev.error });
@@ -244,7 +245,9 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
               uploading: "Reading file…",
               parsing: "Parsing rows…",
               parsed: `Parsed ${fs.total.toLocaleString()} rows — checking database…`,
-              deduping: `Checking ${fs.total.toLocaleString()} rows against database…`,
+              deduping: fs.existingChecked
+                ? `Checking against database… ${fs.existingChecked.toLocaleString()} existing titles scanned so far`
+                : `Checking ${fs.total.toLocaleString()} rows against database…`,
               inserting: `Saving ${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${updatedSuffix}`,
               done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}${duplicateSuffix}`,
               error: `Error: ${fs.error}`,
