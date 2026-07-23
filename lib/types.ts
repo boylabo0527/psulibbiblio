@@ -16,6 +16,9 @@ export type TitleRow = {
   url?: string;
   subjects?: string;
   campus?: string;
+  /** Per-copy accession/barcode number, if the source file has one — used to
+   *  avoid double-counting the same physical copy across repeat uploads. */
+  barcode?: string;
 };
 
 export type ProgramRow = {

@@ -81,36 +81,42 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     // -----------------------------------------------------------------------
     // Accession mode (Printed Books): each row = 1 physical copy.
     // Rows with the same call_no+title+author+campus within the file are
-    // aggregated (copies summed). Titles already in the DB get their copy
-    // count incremented rather than skipped.
+    // aggregated. If a row carries a barcode/accession number, it's tracked
+    // on the title (titles.barcodes) so re-uploading the same library
+    // catalog export later recognizes already-counted copies and skips them
+    // instead of inflating the count — only genuinely new barcodes add a
+    // copy. Rows with no barcode fall back to the old behavior (always add),
+    // since there's no stable identity to dedupe them by.
     // -----------------------------------------------------------------------
     if (rt.accessionMode) {
       // Normalize for matching only (case/whitespace differences between copy
       // records of the same title shouldn't split them into separate rows).
       const normField = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
-      // Step 1: aggregate incoming rows by key, summing copies.
+      // Step 1: aggregate incoming rows by key. Barcoded rows are deduped
+      // (a repeated barcode within the same file counts once); unbarcoded
+      // rows just add their copies value as before.
       const keyOf = (r: TitleRow, c: string) =>
         `${normField(r.call_no ?? "")}|${normField(r.title)}|${normField(r.author ?? "")}|${c}`;
 
-      type AggRow = { row: TitleRow; campus: string; copies: number };
+      type AggRow = { row: TitleRow; campus: string; barcodes: Set<string>; unbarcoded: number };
       const aggMap = new Map<string, AggRow>();
       for (const r of records) {
         const c = rowCampus(r);
         const k = keyOf(r, c);
-        const agg = aggMap.get(k);
-        if (agg) {
-          agg.copies += r.copies ?? 1;
-        } else {
-          aggMap.set(k, { row: r, campus: c, copies: r.copies ?? 1 });
-        }
+        let agg = aggMap.get(k);
+        if (!agg) { agg = { row: r, campus: c, barcodes: new Set(), unbarcoded: 0 }; aggMap.set(k, agg); }
+        const bc = (r.barcode ?? "").trim();
+        if (bc) agg.barcodes.add(bc);
+        else agg.unbarcoded += r.copies ?? 1;
       }
 
-      // Step 2: fetch existing titles with id + copies so we can increment.
-      type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number };
+      // Step 2: fetch existing titles with id + copies + barcodes so we can
+      // tell new copies from ones already counted in a prior upload.
+      type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number; barcodes: string[] | null };
       const existing = await pageThrough<Existing>(
         (from, to) => db.from("titles")
-          .select("id, call_no, title, author, campus, copies")
+          .select("id, call_no, title, author, campus, copies, barcodes")
           .eq("format", rt.id)
           .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
       );
@@ -122,13 +128,25 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       }
 
       // Step 3: split aggregated rows into inserts vs copy-count updates.
+      // A key whose barcodes were all already recorded and has no unbarcoded
+      // rows contributes nothing — a pure repeat of already-counted copies.
       const toInsert: Record<string, unknown>[] = [];
-      const toUpdate: { id: number; copies: number }[] = [];
+      const toUpdate: { id: number; copies: number; barcodes: string[] }[] = [];
+      let duplicates = 0;
 
-      for (const [k, { row, campus: c, copies }] of aggMap) {
+      for (const [k, { row, campus: c, barcodes, unbarcoded }] of aggMap) {
         const ex = existingMap.get(k);
         if (ex) {
-          toUpdate.push({ id: ex.id, copies: ex.copies + copies });
+          const existingBarcodes = new Set(ex.barcodes ?? []);
+          let newBarcodes = 0;
+          for (const bc of barcodes) {
+            if (!existingBarcodes.has(bc)) { existingBarcodes.add(bc); newBarcodes++; }
+          }
+          if (newBarcodes === 0 && unbarcoded === 0) {
+            duplicates++;
+            continue;
+          }
+          toUpdate.push({ id: ex.id, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
         } else {
           const row2: Record<string, unknown> = {
             format: rt.id,
@@ -139,10 +157,11 @@ export async function POST(req: Request, { params }: { params: { type: string } 
             isbn: row.isbn ?? "",
             issn: row.issn ?? "",
             call_no: row.call_no ?? "",
-            copies,
+            copies: barcodes.size + unbarcoded,
             url: row.url ?? "",
             subjects: row.subjects ?? "",
             campus: c,
+            barcodes: Array.from(barcodes),
           };
           toInsert.push(row2);
         }
@@ -163,15 +182,15 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       // Batch copy-count updates (one per row; group into chunks to avoid too many requests).
       for (let i = 0; i < toUpdate.length; i += BATCH) {
         const slice = toUpdate.slice(i, i + BATCH);
-        for (const { id, copies } of slice) {
-          const { error } = await db.from("titles").update({ copies }).eq("id", id);
+        for (const { id, copies, barcodes } of slice) {
+          const { error } = await db.from("titles").update({ copies, barcodes }).eq("id", id);
           if (error) throw error;
           updated++;
         }
         send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
       }
 
-      send({ phase: "done", received: records.length, inserted, skipped: updated });
+      send({ phase: "done", received: records.length, inserted, skipped: updated, duplicates });
       return;
     }
 

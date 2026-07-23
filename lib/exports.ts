@@ -130,7 +130,7 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
 function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
   const ws = wb.addWorksheet("Detail");
   ws.columns = [
-    { width: 20 }, { width: 30 }, { width: 60 }, { width: 8 }, { width: 8 },
+    { width: 20 }, { width: 30 }, { width: 60 }, { width: 8 }, { width: 8 }, { width: 30 },
   ];
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
@@ -157,13 +157,13 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
       r++;
       if (sub.subject.description) {
         ws.getCell(r, 1).value = sub.subject.description;
-        ws.mergeCells(r, 1, r, 5);
+        ws.mergeCells(r, 1, r, 6);
         ws.getRow(r).alignment = { wrapText: true, vertical: "top" };
         ws.getRow(r).height = 60;
         r++;
       }
       // Single header row, then a labeled block per non-empty resource type.
-      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Year", "Copy"];
+      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"];
       ws.getRow(r).font = { bold: true };
       r++;
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
@@ -173,6 +173,7 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
           ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.year || "", tt.copies ?? 1];
+          if (tt.url) ws.getCell(r, 6).value = { text: tt.url, hyperlink: tt.url };
           r++;
         }
       }
@@ -201,7 +202,7 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   const lines = [
     [
       "Section", "Course Code", "Course Title", "Description",
-      "Resource Type", "Call No.", "ISSN", "Author", "Title", "Year", "Copies",
+      "Resource Type", "Call No.", "ISSN", "Author", "Title", "Year", "Copies", "Link",
     ].join(","),
   ];
   for (const sec of b.bySection) {
@@ -211,7 +212,7 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
           lines.push([
             sec.section, sub.subject.course_code, sub.subject.course_title,
             sub.subject.description, t.sectionLabel,
-            tt.call_no, tt.issn, tt.author, tt.title, tt.year, tt.copies ?? 1,
+            tt.call_no, tt.issn, tt.author, tt.title, tt.year, tt.copies ?? 1, tt.url ?? "",
           ].map(escape).join(","));
         }
       }
@@ -224,13 +225,22 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
 // DOCX
 // ---------------------------------------------------------------------------
 export async function programBibliographyDocx(b: ProgramBibliography): Promise<Buffer> {
-  const { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, WidthType, TextRun } = await import("docx");
+  const { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, WidthType, TextRun, ExternalHyperlink } = await import("docx");
 
   const cell = (text: string, bold = false) =>
     new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: text || "", bold })] })] });
 
+  const linkCell = (url: string | undefined) =>
+    new TableCell({
+      children: [new Paragraph({
+        children: url
+          ? [new ExternalHyperlink({ link: url, children: [new TextRun({ text: url, style: "Hyperlink" })] })]
+          : [],
+      })],
+    });
+
   const headerRow = () => new TableRow({
-    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy"].map((c) => cell(c, true)),
+    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"].map((c) => cell(c, true)),
   });
 
   const children: import("docx").FileChild[] = [];
@@ -249,11 +259,11 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
 
       const rows: import("docx").TableRow[] = [headerRow()];
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
-        rows.push(new TableRow({ children: [cell(t.sectionLabel, true), cell(""), cell(""), cell(""), cell("")] }));
+        rows.push(new TableRow({ children: [cell(t.sectionLabel, true), cell(""), cell(""), cell(""), cell(""), cell("")] }));
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
           rows.push(new TableRow({
-            children: [cell(ident), cell(tt.author || ""), cell(tt.title || ""), cell(tt.year || ""), cell(String(tt.copies ?? 1))],
+            children: [cell(ident), cell(tt.author || ""), cell(tt.title || ""), cell(tt.year || ""), cell(String(tt.copies ?? 1)), linkCell(tt.url)],
           }));
         }
       }
@@ -396,11 +406,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
 
   // Switch to portrait-ish proportions inside landscape; reuse layout.
   const cols = [
-    { width: 0.16 * WIDTH },
-    { width: 0.18 * WIDTH },
-    { width: 0.46 * WIDTH },
-    { width: 0.08 * WIDTH },
+    { width: 0.14 * WIDTH },
+    { width: 0.15 * WIDTH },
+    { width: 0.33 * WIDTH },
+    { width: 0.07 * WIDTH },
     { width: 0.06 * WIDTH },
+    { width: 0.20 * WIDTH },
   ];
   const driftSum = cols.reduce((a, c) => a + c.width, 0);
   cols[2].width += WIDTH - driftSum;
@@ -456,12 +467,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
       if (sub.subject.description) doc.text(sub.subject.description, { width: WIDTH });
       doc.moveDown(0.2);
 
-      drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy"], { bold: true, fillHeader: true });
+      drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
-        drawRow([t.sectionLabel, "", "", "", ""], { italic: true, merged: true });
+        drawRow([t.sectionLabel, "", "", "", "", ""], { italic: true, merged: true });
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          drawRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1)]);
+          drawRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""]);
         }
       }
       const all = subjectTotals(sub.buckets);

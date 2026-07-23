@@ -23,7 +23,7 @@ export type ProgressEvent =
   | { phase: "parsed"; total: number }
   | { phase: "deduping"; existing: number }
   | { phase: "inserting"; inserted: number; skipped: number; total: number }
-  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
+  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number; duplicates?: number }
   | { phase: "error"; error: string };
 
 /** Client-side counterpart: reads an ndjsonStream response line by line. */

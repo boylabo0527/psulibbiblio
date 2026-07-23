@@ -8,7 +8,7 @@ type Program = { id: number; name: string };
 type Title = {
   id: number; format: ResourceTypeId;
   title: string; author: string; publisher: string; year: string;
-  isbn: string; issn: string; call_no: string; copies: number;
+  isbn: string; issn: string; call_no: string; copies: number; url?: string;
 };
 type Buckets = Record<ResourceTypeId, Title[]>;
 type SubjectDetail = {
@@ -447,7 +447,14 @@ function EditableTitleRow({
       <tr className="border-t border-slate-100">
         {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
         <td className="p-1">{local.author}</td>
-        <td className="p-1">{local.title}</td>
+        <td className="p-1">
+          {local.title}
+          {local.url && (
+            <a href={local.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-psu" title={local.url}>
+              🔗
+            </a>
+          )}
+        </td>
         <td className="p-1">{local.year}</td>
         <td className="p-1">{local.copies ?? 1}</td>
         <td className="p-1">

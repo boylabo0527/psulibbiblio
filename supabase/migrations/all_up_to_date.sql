@@ -4,8 +4,8 @@
 --
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
--- 06_title_embeddings.sql in order. If you've already run some of those
--- individually, running this on top is still safe.
+-- 06_title_embeddings.sql + 07_title_barcodes.sql in order. If you've
+-- already run some of those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -70,3 +70,8 @@ on conflict (name) do nothing;
 -- 06: cached title embeddings for hybrid (BM25 + semantic) matching
 -- ---------------------------------------------------------------------------
 alter table titles add column if not exists embedding jsonb;
+
+-- ---------------------------------------------------------------------------
+-- 07: track counted barcodes so repeat catalog uploads don't double-count
+-- ---------------------------------------------------------------------------
+alter table titles add column if not exists barcodes jsonb default '[]'::jsonb;

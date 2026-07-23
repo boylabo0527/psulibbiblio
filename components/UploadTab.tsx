@@ -15,6 +15,7 @@ type FileStatus = {
   skipped: number;
   total: number;
   programs?: number;
+  duplicates?: number;
   error?: string;
   elapsedMs: number;
 };
@@ -65,6 +66,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         const total = allRows.length;
         let inserted = 0;
         let skipped = 0;
+        let duplicates = 0;
         patchFile(index, { phase: "parsed", total });
 
         for (let i = 0; i < allRows.length; i += BATCH) {
@@ -89,13 +91,14 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
             } else if (ev.phase === "done") {
               inserted += ev.inserted;
               skipped += ev.skipped;
-              patchFile(index, { phase: "inserting", inserted, skipped, total });
+              duplicates += ev.duplicates ?? 0;
+              patchFile(index, { phase: "inserting", inserted, skipped, duplicates, total });
             } else if (ev.phase === "error") {
               patchFile(index, { phase: "error", error: ev.error });
             }
           }, controller.signal);
         }
-        patchFile(index, { phase: "done", inserted, skipped, total, elapsedMs: Date.now() - startedAt });
+        patchFile(index, { phase: "done", inserted, skipped, duplicates, total, elapsedMs: Date.now() - startedAt });
       } else {
         const fd = new FormData();
         fd.append("file", file);
@@ -110,7 +113,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
           if (ev.phase === "parsed") patchFile(index, { phase: ev.phase, total: ev.total });
           else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase });
           else if (ev.phase === "inserting") patchFile(index, { phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total });
-          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
+          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, duplicates: ev.duplicates, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
           else if (ev.phase === "error") patchFile(index, { phase: "error", error: ev.error });
         }, controller.signal);
       }
@@ -232,6 +235,9 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
             const updatedSuffix = fs.skipped > 0
               ? ` · ${fs.skipped.toLocaleString()} copy count${fs.skipped === 1 ? "" : "s"} updated`
               : "";
+            const duplicateSuffix = fs.duplicates && fs.duplicates > 0
+              ? ` · ${fs.duplicates.toLocaleString()} already-counted ${fs.duplicates === 1 ? "copy" : "copies"} skipped`
+              : "";
             const label = ({
               idle: "Waiting…",
               queued: "Queued",
@@ -240,7 +246,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
               parsed: `Parsed ${fs.total.toLocaleString()} rows — checking database…`,
               deduping: `Checking ${fs.total.toLocaleString()} rows against database…`,
               inserting: `Saving ${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${updatedSuffix}`,
-              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}`,
+              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}${duplicateSuffix}`,
               error: `Error: ${fs.error}`,
             } as Record<FilePhase, string>)[fs.phase];
 
