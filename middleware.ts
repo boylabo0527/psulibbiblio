@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  *  /api/* requires a valid Supabase access token in the Authorization
  *  header. The Dashboard tab on the public homepage is wired to the
  *  endpoints listed below. */
-const PUBLIC_API = ["/api/health", "/api/dashboard", "/api/export", "/api/programs"];
+const PUBLIC_API = ["/api/health", "/api/dashboard", "/api/export", "/api/programs", "/api/campuses", "/api/program-campuses"];
 
 function isPublic(pathname: string): boolean {
   for (const p of PUBLIC_API) {
@@ -16,7 +16,9 @@ function isPublic(pathname: string): boolean {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (!pathname.startsWith("/api/") || isPublic(pathname)) {
+  // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
+  // paths still require a signed-in user, even though anyone can read them.
+  if (!pathname.startsWith("/api/") || (isPublic(pathname) && req.method === "GET")) {
     return NextResponse.next();
   }
 

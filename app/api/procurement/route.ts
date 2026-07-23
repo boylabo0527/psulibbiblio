@@ -3,7 +3,8 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
 
-const ACCREDITATION_MIN = 5;          // minimum unique titles per subject
+const ACCREDITATION_MIN = 5;          // minimum unique titles per subject for full compliance
+const PARTIAL_MIN = 3;                // minimum recent titles to count as partial compliance
 const RECENCY_YEARS = 5;              // titles must be published within last N years
 
 export const runtime = "nodejs";
@@ -22,7 +23,8 @@ export type ProcurementRow = {
   recent_titles: number;      // titles published within last RECENCY_YEARS years
   recent_year_cutoff: number; // the cutoff year (currentYear - RECENCY_YEARS)
   gap: number;                // shortfall based on recent titles (0 = compliant)
-  compliant: boolean;
+  compliant: boolean;         // recent_titles >= ACCREDITATION_MIN
+  partial: boolean;           // recent_titles >= PARTIAL_MIN but < ACCREDITATION_MIN
 };
 
 export async function GET(req: Request) {
@@ -98,6 +100,7 @@ export async function GET(req: Request) {
       const recent_titles = recentCountMap.get(s.id) ?? 0;
       // Gap is based on recent titles only — must have 5 recent titles
       const gap = Math.max(0, ACCREDITATION_MIN - recent_titles);
+      const compliant = recent_titles >= ACCREDITATION_MIN;
       return {
         subject_id: s.id,
         program_id: s.program_id,
@@ -111,7 +114,8 @@ export async function GET(req: Request) {
         recent_titles,
         recent_year_cutoff: yearCutoff,
         gap,
-        compliant: gap === 0,
+        compliant,
+        partial: !compliant && recent_titles >= PARTIAL_MIN,
       };
     });
 

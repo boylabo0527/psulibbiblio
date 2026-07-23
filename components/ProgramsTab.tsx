@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
-import { PSU_CAMPUSES } from "@/lib/campuses";
+import { useCampuses } from "@/lib/use-campuses";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -25,10 +25,13 @@ export default function ProgramsTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [campus, setCampus] = useState<string>("");
+  const [fromYear, setFromYear] = useState<string>("");
+  const [toYear, setToYear] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState<string>("apa7");
   const [biblio, setBiblio] = useState<Bibliography | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const campuses = useCampuses();
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -49,6 +52,8 @@ export default function ProgramsTab() {
     try {
       const params = new URLSearchParams();
       if (campus) params.set("campus", campus);
+      if (fromYear) params.set("from_year", fromYear);
+      if (toYear) params.set("to_year", toYear);
       const url = `/api/programs/${selected}/bibliography${params.toString() ? "?" + params.toString() : ""}`;
       const res = await apiFetch(url);
       const data = await res.json().catch(() => ({}));
@@ -62,7 +67,7 @@ export default function ProgramsTab() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
-  }, [selected, campus]);
+  }, [selected, campus, fromYear, toYear]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -70,6 +75,8 @@ export default function ProgramsTab() {
     if (!selected) return;
     const p = new URLSearchParams({ program_id: String(selected), fmt });
     if (campus) p.set("campus", campus);
+    if (fromYear) p.set("from_year", fromYear);
+    if (toYear) p.set("to_year", toYear);
     if (fmt.startsWith("citations-")) p.set("style", citationStyle);
     try {
       const res = await apiFetch(`/api/export?${p.toString()}`);
@@ -123,11 +130,26 @@ export default function ProgramsTab() {
               onChange={(e) => setCampus(e.target.value)}
             >
               <option value="">All campuses</option>
-              {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
+          </label>
+          <label className="label">
+            Year from
+            <input
+              type="number" className="input ml-1 w-24" placeholder="e.g. 2019"
+              value={fromYear} onChange={(e) => setFromYear(e.target.value)}
+            />
+          </label>
+          <label className="label">
+            Year to
+            <input
+              type="number" className="input ml-1 w-24" placeholder="e.g. 2026"
+              value={toYear} onChange={(e) => setToYear(e.target.value)}
+            />
           </label>
           <span className="text-xs text-slate-500">
             Campus only filters printed materials. Digital resources show for all campuses.
+            Year range excludes titles published outside it (blank/unreadable years are always kept).
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -181,6 +203,7 @@ export default function ProgramsTab() {
                   programCampus={biblio.campus}
                   onRemove={(titleId) => changeAssignment(sub.subject.id, titleId, false)}
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
+                  onReload={load}
                 />
               ))}
             </div>
@@ -192,12 +215,13 @@ export default function ProgramsTab() {
 }
 
 function SubjectBlock({
-  detail, programCampus, onRemove, onAdd,
+  detail, programCampus, onRemove, onAdd, onReload,
 }: {
   detail: SubjectDetail;
   programCampus: string;
   onRemove: (titleId: number) => void;
   onAdd: (titleId: number) => void;
+  onReload: () => void;
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
   let totalTitles = 0;
@@ -225,6 +249,7 @@ function SubjectBlock({
           label={t.sectionLabel}
           books={buckets[t.id] ?? []}
           onRemove={onRemove}
+          onReload={onReload}
           showIdent={t.medium === "print" || t.kind === "journal"}
         />
       ))}
@@ -301,8 +326,8 @@ function SubjectDescription({
 }
 
 function BookSection({
-  label, books, onRemove, showIdent,
-}: { label: string; books: Title[]; onRemove: (id: number) => void; showIdent: boolean }) {
+  label, books, onRemove, onReload, showIdent,
+}: { label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean }) {
   if (!books.length) return null;
   return (
     <div className="mb-2">
@@ -320,7 +345,7 @@ function BookSection({
         </thead>
         <tbody>
           {books.map((b) => (
-            <EditableTitleRow key={b.id} book={b} showIdent={showIdent} onRemove={onRemove} />
+            <EditableTitleRow key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload} />
           ))}
         </tbody>
       </table>
@@ -329,13 +354,37 @@ function BookSection({
 }
 
 function EditableTitleRow({
-  book, showIdent, onRemove,
-}: { book: Title; showIdent: boolean; onRemove: (id: number) => void }) {
+  book, siblings, showIdent, onRemove, onReload,
+}: { book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<Title>(book);
   const [draft, setDraft] = useState<Title>(book);
   const [err, setErr] = useState<string | null>(null);
+  const [combining, setCombining] = useState(false);
+  const [combineTarget, setCombineTarget] = useState("");
+  const [combineBusy, setCombineBusy] = useState(false);
+
+  async function combine() {
+    if (!combineTarget) return;
+    const target = siblings.find((s) => s.id === Number(combineTarget));
+    if (!confirm(`Combine "${book.title}" into "${target?.title ?? ""}"? Copies are summed and this row is removed.`)) return;
+    setCombineBusy(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/titles/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: book.id, target_id: Number(combineTarget) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onReload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setCombineBusy(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -350,9 +399,15 @@ function EditableTitleRow({
           copies: Number(draft.copies) || 1,
         }),
       });
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      if (j.merged) {
+        // This row was merged into an existing duplicate — its copy count
+        // moved elsewhere, so refetch rather than patching local state.
+        onReload();
+        return;
       }
       setLocal(draft);
       setEditing(false);
@@ -385,20 +440,47 @@ function EditableTitleRow({
     );
   }
 
+  const others = siblings.filter((s) => s.id !== book.id);
+
   return (
-    <tr className="border-t border-slate-100">
-      {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
-      <td className="p-1">{local.author}</td>
-      <td className="p-1">{local.title}</td>
-      <td className="p-1">{local.year}</td>
-      <td className="p-1">{local.copies ?? 1}</td>
-      <td className="p-1">
-        <div className="flex gap-2">
-          <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
-          <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className="border-t border-slate-100">
+        {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
+        <td className="p-1">{local.author}</td>
+        <td className="p-1">{local.title}</td>
+        <td className="p-1">{local.year}</td>
+        <td className="p-1">{local.copies ?? 1}</td>
+        <td className="p-1">
+          <div className="flex gap-2">
+            <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
+            {others.length > 0 && (
+              <button className="text-slate-500 text-xs" onClick={() => setCombining((v) => !v)}>combine</button>
+            )}
+            <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+          </div>
+        </td>
+      </tr>
+      {combining && (
+        <tr className="border-t border-slate-100 bg-slate-50">
+          <td colSpan={showIdent ? 6 : 5} className="p-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Combine this into:</span>
+              <select className="input text-xs" value={combineTarget} onChange={(e) => setCombineTarget(e.target.value)}>
+                <option value="">— select title —</option>
+                {others.map((o) => (
+                  <option key={o.id} value={o.id}>{o.title} {o.author ? `— ${o.author}` : ""}</option>
+                ))}
+              </select>
+              <button className="text-psu text-xs" disabled={combineBusy || !combineTarget} onClick={combine}>
+                {combineBusy ? "…" : "Combine"}
+              </button>
+              <button className="text-slate-400 text-xs" onClick={() => setCombining(false)}>cancel</button>
+              {err && <span className="text-red-600 text-xs">{err}</span>}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

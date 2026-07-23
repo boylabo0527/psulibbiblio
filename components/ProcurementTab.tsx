@@ -2,16 +2,23 @@
 import { useEffect, useState, useMemo } from "react";
 import { RESOURCE_TYPES } from "@/lib/resources";
 import type { ResourceTypeId } from "@/lib/resources";
-import { PSU_CAMPUSES } from "@/lib/campuses";
-import { isProgramAtCampus } from "@/lib/campus-program-map";
+import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 
 const ACCREDITATION_MIN = 5;
+const PARTIAL_MIN = 3;
 const RECENCY_YEARS = 5;
 
 type Program = { id: number; name: string };
-type ViewFilter = "all" | "compliant" | "needs";
+type ViewFilter = "all" | "compliant" | "partial" | "needs";
+
+function statusOf(r: ProcurementRow): "compliant" | "partial" | "outdated" | "needs" {
+  if (r.compliant) return "compliant";
+  if (r.partial) return "partial";
+  if (r.total_titles >= ACCREDITATION_MIN) return "outdated";
+  return "needs";
+}
 
 export default function ProcurementTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -23,7 +30,9 @@ export default function ProcurementTab() {
   const [err, setErr] = useState<string | null>(null);
 
   const cutoffYear = new Date().getFullYear() - RECENCY_YEARS;
-  const visiblePrograms = campus ? programs.filter(p => isProgramAtCampus(p.name, campus)) : programs;
+  const campuses = useCampuses();
+  const { isProgramAtCampus } = useProgramCampusMap();
+  const visiblePrograms = campus ? programs.filter(p => isProgramAtCampus(p.id, campus)) : programs;
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -57,7 +66,8 @@ export default function ProcurementTab() {
 
   const filtered = useMemo(() => {
     if (view === "compliant") return displayRows.filter((r) => r.compliant);
-    if (view === "needs") return displayRows.filter((r) => !r.compliant);
+    if (view === "partial") return displayRows.filter((r) => r.partial);
+    if (view === "needs") return displayRows.filter((r) => !r.compliant && !r.partial);
     return displayRows;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayRows, view]);
@@ -71,7 +81,8 @@ export default function ProcurementTab() {
 
   const total = displayRows.length;
   const compliantCount = displayRows.filter((r) => r.compliant).length;
-  const needsCount = total - compliantCount;
+  const partialCount = displayRows.filter((r) => r.partial).length;
+  const needsCount = total - compliantCount - partialCount;
   const totalGap = displayRows.reduce((a, r) => a + r.gap, 0);
   const complianceRate = total > 0 ? Math.round((compliantCount / total) * 100) : 0;
 
@@ -79,6 +90,27 @@ export default function ProcurementTab() {
     acc[rt.id] = displayRows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
+
+  async function exportReport(fmt: "xlsx" | "csv") {
+    const XLSX = await import("xlsx");
+    const headers = ["Program", "Code", "Subject", "Total Titles", `Recent (${cutoffYear}+)`, "Required", "Gap", "Status"];
+    const statusLabel = { compliant: "OK", partial: "Partial", outdated: "Outdated", needs: "Procure" };
+    const aoa = [headers, ...filtered.map((r) => [
+      r.program, r.course_code, r.course_title, r.total_titles, r.recent_titles,
+      ACCREDITATION_MIN, r.gap, statusLabel[statusOf(r)],
+    ])];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Procurement");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });
+    const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
+    const a = document.createElement("a");
+    const scope = programId ? (programs.find((p) => String(p.id) === programId)?.name ?? "program") : (campus || "all_programs");
+    a.href = URL.createObjectURL(blob);
+    a.download = `procurement_${scope.replace(/[^A-Za-z0-9_-]+/g, "_")}_${view}.${fmt}`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+  }
 
   return (
     <div className="space-y-4">
@@ -90,6 +122,7 @@ export default function ProcurementTab() {
           <span className="font-semibold">{ACCREDITATION_MIN} relevant book titles per major subject</span> published{" "}
           <span className="font-semibold">within the last {RECENCY_YEARS} years</span> ({cutoffYear} – present).
           Titles with no publication year or older than {cutoffYear} do not count toward compliance.
+          Subjects with at least <span className="font-semibold">{PARTIAL_MIN}</span> recent titles count as partial compliance.
         </div>
 
         {/* Filters */}
@@ -108,14 +141,14 @@ export default function ProcurementTab() {
               setCampus(c);
               if (c && programId) {
                 const cur = programs.find(p => String(p.id) === programId);
-                if (cur && !isProgramAtCampus(cur.name, c)) {
-                  const first = programs.find(p => isProgramAtCampus(p.name, c));
+                if (cur && !isProgramAtCampus(cur.id, c)) {
+                  const first = programs.find(p => isProgramAtCampus(p.id, c));
                   setProgramId(first ? String(first.id) : "");
                 }
               }
             }}>
               <option value="">All campuses</option>
-              {PSU_CAMPUSES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
         </div>
@@ -123,7 +156,7 @@ export default function ProcurementTab() {
         {/* Summary cards */}
         {!loading && rows.length > 0 && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
               <div className="bg-psu-light rounded p-4">
                 <div className="text-xs text-slate-600">Total Subjects</div>
                 <div className="text-2xl font-semibold text-psu">{total}</div>
@@ -131,6 +164,10 @@ export default function ProcurementTab() {
               <div className="bg-green-50 border border-green-200 rounded p-4">
                 <div className="text-xs text-green-700">Compliant</div>
                 <div className="text-2xl font-semibold text-green-700">{compliantCount}</div>
+              </div>
+              <div className="bg-yellow-50 border border-yellow-200 rounded p-4">
+                <div className="text-xs text-yellow-700">Partial Compliance</div>
+                <div className="text-2xl font-semibold text-yellow-700">{partialCount}</div>
               </div>
               <div className="bg-red-50 border border-red-200 rounded p-4">
                 <div className="text-xs text-red-700">Needs Procurement</div>
@@ -178,9 +215,10 @@ export default function ProcurementTab() {
               "Recent" = titles published {cutoffYear} or later · Gap = titles still needed to reach {ACCREDITATION_MIN}
             </p>
           </div>
-          <div className="flex gap-1 text-xs">
+          <div className="flex flex-wrap items-center gap-1 text-xs">
             {([
               { id: "needs",     label: `Needs procurement (${needsCount})` },
+              { id: "partial",   label: `Partial (${partialCount})` },
               { id: "compliant", label: `Compliant (${compliantCount})` },
               { id: "all",       label: `All (${total})` },
             ] as { id: ViewFilter; label: string }[]).map((v) => (
@@ -189,6 +227,12 @@ export default function ProcurementTab() {
                 {v.label}
               </button>
             ))}
+            <button className="btn-outline uppercase ml-2" disabled={filtered.length === 0} onClick={() => exportReport("xlsx")}>
+              xlsx
+            </button>
+            <button className="btn-outline uppercase" disabled={filtered.length === 0} onClick={() => exportReport("csv")}>
+              csv
+            </button>
           </div>
         </div>
 
@@ -216,9 +260,15 @@ export default function ProcurementTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {grp.rows.map((r) => (
+                  {grp.rows.map((r) => {
+                    const status = statusOf(r);
+                    return (
                     <tr key={r.subject_id} className={
-                      "border-b border-slate-100 " + (r.compliant ? "hover:bg-green-50" : "bg-red-50/40 hover:bg-red-50")
+                      "border-b border-slate-100 " + (
+                        status === "compliant" ? "hover:bg-green-50" :
+                        status === "partial" ? "bg-yellow-50/40 hover:bg-yellow-50" :
+                        "bg-red-50/40 hover:bg-red-50"
+                      )
                     }>
                       <td className="py-1.5 pr-2 text-slate-500">{r.course_code}</td>
                       <td className="py-1.5 pr-2">{r.course_title}</td>
@@ -229,16 +279,19 @@ export default function ProcurementTab() {
                         {r.gap > 0 ? `+${r.gap}` : "—"}
                       </td>
                       <td className="py-1.5 pl-2 text-right">
-                        {r.compliant ? (
+                        {status === "compliant" ? (
                           <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">OK</span>
-                        ) : r.total_titles >= ACCREDITATION_MIN ? (
+                        ) : status === "partial" ? (
+                          <span className="inline-block bg-yellow-100 text-yellow-700 rounded px-1.5 py-0.5 text-[10px] font-medium" title={`Has ${PARTIAL_MIN}-${ACCREDITATION_MIN - 1} recent titles`}>Partial</span>
+                        ) : status === "outdated" ? (
                           <span className="inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-medium" title="Has enough titles but they are too old">Outdated</span>
                         ) : (
                           <span className="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Procure</span>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

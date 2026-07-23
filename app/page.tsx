@@ -7,6 +7,7 @@ import DashboardTab from "@/components/DashboardTab";
 import ProcurementTab from "@/components/ProcurementTab";
 import CanvassingTab from "@/components/CanvassingTab";
 import PurchaseRequestTab from "@/components/PurchaseRequestTab";
+import CampusValidationTab from "@/components/CampusValidationTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -15,6 +16,7 @@ const tabs = [
   { id: "upload",    label: "Upload",              publicTab: false },
   { id: "match",     label: "Match",               publicTab: false },
   { id: "programs",    label: "Programs & Export",   publicTab: false },
+  { id: "campus-validation", label: "Campus Validation", publicTab: false },
   { id: "procurement",      label: "Procurement Analysis", publicTab: false },
   { id: "canvassing",       label: "Market Canvassing",   publicTab: false },
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
@@ -92,6 +94,8 @@ export default function Home() {
           <MatchTab />
         ) : tab === "programs" ? (
           <ProgramsTab />
+        ) : tab === "campus-validation" ? (
+          <CampusValidationTab />
         ) : tab === "procurement" ? (
           <ProcurementTab />
         ) : tab === "canvassing" ? (

@@ -36,7 +36,13 @@ export async function GET(req: Request) {
     const subjectIdParam = parseInt(u.searchParams.get("subject_id") ?? "", 10);
     const subjectId = Number.isFinite(subjectIdParam) ? subjectIdParam : undefined;
     const subjectLabel = u.searchParams.get("subject_label") ?? "";
-    const data = await loadProgramBibliography(programId, campus, subjectId);
+    const minYear = parseInt(u.searchParams.get("from_year") ?? "", 10);
+    const maxYear = parseInt(u.searchParams.get("to_year") ?? "", 10);
+    const data = await loadProgramBibliography(
+      programId, campus, subjectId,
+      Number.isFinite(minYear) ? minYear : undefined,
+      Number.isFinite(maxYear) ? maxYear : undefined,
+    );
     const baseName = safeName(
       subjectId && subjectLabel
         ? subjectLabel

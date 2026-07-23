@@ -1,6 +1,16 @@
 /**
- * TF-IDF + cosine similarity matcher matching titles (ebook + printed) to
- * subjects (course code, title, description). Pure TypeScript.
+ * Matches titles (ebook + printed) to subjects (course code, title,
+ * description). Two signals, combined:
+ *
+ * - BM25 (sparse, lexical): rewards shared exact terms/technical vocabulary
+ *   — good for specific course codes, author names, precise terminology.
+ * - Sentence embeddings (dense, semantic, optional): rewards thematic
+ *   overlap even with no shared words — good for broad subject areas.
+ *
+ * final = semanticWeight * embeddingCosine + (1 - semanticWeight) * bm25Norm
+ *
+ * Embeddings are entirely optional (pass none and this is pure BM25) so the
+ * caller can degrade gracefully if the embedding model is unavailable.
  */
 import type { SubjectRow, TitleRow, AssignmentRow } from "./types";
 
@@ -21,15 +31,14 @@ function tokenize(text: string): string[] {
   return filtered.concat(bigrams);
 }
 
-function titleText(t: TitleRow): string {
+/** Exported so callers can embed the exact same text used for BM25 tokenizing. */
+export function titleText(t: TitleRow): string {
   return [t.title, t.author, t.publisher, t.subjects].filter(Boolean).join(" ");
 }
 
-function subjectText(s: SubjectRow): string {
+export function subjectText(s: SubjectRow): string {
   return [s.course_title, s.description, s.course_code].filter(Boolean).join(" ");
 }
-
-type SparseVec = Map<number, number>;
 
 function buildVocab(docs: string[][]): Map<string, number> {
   const vocab = new Map<string, number>();
@@ -39,39 +48,31 @@ function buildVocab(docs: string[][]): Map<string, number> {
   return vocab;
 }
 
-function termFreq(tokens: string[], vocab: Map<string, number>): SparseVec {
+function termFreq(tokens: string[], vocab: Map<string, number>): Map<number, number> {
   const tf = new Map<number, number>();
   for (const tok of tokens) {
     const id = vocab.get(tok);
     if (id !== undefined) tf.set(id, (tf.get(id) || 0) + 1);
   }
-  for (const [k, v] of tf) tf.set(k, 1 + Math.log(v));
   return tf;
 }
 
-function tfidf(tf: SparseVec, idf: Float64Array): SparseVec {
-  const out = new Map<number, number>();
-  for (const [k, v] of tf) out.set(k, v * idf[k]);
-  return out;
-}
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+const DEFAULT_SEMANTIC_WEIGHT = 0.5;
 
-function l2norm(v: SparseVec): number {
-  let s = 0;
-  for (const x of v.values()) s += x * x;
-  return Math.sqrt(s) || 1;
-}
-
-function cosine(a: SparseVec, b: SparseVec, an: number, bn: number): number {
-  const [small, big] = a.size < b.size ? [a, b] : [b, a];
-  let dot = 0;
-  for (const [k, v] of small) {
-    const w = big.get(k);
-    if (w !== undefined) dot += v * w;
-  }
-  return dot / (an * bn);
-}
-
-export type MatchOptions = { topK?: number; minScore?: number };
+export type MatchOptions = {
+  topK?: number;
+  minScore?: number;
+  /** Weight given to semantic (embedding) similarity vs. BM25, 0..1. Ignored
+   *  (treated as 0) unless both embedding maps below are supplied. */
+  semanticWeight?: number;
+  /** subject.id -> embedding vector */
+  subjectEmbeddings?: Map<number, number[]>;
+  /** title.id -> embedding vector */
+  titleEmbeddings?: Map<number, number[]>;
+  cosineSim?: (a: number[], b: number[]) => number;
+};
 
 export function runMatch(
   subjects: SubjectRow[],
@@ -82,13 +83,18 @@ export function runMatch(
   const minScore = opts.minScore ?? 0.05;
   if (!subjects.length || !titles.length) return [];
 
+  const useEmbeddings = !!(opts.subjectEmbeddings && opts.titleEmbeddings && opts.cosineSim);
+  const alpha = useEmbeddings ? Math.min(1, Math.max(0, opts.semanticWeight ?? DEFAULT_SEMANTIC_WEIGHT)) : 0;
+
   const subjectTokens = subjects.map((s) => tokenize(subjectText(s)));
   const titleTokens = titles.map((t) => tokenize(titleText(t)));
   const vocab = buildVocab(subjectTokens.concat(titleTokens));
 
-  const N = subjectTokens.length + titleTokens.length;
+  // BM25 operates over the title collection: titles are the documents,
+  // subjects are queries.
+  const N = titleTokens.length;
   const df = new Float64Array(vocab.size);
-  for (const tokens of subjectTokens.concat(titleTokens)) {
+  for (const tokens of titleTokens) {
     const seen = new Set<number>();
     for (const tok of tokens) {
       const id = vocab.get(tok)!;
@@ -96,13 +102,15 @@ export function runMatch(
     }
   }
   const idf = new Float64Array(vocab.size);
-  for (let i = 0; i < vocab.size; i++) idf[i] = Math.log((N + 1) / (df[i] + 1)) + 1;
+  for (let i = 0; i < vocab.size; i++) idf[i] = Math.log((N - df[i] + 0.5) / (df[i] + 0.5) + 1);
 
-  const titleVecs = titleTokens.map((toks) => tfidf(termFreq(toks, vocab), idf));
-  const titleNorms = titleVecs.map(l2norm);
+  const titleTFs = titleTokens.map((toks) => termFreq(toks, vocab));
+  const titleLens = titleTokens.map((toks) => toks.length);
+  const avgdl = titleLens.reduce((a, b) => a + b, 0) / (titleLens.length || 1) || 1;
+
   const inverted: Map<number, number[]> = new Map();
-  for (let j = 0; j < titleVecs.length; j++) {
-    for (const k of titleVecs[j].keys()) {
+  for (let j = 0; j < titleTFs.length; j++) {
+    for (const k of titleTFs[j].keys()) {
       const arr = inverted.get(k);
       if (arr) arr.push(j); else inverted.set(k, [j]);
     }
@@ -113,40 +121,65 @@ export function runMatch(
 
   const results: AssignmentRow[] = [];
   for (let i = 0; i < subjects.length; i++) {
-    const sVec = tfidf(termFreq(subjectTokens[i], vocab), idf);
-    if (sVec.size === 0) continue;
-    const sNorm = l2norm(sVec);
+    const qTF = termFreq(subjectTokens[i], vocab);
+    if (qTF.size === 0 && !useEmbeddings) continue;
 
     const candidates = new Set<number>();
-    for (const k of sVec.keys()) {
+    for (const k of qTF.keys()) {
       const arr = inverted.get(k);
       if (arr) for (const j of arr) candidates.add(j);
     }
+    // With embeddings on, a subject can still match titles that share no
+    // exact terms at all — consider every title as a candidate in that case.
+    if (useEmbeddings && candidates.size === 0) {
+      for (let j = 0; j < titles.length; j++) candidates.add(j);
+    }
 
-    type Scored = { j: number; score: number };
+    const subjectVec = useEmbeddings ? opts.subjectEmbeddings!.get(subjects[i].id!) : undefined;
+
+    type Scored = { j: number; score: number; bm25: number; semantic: number; termContribs: { term: string; v: number }[] };
     const scored: Scored[] = [];
     for (const j of candidates) {
-      const s = cosine(sVec, titleVecs[j], sNorm, titleNorms[j]);
-      if (s >= minScore) scored.push({ j, score: s });
+      const docTF = titleTFs[j];
+      const docLen = titleLens[j] || 1;
+      let bm25Raw = 0;
+      const termContribs: { term: string; v: number }[] = [];
+      for (const k of qTF.keys()) {
+        const tf = docTF.get(k);
+        if (!tf) continue;
+        const numerator = tf * (BM25_K1 + 1);
+        const denominator = tf + BM25_K1 * (1 - BM25_B + BM25_B * (docLen / avgdl));
+        const contrib = idf[k] * (numerator / denominator);
+        bm25Raw += contrib;
+        termContribs.push({ term: idToTerm[k], v: contrib });
+      }
+      const bm25Norm = bm25Raw / (bm25Raw + 1);
+
+      let semantic = 0;
+      if (useEmbeddings && subjectVec) {
+        const titleVec = opts.titleEmbeddings!.get(titles[j].id!);
+        if (titleVec) semantic = opts.cosineSim!(subjectVec, titleVec);
+      }
+
+      const score = alpha * semantic + (1 - alpha) * bm25Norm;
+      if (score >= minScore) scored.push({ j, score, bm25: bm25Norm, semantic, termContribs });
     }
     scored.sort((a, b) => b.score - a.score);
 
     let rank = 0;
-    for (const { j, score } of scored.slice(0, topK)) {
+    for (const { j, score, bm25, semantic, termContribs } of scored.slice(0, topK)) {
       rank++;
-      const contribs: { term: string; v: number }[] = [];
-      for (const [k, v] of sVec) {
-        const w = titleVecs[j].get(k);
-        if (w) contribs.push({ term: idToTerm[k], v: v * w });
-      }
-      contribs.sort((a, b) => b.v - a.v);
-      const top = contribs.slice(0, 5).map((c) => c.term).join(", ") || "n/a";
+      termContribs.sort((a, b) => b.v - a.v);
+      const top = termContribs.slice(0, 5).map((c) => c.term).join(", ") || "n/a";
+      const explanation = useEmbeddings
+        ? `hybrid=${score.toFixed(3)} (semantic=${semantic.toFixed(3)}, bm25=${bm25.toFixed(3)}); shared terms: ${top}`
+        : `bm25=${score.toFixed(3)}; shared terms: ${top}`;
       results.push({
         subject_id: subjects[i].id!,
         title_id: titles[j].id!,
         score,
         rank,
-        explanation: `cosine=${score.toFixed(3)}; shared terms: ${top}`,
+        explanation,
       });
     }
   }

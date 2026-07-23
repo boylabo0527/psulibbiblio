@@ -2,15 +2,9 @@
 import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
-import { PSU_CAMPUSES } from "@/lib/campuses";
-
-type ProgressEvent =
-  | { phase: "parsing" }
-  | { phase: "parsed"; total: number }
-  | { phase: "deduping"; existing: number }
-  | { phase: "inserting"; inserted: number; skipped: number; total: number }
-  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
-  | { phase: "error"; error: string };
+import { useCampuses } from "@/lib/use-campuses";
+import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
+import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 
 type FilePhase = ProgressEvent["phase"] | "idle" | "uploading" | "queued";
 
@@ -36,38 +30,21 @@ type Props = {
   extraFields?: { name: string; label: string; type?: "text" | "campus"; placeholder?: string }[];
 };
 
-async function consumeNdjson(
-  res: Response,
-  onEvent: (ev: ProgressEvent) => void,
-  signal: AbortSignal,
-) {
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    if (signal.aborted) { reader.cancel(); break; }
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try { onEvent(JSON.parse(line) as ProgressEvent); } catch { /* skip */ }
-    }
-  }
-}
-
 function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [queue, setQueue] = useState<FileStatus[]>([]);
+  // Mirrors `queue` for the worker loop below, which needs to see files
+  // appended mid-run (React state updates aren't visible inside an
+  // already-running async loop closure).
+  const queueRef = useRef<FileStatus[]>([]);
+  const cursorRef = useRef(0);
   const [extras, setExtras] = useState<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const runningRef = useRef(false);
+  const campuses = useCampuses();
 
   function patchFile(index: number, patch: Partial<FileStatus>) {
-    setQueue((prev) => prev.map((f, i) => i === index ? { ...f, ...patch } : f));
+    queueRef.current = queueRef.current.map((f, i) => i === index ? { ...f, ...patch } : f);
+    setQueue(queueRef.current);
   }
 
   async function uploadOne(fs: FileStatus, index: number, controller: AbortController) {
@@ -147,20 +124,26 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     }
   }
 
-  async function runQueue(items: FileStatus[]) {
+  // Processes queueRef from wherever the cursor left off, re-checking
+  // queueRef.current.length on every iteration — so files appended to the
+  // queue while this loop is already running (via onFilesSelected below)
+  // get picked up instead of requiring a fresh, separate run that would
+  // otherwise abort whatever was already uploading.
+  async function runQueue(controller: AbortController) {
     if (runningRef.current) return;
     runningRef.current = true;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    for (let i = 0; i < items.length; i++) {
-      if (controller.signal.aborted) break;
-      const current = items[i];
-      if (current.phase !== "queued") continue;
-      await uploadOne(current, i, controller);
+    try {
+      while (cursorRef.current < queueRef.current.length) {
+        if (controller.signal.aborted) break;
+        const i = cursorRef.current;
+        cursorRef.current++;
+        const current = queueRef.current[i];
+        if (current.phase !== "queued") continue;
+        await uploadOne(current, i, controller);
+      }
+    } finally {
+      runningRef.current = false;
     }
-    runningRef.current = false;
   }
 
   function onFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
@@ -169,22 +152,24 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     const newItems: FileStatus[] = files.map((f) => ({
       file: f, phase: "queued", inserted: 0, skipped: 0, total: 0, elapsedMs: 0,
     }));
-    setQueue(newItems);
-    // Start after state update.
-    setTimeout(() => runQueue(newItems), 0);
+    queueRef.current = [...queueRef.current, ...newItems];
+    setQueue(queueRef.current);
+    if (!abortRef.current) abortRef.current = new AbortController();
+    runQueue(abortRef.current);
     e.target.value = "";
   }
 
   function cancel() {
     abortRef.current?.abort();
+    abortRef.current = null;
     runningRef.current = false;
-    setQueue((prev) =>
-      prev.map((f) =>
-        f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
-          ? { ...f, phase: "error", error: "Cancelled" }
-          : f,
-      ),
+    cursorRef.current = queueRef.current.length;
+    queueRef.current = queueRef.current.map((f) =>
+      f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
+        ? { ...f, phase: "error", error: "Cancelled" }
+        : f,
     );
+    setQueue(queueRef.current);
   }
 
   const busy = queue.some((f) =>
@@ -218,8 +203,8 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
               onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
             >
               <option value="">— select campus —</option>
-              {PSU_CAMPUSES.map((c) => (
-                <option key={c} value={c}>{c}</option>
+              {campuses.map((c) => (
+                <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           ) : (
@@ -296,14 +281,6 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
 }
 
 export default function UploadTab() {
-  const [resetResult, setResetResult] = useState("");
-  async function reset() {
-    if (!confirm("Wipe all programs, subjects, titles, and assignments?")) return;
-    setResetResult("Resetting...");
-    const r = await apiFetch("/api/admin/reset", { method: "POST" });
-    setResetResult(JSON.stringify(await r.json(), null, 2));
-  }
-
   return (
     <>
       <FileCard
@@ -378,11 +355,7 @@ export default function UploadTab() {
           { label: "journals_online_open_template.csv",  href: "/templates/journals_online_open_template.csv" },
         ]}
       />
-      <div className="card border-red-300">
-        <h2 className="text-red-700 font-semibold mb-2">Admin</h2>
-        <button className="btn bg-red-600 hover:bg-red-700" onClick={reset}>Wipe all data</button>
-        {resetResult && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs">{resetResult}</pre>}
-      </div>
+      <BulkDeleteAdmin />
     </>
   );
 }

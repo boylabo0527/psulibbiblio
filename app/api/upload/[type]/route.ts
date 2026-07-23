@@ -85,9 +85,13 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     // count incremented rather than skipped.
     // -----------------------------------------------------------------------
     if (rt.accessionMode) {
+      // Normalize for matching only (case/whitespace differences between copy
+      // records of the same title shouldn't split them into separate rows).
+      const normField = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+
       // Step 1: aggregate incoming rows by key, summing copies.
       const keyOf = (r: TitleRow, c: string) =>
-        `${(r.call_no ?? "").trim()}|${r.title.trim()}|${(r.author ?? "").trim()}|${c}`;
+        `${normField(r.call_no ?? "")}|${normField(r.title)}|${normField(r.author ?? "")}|${c}`;
 
       type AggRow = { row: TitleRow; campus: string; copies: number };
       const aggMap = new Map<string, AggRow>();
@@ -114,7 +118,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
 
       const existingMap = new Map<string, Existing>();
       for (const e of existing) {
-        existingMap.set(`${(e.call_no ?? "").trim()}|${e.title.trim()}|${(e.author ?? "").trim()}|${e.campus ?? ""}`, e);
+        existingMap.set(`${normField(e.call_no ?? "")}|${normField(e.title)}|${normField(e.author ?? "")}|${e.campus ?? ""}`, e);
       }
 
       // Step 3: split aggregated rows into inserts vs copy-count updates.
