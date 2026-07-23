@@ -1,5 +1,4 @@
 import { parseEbookTitles, parseJournals, parsePrintedBooks, buildTitleRowsFromRaw } from "@/lib/parsers";
-import { pageThrough } from "@/lib/paging";
 import { ndjsonStream } from "@/lib/streaming";
 import { RESOURCE_BY_ID, isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
@@ -112,15 +111,38 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       }
 
       // Step 2: fetch existing titles with id + copies + barcodes so we can
-      // tell new copies from ones already counted in a prior upload.
+      // tell new copies from ones already counted in a prior upload — only
+      // rows that could conflict with this upload (narrowed by call_no and
+      // by title), not the entire existing printed-book catalog, so this
+      // stays fast regardless of how large that catalog has grown.
       type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number; barcodes: string[] | null };
-      const existing = await pageThrough<Existing>(
-        (from, to) => db.from("titles")
-          .select("id, call_no, title, author, campus, copies, barcodes")
-          .eq("format", rt.id)
-          .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
-        (count) => send({ phase: "deduping", existing: count }),
-      );
+      const IN_CHUNK = 150;
+      async function fetchCandidates(column: string, values: Set<string>): Promise<Existing[]> {
+        const out: Existing[] = [];
+        const list = Array.from(values);
+        for (let i = 0; i < list.length; i += IN_CHUNK) {
+          const slice = list.slice(i, i + IN_CHUNK);
+          const { data, error } = await db.from("titles")
+            .select("id, call_no, title, author, campus, copies, barcodes")
+            .eq("format", rt.id).in(column, slice);
+          if (error) throw error;
+          out.push(...((data ?? []) as unknown as Existing[]));
+          send({ phase: "deduping", existing: out.length });
+        }
+        return out;
+      }
+      const callNos = new Set<string>();
+      const titles = new Set<string>();
+      for (const { row } of aggMap.values()) {
+        const cn = (row.call_no ?? "").trim();
+        if (cn) callNos.add(cn);
+        titles.add(row.title);
+      }
+      const existingByCallNo = callNos.size ? await fetchCandidates("call_no", callNos) : [];
+      const existingByTitle = titles.size ? await fetchCandidates("title", titles) : [];
+      const existingUnique = new Map<number, Existing>();
+      for (const e of [...existingByCallNo, ...existingByTitle]) existingUnique.set(e.id, e);
+      const existing = Array.from(existingUnique.values());
       send({ phase: "deduping", existing: existing.length });
 
       const existingMap = new Map<string, Existing>();
@@ -197,18 +219,61 @@ export async function POST(req: Request, { params }: { params: { type: string } 
 
     // -----------------------------------------------------------------------
     // Standard dedup mode (all other resource types).
+    //
+    // Only fetch existing rows that could actually conflict with this
+    // upload — narrowed by ISBN/ISSN/call_no and by title — instead of the
+    // entire existing catalog for this format. A full-table fetch used to
+    // run here regardless of upload size, which scales with the size of the
+    // *stored* catalog rather than the *upload*; for a catalog that's grown
+    // into the tens of thousands, that became slow enough to look hung and
+    // risked exceeding the function's execution time limit outright.
     // -----------------------------------------------------------------------
     type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string; campus: string };
     const selectCols = rt.campusScoped
       ? "isbn, issn, call_no, title, author, year, campus"
       : "isbn, issn, call_no, title, author, year";
-    const existing = await pageThrough<Existing>(
-      (from, to) => db.from("titles")
-        .select(selectCols)
-        .eq("format", rt.id)
-        .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
-      (count) => send({ phase: "deduping", existing: count }),
-    );
+
+    const IN_CHUNK = 150;
+    async function fetchCandidates(column: string, values: Set<string>): Promise<Existing[]> {
+      const out: Existing[] = [];
+      const list = Array.from(values);
+      for (let i = 0; i < list.length; i += IN_CHUNK) {
+        const slice = list.slice(i, i + IN_CHUNK);
+        const { data, error } = await db.from("titles")
+          .select(selectCols).eq("format", rt.id).in(column, slice);
+        if (error) throw error;
+        out.push(...((data ?? []) as unknown as Existing[]));
+        send({ phase: "deduping", existing: out.length });
+      }
+      return out;
+    }
+
+    const idField: "isbn" | "issn" | "call_no" | null =
+      rt.dedupBy === "isbn-or-tuple" ? "isbn" :
+      rt.dedupBy === "issn-or-title" ? "issn" :
+      "call_no"; // callno-title-author / callno-title-issn
+
+    const idValues = new Set<string>();
+    const titleValues = new Set<string>();
+    for (const r of records) {
+      if (idField === "call_no") {
+        // call_no is often blank (unclassified) — always narrow by title too.
+        const v = (r.call_no ?? "").trim();
+        if (v) idValues.add(v);
+        titleValues.add(r.title);
+      } else {
+        const v = (idField === "isbn" ? r.isbn : r.issn)?.trim() ?? "";
+        if (v) idValues.add(v); else titleValues.add(r.title);
+      }
+    }
+
+    const existingById = idValues.size ? await fetchCandidates(idField, idValues) : [];
+    const existingByTitle = titleValues.size ? await fetchCandidates("title", titleValues) : [];
+    // A row can show up in both fetches; de-dupe by identity before building the seen-sets below.
+    const existingKey = (e: Existing) => `${e.isbn}|${e.issn}|${e.call_no}|${e.title}|${e.author}|${e.year}|${e.campus ?? ""}`;
+    const existingUnique = new Map<string, Existing>();
+    for (const e of [...existingById, ...existingByTitle]) existingUnique.set(existingKey(e), e);
+    const existing = Array.from(existingUnique.values());
     send({ phase: "deduping", existing: existing.length });
 
     const isbnSeen = new Set<string>();
