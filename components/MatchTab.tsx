@@ -1,8 +1,20 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
+import { consumeNdjson } from "@/lib/streaming";
+import type { MatchProgressEvent } from "@/app/api/match/run/route";
 
 type Program = { id: number; name: string };
+
+const PHASE_LABEL: Record<MatchProgressEvent["phase"], string> = {
+  fetching: "Loading subjects and titles…",
+  embedding_model: "Loading embedding model (first run after a deploy takes longer)…",
+  embedding: "Embedding titles…",
+  matching: "Scoring matches (BM25 + semantic)…",
+  saving: "Saving assignments…",
+  done: "Done",
+  error: "Error",
+};
 
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -10,30 +22,43 @@ export default function MatchTab() {
   const [topK, setTopK] = useState(8);
   const [minScore, setMinScore] = useState(0.06);
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState("");
+  const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
 
+  useEffect(() => () => { if (tickerRef.current) clearInterval(tickerRef.current); }, []);
+
   async function run() {
     setBusy(true);
-    setResult("Running... (first run after a deploy is slower — it downloads the embedding model once)");
+    setError(null);
+    setProgress({ phase: "fetching" });
+    const startedAt = Date.now();
+    setElapsedMs(0);
+    tickerRef.current = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
       const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
       if (programId) params.set("program_id", programId);
-      const r = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
-      const j = await r.json();
-      const note = j.semantic_used === false
-        ? "\n\n(Semantic matching wasn't available this run — fell back to keyword matching (BM25) only. Safe to ignore unless this persists.)"
-        : "";
-      setResult(JSON.stringify(j, null, 2) + note);
+      const res = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
+      await consumeNdjson<MatchProgressEvent>(res, (ev) => {
+        setProgress(ev);
+        if (ev.phase === "error") setError(ev.error);
+      });
     } catch (e) {
-      setResult(String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
+      if (tickerRef.current) clearInterval(tickerRef.current);
       setBusy(false);
     }
   }
+
+  const pct = progress && (progress.phase === "embedding" || progress.phase === "saving") && progress.total > 0
+    ? Math.round((progress.done / progress.total) * 100)
+    : null;
 
   return (
     <div className="card">
@@ -62,9 +87,41 @@ export default function MatchTab() {
           <input type="number" min={0} max={1} step={0.01} className="input ml-1 w-20"
             value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
-        <button className="btn" onClick={run} disabled={busy}>{busy ? "Matching..." : "Run matching"}</button>
+        <button className="btn" onClick={run} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
       </div>
-      {result && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs overflow-auto max-h-64">{result}</pre>}
+
+      {progress && (
+        <div className="mt-3">
+          <div className="flex justify-between text-xs text-slate-600 mb-1">
+            <span>
+              {PHASE_LABEL[progress.phase]}
+              {pct !== null && progress.phase !== "done" && progress.phase !== "error"
+                ? ` (${(progress as { done: number }).done.toLocaleString()} / ${(progress as { total: number }).total.toLocaleString()})`
+                : ""}
+            </span>
+            <span>{(elapsedMs / 1000).toFixed(1)}s</span>
+          </div>
+          <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden">
+            <div
+              className={
+                "h-full transition-all " +
+                (progress.phase === "error" ? "bg-red-500" : progress.phase === "done" ? "bg-emerald-500" : "bg-psu")
+              }
+              style={{ width: progress.phase === "done" || progress.phase === "error" ? "100%" : pct !== null ? `${Math.max(8, pct)}%` : "30%" }}
+            />
+          </div>
+
+          {progress.phase === "done" && (
+            <div className="mt-3 bg-slate-100 rounded p-2 text-xs">
+              <p><strong>{progress.matches.toLocaleString()}</strong> matches assigned across <strong>{progress.subjects.toLocaleString()}</strong> subjects and <strong>{progress.titles.toLocaleString()}</strong> titles.</p>
+              {!progress.semantic_used && (
+                <p className="text-amber-700 mt-1">Semantic matching wasn&apos;t available this run — fell back to keyword matching (BM25) only. Safe to ignore unless this persists.</p>
+              )}
+            </div>
+          )}
+          {error && <p className="mt-2 text-red-700 text-xs">{error}</p>}
+        </div>
+      )}
     </div>
   );
 }

@@ -3,15 +3,8 @@ import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses } from "@/lib/use-campuses";
+import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
-
-type ProgressEvent =
-  | { phase: "parsing" }
-  | { phase: "parsed"; total: number }
-  | { phase: "deduping"; existing: number }
-  | { phase: "inserting"; inserted: number; skipped: number; total: number }
-  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
-  | { phase: "error"; error: string };
 
 type FilePhase = ProgressEvent["phase"] | "idle" | "uploading" | "queued";
 
@@ -36,30 +29,6 @@ type Props = {
   templates?: { label: string; href: string }[];
   extraFields?: { name: string; label: string; type?: "text" | "campus"; placeholder?: string }[];
 };
-
-async function consumeNdjson(
-  res: Response,
-  onEvent: (ev: ProgressEvent) => void,
-  signal: AbortSignal,
-) {
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    if (signal.aborted) { reader.cancel(); break; }
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try { onEvent(JSON.parse(line) as ProgressEvent); } catch { /* skip */ }
-    }
-  }
-}
 
 function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [queue, setQueue] = useState<FileStatus[]>([]);

@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
 import { runMatch, subjectText, titleText } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
+import { ndjsonStream } from "@/lib/streaming";
 import type { SubjectRow, TitleRow } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -11,6 +11,15 @@ export const maxDuration = 300;
 const PAGE = 1000;
 const EMBED_BATCH = 64;
 const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
+
+export type MatchProgressEvent =
+  | { phase: "fetching" }
+  | { phase: "embedding_model" }
+  | { phase: "embedding"; done: number; total: number }
+  | { phase: "matching" }
+  | { phase: "saving"; done: number; total: number }
+  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean }
+  | { phase: "error"; error: string };
 
 async function fetchAll<T>(
   db: ReturnType<typeof serviceClient>, table: string, columns: string,
@@ -37,7 +46,9 @@ async function computeEmbeddings(
   db: ReturnType<typeof serviceClient>,
   subjects: SubjectRow[],
   titles: (TitleRow & { id: number; embedding: number[] | null })[],
+  send: (e: MatchProgressEvent) => void,
 ): Promise<{ subjectEmbeddings: Map<number, number[]>; titleEmbeddings: Map<number, number[]> }> {
+  send({ phase: "embedding_model" });
   const subjectEmbeddings = new Map<number, number[]>();
   const subjVecs = await embedTexts(subjects.map((s) => subjectText(s)));
   subjects.forEach((s, i) => subjectEmbeddings.set(s.id!, subjVecs[i]));
@@ -52,6 +63,7 @@ async function computeEmbeddings(
     }
   }
 
+  send({ phase: "embedding", done: 0, total: missing.length });
   for (let i = 0; i < missing.length; i += EMBED_BATCH) {
     const batch = missing.slice(i, i + EMBED_BATCH);
     const vecs = await embedTexts(batch.map((m) => m.text));
@@ -61,19 +73,22 @@ async function computeEmbeddings(
     });
     const { error } = await db.from("titles").upsert(upsertRows, { onConflict: "id" });
     if (error) throw error;
+    send({ phase: "embedding", done: Math.min(i + EMBED_BATCH, missing.length), total: missing.length });
   }
 
   return { subjectEmbeddings, titleEmbeddings };
 }
 
 export async function POST(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const topK = parseInt(url.searchParams.get("top_k") ?? "10", 10);
-    const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
-    const programId = url.searchParams.get("program_id");
+  const url = new URL(req.url);
+  const topK = parseInt(url.searchParams.get("top_k") ?? "10", 10);
+  const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
+  const programId = url.searchParams.get("program_id");
+
+  const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
 
+    send({ phase: "fetching" });
     const subjects = await fetchAll<SubjectRow>(
       db, "subjects",
       "id, program_id, course_code, course_title, description",
@@ -84,10 +99,8 @@ export async function POST(req: Request) {
       "id, format, title, author, publisher, year, subjects, embedding",
     );
     if (!subjects.length || !titles.length) {
-      return NextResponse.json(
-        { error: "Need at least one subject and one title before matching." },
-        { status: 400 },
-      );
+      send({ phase: "error", error: "Need at least one subject and one title before matching." });
+      return;
     }
 
     let subjectEmbeddings: Map<number, number[]> | undefined;
@@ -95,7 +108,7 @@ export async function POST(req: Request) {
     let semanticUsed = false;
     if (embeddingsEnabled()) {
       try {
-        const computed = await computeEmbeddings(db, subjects, titles);
+        const computed = await computeEmbeddings(db, subjects, titles, send);
         subjectEmbeddings = computed.subjectEmbeddings;
         titleEmbeddings = computed.titleEmbeddings;
         semanticUsed = true;
@@ -104,6 +117,7 @@ export async function POST(req: Request) {
       }
     }
 
+    send({ phase: "matching" });
     const results = runMatch(subjects, titles, {
       topK, minScore,
       semanticWeight: SEMANTIC_WEIGHT,
@@ -128,27 +142,25 @@ export async function POST(req: Request) {
       explanation: r.explanation ?? "",
       manual: 0,
     }));
+    send({ phase: "saving", done: 0, total: rows.length });
     for (let i = 0; i < rows.length; i += 1000) {
       const slice = rows.slice(i, i + 1000);
       const { error } = await db.from("assignments")
         .upsert(slice, { onConflict: "subject_id,title_id", ignoreDuplicates: true });
       if (error) throw error;
+      send({ phase: "saving", done: Math.min(i + 1000, rows.length), total: rows.length });
     }
 
-    return NextResponse.json({
+    send({
+      phase: "done",
       matches: results.length,
       subjects: subjects.length,
       titles: titles.length,
       semantic_used: semanticUsed,
     });
-  } catch (err) {
-    console.error("match/run error:", err);
-    let msg: string;
-    if (err instanceof Error) {
-      msg = err.message;
-    } else {
-      try { msg = JSON.stringify(err); } catch { msg = String(err); }
-    }
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" },
+  });
 }
