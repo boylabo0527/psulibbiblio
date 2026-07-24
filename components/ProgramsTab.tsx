@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
-import { useCampuses } from "@/lib/use-campuses";
+import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -32,6 +32,8 @@ export default function ProgramsTab() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const campuses = useCampuses();
+  const { isProgramAtCampus } = useProgramCampusMap();
+  const visiblePrograms = campus ? programs.filter((p) => isProgramAtCampus(p.id, campus)) : programs;
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -116,8 +118,8 @@ export default function ProgramsTab() {
           <label className="label">
             Program
             <select className="input ml-1 min-w-[280px]" value={selected ?? ""} onChange={(e) => setSelected(Number(e.target.value))}>
-              {programs.length === 0 && <option value="">No programs uploaded yet</option>}
-              {programs.map((p) => (
+              {visiblePrograms.length === 0 && <option value="">{campus ? `No programs at ${campus}` : "No programs uploaded yet"}</option>}
+              {visiblePrograms.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
@@ -127,7 +129,17 @@ export default function ProgramsTab() {
             <select
               className="input ml-1 min-w-[180px]"
               value={campus}
-              onChange={(e) => setCampus(e.target.value)}
+              onChange={(e) => {
+                const c = e.target.value;
+                setCampus(c);
+                if (c && selected !== null) {
+                  const cur = programs.find((p) => p.id === selected);
+                  if (cur && !isProgramAtCampus(cur.id, c)) {
+                    const first = programs.find((p) => isProgramAtCampus(p.id, c));
+                    setSelected(first ? first.id : null);
+                  }
+                }
+              }}
             >
               <option value="">All campuses</option>
               {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
