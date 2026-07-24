@@ -10,6 +10,7 @@ const PHASE_LABEL: Record<Exclude<MatchProgressEvent["phase"], "fetching">, stri
   embedding_model: "Loading embedding model (first run after a deploy takes longer)…",
   embedding: "Embedding subjects…",
   matching: "Matching + saving subjects…",
+  paused: "Continuing (large run split into multiple requests)…",
   done: "Done",
   error: "Error",
 };
@@ -47,17 +48,39 @@ export default function MatchTab() {
     setElapsedMs(0);
     tickerRef.current = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
-      const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
-      if (programId) params.set("program_id", programId);
-      if (balanceFormats) {
-        params.set("top_k_printed", String(topKPrinted));
-        params.set("top_k_digital", String(topKDigital));
+      // A large catalog can take longer to match than a single serverless
+      // request is allowed to run. Rather than fail once the platform's
+      // time limit hits, the server stops itself early and reports how far
+      // it got ("paused") -- this loop just keeps asking it to continue
+      // from there until the whole run is actually done.
+      let offset = 0;
+      let matchesSoFar = 0;
+      let failedSoFar: { course_code: string; error: string }[] = [];
+      for (;;) {
+        const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
+        if (programId) params.set("program_id", programId);
+        if (balanceFormats) {
+          params.set("top_k_printed", String(topKPrinted));
+          params.set("top_k_digital", String(topKDigital));
+        }
+        if (offset > 0) {
+          params.set("offset", String(offset));
+          params.set("matches_so_far", String(matchesSoFar));
+          params.set("failed_so_far", JSON.stringify(failedSoFar));
+        }
+        const res = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
+        let paused: Extract<MatchProgressEvent, { phase: "paused" }> | null = null;
+        await consumeNdjson<MatchProgressEvent>(res, (ev) => {
+          setProgress(ev);
+          if (ev.phase === "error") setError(ev.error);
+          if (ev.phase === "paused") paused = ev;
+        });
+        if (!paused) break;
+        const p: Extract<MatchProgressEvent, { phase: "paused" }> = paused;
+        offset = p.next_offset;
+        matchesSoFar = p.matches_so_far;
+        failedSoFar = p.failed_so_far;
       }
-      const res = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
-      await consumeNdjson<MatchProgressEvent>(res, (ev) => {
-        setProgress(ev);
-        if (ev.phase === "error") setError(ev.error);
-      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -67,7 +90,7 @@ export default function MatchTab() {
   }
 
   const pct = progress
-    && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching")
+    && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching" || progress.phase === "paused")
     && progress.total > 0
     ? Math.round((progress.done / progress.total) * 100)
     : null;
@@ -130,7 +153,7 @@ export default function MatchTab() {
           <div className="flex justify-between text-xs text-slate-600 mb-1">
             <span>
               {phaseLabel(progress)}
-              {pct !== null && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching")
+              {pct !== null && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching" || progress.phase === "paused")
                 ? ` (${progress.done.toLocaleString()} / ${progress.total.toLocaleString()})`
                 : ""}
             </span>

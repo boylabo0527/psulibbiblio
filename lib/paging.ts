@@ -33,6 +33,9 @@ export async function pageThroughParallel<T>(
   onProgress?: (done: number, total: number) => void,
   concurrency = 6,
 ): Promise<T[]> {
+  // Callers that need a stable row order across repeated calls (e.g.
+  // resuming a chunked run by numeric offset) must have `query` apply an
+  // explicit .order() themselves -- range() alone doesn't guarantee it.
   const first = await query(0, PAGE - 1);
   if (first.error) throw new Error(first.error.message);
   const out: T[] = [...(first.data ?? [])];

@@ -26,12 +26,22 @@ const SUBJECT_CONCURRENCY = parseInt(process.env.MATCH_SUBJECT_CONCURRENCY ?? "8
 // serverless region to the CDN stalls, the run would otherwise hang forever
 // looking frozen instead of falling back to lexical-only matching.
 const EMBED_TIMEOUT_MS = parseInt(process.env.MATCH_EMBED_TIMEOUT_MS ?? "150000", 10);
+// Vercel kills the whole function at maxDuration regardless of what it's
+// doing -- that's a hard cutoff mid-request, not a clean stopping point. So
+// instead of racing that wall, this route watches its own elapsed time and
+// stops itself early at a safer margin, reporting exactly how far it got
+// (phase "paused") so the client can immediately start a new request picking
+// up right where this one left off. A run of any size finishes eventually,
+// just as a sequence of bounded requests instead of one that can outrun the
+// platform's timeout.
+const TIME_BUDGET_MS = parseInt(process.env.MATCH_TIME_BUDGET_MS ?? "240000", 10);
 
 export type MatchProgressEvent =
   | { phase: "fetching"; done: number; total: number; label: string }
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
   | { phase: "matching"; done: number; total: number }
+  | { phase: "paused"; done: number; total: number; next_offset: number; matches_so_far: number; failed_so_far: { course_code: string; error: string }[] }
   | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number; failed_subjects: { course_code: string; error: string }[] }
   | { phase: "error"; error: string };
 
@@ -52,7 +62,9 @@ async function fetchAllWithProgress<T>(
 ): Promise<T[]> {
   return pageThroughParallel<T>(
     (from, to) => {
-      let q = db.from(table).select(columns, { count: "exact" }).range(from, to);
+      // Ordered explicitly by id so a resumed (chunked) run's numeric
+      // offset addresses the same subject every time it's fetched.
+      let q = db.from(table).select(columns, { count: "exact" }).order("id", { ascending: true }).range(from, to);
       if (filter) q = q.eq(filter.col, filter.value);
       return q as unknown as PromiseLike<{ data: T[] | null; count: number | null; error: { message: string } | null }>;
     },
@@ -69,6 +81,12 @@ export async function POST(req: Request) {
   const topKDigital = topKDigitalParam != null ? parseInt(topKDigitalParam, 10) : undefined;
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
+  // Set by the client when continuing a run that paused for time -- see
+  // the "paused" phase below.
+  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const matchesSoFar = parseInt(url.searchParams.get("matches_so_far") ?? "0", 10);
+  let failedSoFar: { course_code: string; error: string }[] = [];
+  try { failedSoFar = JSON.parse(url.searchParams.get("failed_so_far") ?? "[]"); } catch { /* ignore malformed */ }
   const userEmail = userEmailFromRequest(req);
   const perms = await getUserPermissions(serviceClient(), userEmail);
   if (!perms.isAdmin && !perms.tabs["match"]?.can_edit) {
@@ -106,17 +124,23 @@ export async function POST(req: Request) {
     // risk hitting Supabase's statement timeout.
     const { count: titleCount } = await db.from("titles").select("id", { count: "estimated", head: true });
 
+    // Resuming a paused run: skip subjects already matched in a prior
+    // chunk. Ordering is by id (see fetchAllWithProgress), so this offset
+    // addresses the same subjects every call.
+    const startIndex = Math.min(offset, subjects.length);
+    const remainingSubjects = subjects.slice(startIndex);
+
     const useEmbeddingsThisRun = embeddingsEnabled();
     let subjectEmbeddings: Map<number, number[]> | undefined;
     let semanticUsed = false;
-    if (useEmbeddingsThisRun) {
+    if (useEmbeddingsThisRun && remainingSubjects.length) {
       try {
         subjectEmbeddings = await withTimeout(
           (async () => {
             send({ phase: "embedding_model" });
-            const vecs = await embedTexts(subjects.map((s) => subjectText(s)));
+            const vecs = await embedTexts(remainingSubjects.map((s) => subjectText(s)));
             const m = new Map<number, number[]>();
-            subjects.forEach((s, i) => m.set(s.id!, vecs[i]));
+            remainingSubjects.forEach((s, i) => m.set(s.id!, vecs[i]));
             return m;
           })(),
           EMBED_TIMEOUT_MS,
@@ -128,29 +152,28 @@ export async function POST(req: Request) {
       }
     }
 
-    // Drop prior auto assignments for these subjects up front; manual rows are kept.
-    const subjectIds = subjects.map((s) => s.id!);
-    for (let i = 0; i < subjectIds.length; i += 200) {
-      const slice = subjectIds.slice(i, i + 200);
-      const { error } = await db.from("assignments")
-        .delete().in("subject_id", slice).eq("manual", 0);
-      if (error) throw error;
-    }
-
     const titleEmbeddingCache = new Map<number, number[]>();
-    let totalMatches = 0;
-    let done = 0;
+    let totalMatches = matchesSoFar;
+    let done = startIndex;
     // A subject with an unusually broad/generic title can make the
     // candidate query expensive enough to hit Postgres's statement
     // timeout. That subject failing shouldn't take the whole run down with
     // it -- every other subject still gets matched, and this one is
     // reported back so it can be investigated (e.g. re-run alone, or given
     // a more specific title) instead of silently losing everyone's results.
-    const failedSubjects: { course_code: string; error: string }[] = [];
-    send({ phase: "matching", done: 0, total: subjects.length });
+    const failedSubjects: { course_code: string; error: string }[] = [...failedSoFar];
+    const runStart = Date.now();
+    send({ phase: "matching", done, total: subjects.length });
 
-    for (let i = 0; i < subjects.length; i += SUBJECT_CONCURRENCY) {
-      const batch = subjects.slice(i, i + SUBJECT_CONCURRENCY);
+    for (let i = 0; i < remainingSubjects.length; i += SUBJECT_CONCURRENCY) {
+      const batch = remainingSubjects.slice(i, i + SUBJECT_CONCURRENCY);
+
+      // Drop prior auto assignments for just this batch right before
+      // replacing them; manual rows are kept. Scoped per-batch (rather
+      // than all subjects up front) so a paused/resumed run never touches
+      // subjects a prior chunk already finished.
+      const batchIds = batch.map((s) => s.id!);
+      { const { error } = await db.from("assignments").delete().in("subject_id", batchIds).eq("manual", 0); if (error) throw error; }
 
       const batchCandidates = await Promise.all(batch.map(async (subject) => {
         const terms = subjectQueryTerms(subject);
@@ -239,6 +262,17 @@ export async function POST(req: Request) {
 
       done += batch.length;
       send({ phase: "matching", done, total: subjects.length });
+
+      if (Date.now() - runStart > TIME_BUDGET_MS && done < subjects.length) {
+        send({
+          phase: "paused",
+          done, total: subjects.length,
+          next_offset: done,
+          matches_so_far: totalMatches,
+          failed_so_far: failedSubjects,
+        });
+        return;
+      }
     }
 
     send({
