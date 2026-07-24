@@ -105,7 +105,16 @@ export function subjectMustQuery(s: SubjectRow): string {
   return unigrams(core).slice(0, MUST_QUERY_WORDS).join(" & ");
 }
 
-export type Candidate = TitleRow & { id: number; embedding: number[] | null; lexical_rank: number };
+export type Candidate = TitleRow & { id: number; embedding: number[] | null; lexical_rank: number; is_must_match?: boolean };
+
+// ts_rank_cd has no length normalization, so it rewards a title matching
+// MORE of the broad query's terms (e.g. one whose subjects/publisher text
+// happens to also mention "philippine", "government", "political", ...)
+// over a sparse, minimally-catalogued classic text whose own title *is*
+// the subject's exact topic phrase but otherwise has little text to match
+// against. A floor for is_must_match candidates keeps that from silently
+// outranking a title that's a literal, guaranteed-relevant match.
+const MUST_MATCH_SCORE_FLOOR = 0.8;
 
 export type ScoreOptions = {
   topK?: number;
@@ -138,7 +147,8 @@ export function scoreCandidates(
 
   const scored = candidates
     .map((c) => {
-      const lexicalNorm = c.lexical_rank / (c.lexical_rank + 1);
+      let lexicalNorm = c.lexical_rank / (c.lexical_rank + 1);
+      if (c.is_must_match) lexicalNorm = Math.max(lexicalNorm, MUST_MATCH_SCORE_FLOOR);
       let semantic = 0;
       if (useEmbeddings) {
         const titleVec = opts.titleEmbeddings!.get(c.id);
@@ -156,9 +166,10 @@ export function scoreCandidates(
     rank++;
     const candTokens = new Set(unigrams(titleText(c)));
     const shared = subjectTerms.filter((t) => candTokens.has(t)).slice(0, 5).join(", ") || "n/a";
+    const mustNote = c.is_must_match ? " (title matches course name exactly)" : "";
     const explanation = useEmbeddings
-      ? `hybrid=${score.toFixed(3)} (semantic=${semantic.toFixed(3)}, lexical=${lexicalNorm.toFixed(3)}); shared terms: ${shared}`
-      : `lexical=${lexicalNorm.toFixed(3)}; shared terms: ${shared}`;
+      ? `hybrid=${score.toFixed(3)} (semantic=${semantic.toFixed(3)}, lexical=${lexicalNorm.toFixed(3)}); shared terms: ${shared}${mustNote}`
+      : `lexical=${lexicalNorm.toFixed(3)}; shared terms: ${shared}${mustNote}`;
     results.push({
       subject_id: subject.id!,
       title_id: c.id,

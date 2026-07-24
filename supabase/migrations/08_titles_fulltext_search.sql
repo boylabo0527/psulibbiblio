@@ -64,6 +64,13 @@ create index if not exists titles_search_idx on titles using gin (search_vector)
 -- unordered batch. Splitting the query this way means that risk now only
 -- applies to the supplementary broad matches, not to an exact title-phrase
 -- hit.
+-- is_must_match tells the caller a title's own text literally contains the
+-- subject's core topic phrase (not just some of the broader OR terms) --
+-- ts_rank_cd (no length normalization) otherwise rewards a keyword-richer
+-- but less canonical competing title over a sparse, minimally-catalogued
+-- classic text that's actually the better match, so the caller uses this
+-- flag to give such titles a scoring floor rather than relying on raw rank
+-- alone.
 create or replace function match_titles_candidates(query_text text, must_text text, limit_n int)
 returns table (
   id bigint,
@@ -74,7 +81,8 @@ returns table (
   year text,
   subjects text,
   embedding jsonb,
-  lexical_rank real
+  lexical_rank real,
+  is_must_match boolean
 )
 language sql stable
 as $$
@@ -83,28 +91,28 @@ as $$
     -- normally small (rarely more than a few dozen rows) -- but a subject
     -- titled with just one very common word (e.g. "Statistics") could still
     -- match thousands, so this keeps a generous but real cap as a backstop.
-    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
-           ts_rank_cd(t.search_vector, to_tsquery('english', must_text)) as lexical_rank
+    select t.id, ts_rank_cd(t.search_vector, to_tsquery('english', must_text)) as lexical_rank, true as is_must
     from titles t
     where must_text is not null and must_text <> ''
       and t.search_vector @@ to_tsquery('english', must_text)
     limit 20000
   ),
   broad_matches as (
-    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
-           ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
+    select t.id, ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank, false as is_must
     from titles t
     where t.search_vector @@ to_tsquery('english', query_text)
     limit greatest(limit_n * 20, 6000)
   ),
-  deduped as (
-    select distinct on (id) id, format, title, author, publisher, year, subjects, embedding, lexical_rank
+  grouped as (
+    select id, max(lexical_rank) as lexical_rank, bool_or(is_must) as is_must_match
     from (select * from must_matches union all select * from broad_matches) combined
-    order by id, lexical_rank desc
+    group by id
   )
-  select id, format, title, author, publisher, year, subjects, embedding, lexical_rank
-  from deduped
-  order by lexical_rank desc
+  select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
+         g.lexical_rank, g.is_must_match
+  from grouped g
+  join titles t on t.id = g.id
+  order by g.lexical_rank desc
   limit limit_n;
 $$;
 
