@@ -11,6 +11,11 @@ export const maxDuration = 300;
 
 const EMBED_BATCH = 64;
 const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
+// The embedding model downloads from the Hugging Face CDN on a cold start,
+// with no built-in timeout on that fetch. If the connection from Vercel's
+// serverless region to the CDN stalls, the run would otherwise hang forever
+// looking frozen instead of falling back to BM25-only matching.
+const EMBED_TIMEOUT_MS = parseInt(process.env.MATCH_EMBED_TIMEOUT_MS ?? "150000", 10);
 
 export type MatchProgressEvent =
   | { phase: "fetching"; done: number; total: number; label: string }
@@ -44,6 +49,14 @@ async function fetchAllWithProgress<T>(
  *  here — model unavailable, out of time, whatever — is caught by the
  *  caller, which falls back to BM25-only matching rather than failing the
  *  whole run. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
 async function computeEmbeddings(
   db: ReturnType<typeof serviceClient>,
   subjects: SubjectRow[],
@@ -111,12 +124,12 @@ export async function POST(req: Request) {
     let semanticUsed = false;
     if (embeddingsEnabled()) {
       try {
-        const computed = await computeEmbeddings(db, subjects, titles, send);
+        const computed = await withTimeout(computeEmbeddings(db, subjects, titles, send), EMBED_TIMEOUT_MS, "Embedding");
         subjectEmbeddings = computed.subjectEmbeddings;
         titleEmbeddings = computed.titleEmbeddings;
         semanticUsed = true;
       } catch (embedErr) {
-        console.error("Embeddings unavailable this run, falling back to BM25-only:", embedErr);
+        console.error("Embeddings unavailable this run (error or timeout), falling back to BM25-only:", embedErr);
       }
     }
 
