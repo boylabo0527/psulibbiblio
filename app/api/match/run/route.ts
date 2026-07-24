@@ -62,6 +62,10 @@ async function fetchAllWithProgress<T>(
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const topK = parseInt(url.searchParams.get("top_k") ?? "10", 10);
+  const topKPrintedParam = url.searchParams.get("top_k_printed");
+  const topKDigitalParam = url.searchParams.get("top_k_digital");
+  const topKPrinted = topKPrintedParam != null ? parseInt(topKPrintedParam, 10) : undefined;
+  const topKDigital = topKDigitalParam != null ? parseInt(topKDigitalParam, 10) : undefined;
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
   const userEmail = userEmailFromRequest(req);
@@ -187,7 +191,7 @@ export async function POST(req: Request) {
       const rows: { subject_id: number; title_id: number; score: number; rank: number; explanation: string; manual: number }[] = [];
       for (const { subject, candidates } of batchCandidates) {
         const results = scoreCandidates(subject, candidates, {
-          topK, minScore,
+          topK, topKPrinted, topKDigital, minScore,
           semanticWeight: SEMANTIC_WEIGHT,
           subjectEmbedding: subjectEmbeddings?.get(subject.id!),
           titleEmbeddings: titleEmbeddingCache,

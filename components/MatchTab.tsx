@@ -23,6 +23,9 @@ export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string>("");
   const [topK, setTopK] = useState(8);
+  const [balanceFormats, setBalanceFormats] = useState(false);
+  const [topKPrinted, setTopKPrinted] = useState(4);
+  const [topKDigital, setTopKDigital] = useState(4);
   const [minScore, setMinScore] = useState(0.06);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
@@ -46,6 +49,10 @@ export default function MatchTab() {
     try {
       const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
       if (programId) params.set("program_id", programId);
+      if (balanceFormats) {
+        params.set("top_k_printed", String(topKPrinted));
+        params.set("top_k_digital", String(topKDigital));
+      }
       const res = await apiFetch(`/api/match/run?${params}`, { method: "POST" });
       await consumeNdjson<MatchProgressEvent>(res, (ev) => {
         setProgress(ev);
@@ -82,17 +89,40 @@ export default function MatchTab() {
             ))}
           </select>
         </label>
-        <label className="label">
-          Top K
-          <input type="number" min={1} max={50} className="input ml-1 w-20"
-            value={topK} onChange={(e) => setTopK(Number(e.target.value))} />
-        </label>
+        {!balanceFormats && (
+          <label className="label">
+            Top K
+            <input type="number" min={1} max={50} className="input ml-1 w-20"
+              value={topK} onChange={(e) => setTopK(Number(e.target.value))} />
+          </label>
+        )}
         <label className="label">
           Min score
           <input type="number" min={0} max={1} step={0.01} className="input ml-1 w-20"
             value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
         <button className="btn" onClick={run} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-3">
+        <label className="flex items-center gap-1.5 text-sm text-slate-600">
+          <input type="checkbox" checked={balanceFormats} onChange={(e) => setBalanceFormats(e.target.checked)} />
+          Guarantee a mix of printed and digital titles
+        </label>
+        {balanceFormats && (
+          <>
+            <label className="label">
+              Top printed
+              <input type="number" min={0} max={50} className="input ml-1 w-20"
+                value={topKPrinted} onChange={(e) => setTopKPrinted(Number(e.target.value))} />
+            </label>
+            <label className="label">
+              Top digital
+              <input type="number" min={0} max={50} className="input ml-1 w-20"
+                value={topKDigital} onChange={(e) => setTopKDigital(Number(e.target.value))} />
+            </label>
+          </>
+        )}
       </div>
 
       {progress && (

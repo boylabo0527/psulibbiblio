@@ -17,6 +17,7 @@
  * the caller can degrade gracefully if the embedding model is unavailable.
  */
 import type { SubjectRow, TitleRow, AssignmentRow } from "./types";
+import { RESOURCE_BY_ID, type ResourceTypeId } from "./resources";
 
 const STOPWORDS = new Set([
   "a","an","and","are","as","at","be","but","by","for","from","has","have",
@@ -118,6 +119,13 @@ const MUST_MATCH_SCORE_FLOOR = 0.8;
 
 export type ScoreOptions = {
   topK?: number;
+  /** When set (either one), ignores topK and instead picks the top
+   *  topKPrinted printed titles and top topKDigital digital titles
+   *  independently by score -- guarantees a subject isn't assigned an
+   *  all-digital or all-printed list just because one medium happened to
+   *  score higher overall. */
+  topKPrinted?: number;
+  topKDigital?: number;
   minScore?: number;
   /** Weight given to semantic (embedding) similarity vs. lexical rank, 0..1.
    *  Ignored (treated as 0) unless both embeddings below are supplied. */
@@ -160,9 +168,20 @@ export function scoreCandidates(
     .filter((s) => s.score >= minScore)
     .sort((a, b) => b.score - a.score);
 
+  const balanced = opts.topKPrinted != null || opts.topKDigital != null;
+  let selected: typeof scored;
+  if (balanced) {
+    const isPrint = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.medium === "print";
+    const printed = scored.filter((s) => isPrint(s.c.format)).slice(0, opts.topKPrinted ?? 0);
+    const digital = scored.filter((s) => !isPrint(s.c.format)).slice(0, opts.topKDigital ?? 0);
+    selected = [...printed, ...digital].sort((a, b) => b.score - a.score);
+  } else {
+    selected = scored.slice(0, topK);
+  }
+
   const results: AssignmentRow[] = [];
   let rank = 0;
-  for (const { c, score, lexicalNorm, semantic } of scored.slice(0, topK)) {
+  for (const { c, score, lexicalNorm, semantic } of selected) {
     rank++;
     const candTokens = new Set(unigrams(titleText(c)));
     const shared = subjectTerms.filter((t) => candTokens.has(t)).slice(0, 5).join(", ") || "n/a";
