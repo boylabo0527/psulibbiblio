@@ -109,9 +109,17 @@ export async function POST(req: Request) {
       "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
+    // Only ask for the embedding column when it'll actually be used -- it's a
+    // ~384-number array per row, and pulling it for every title in a large
+    // catalog when embeddings are disabled multiplies the response payload
+    // for no reason.
+    const useEmbeddingsThisRun = embeddingsEnabled();
+    const titleColumns = useEmbeddingsThisRun
+      ? "id, format, title, author, publisher, year, subjects, embedding"
+      : "id, format, title, author, publisher, year, subjects";
     const titles = await fetchAllWithProgress<TitleRow & { id: number; embedding: number[] | null }>(
       db, "titles",
-      "id, format, title, author, publisher, year, subjects, embedding",
+      titleColumns,
       "titles", send,
     );
     if (!subjects.length || !titles.length) {
@@ -122,7 +130,7 @@ export async function POST(req: Request) {
     let subjectEmbeddings: Map<number, number[]> | undefined;
     let titleEmbeddings: Map<number, number[]> | undefined;
     let semanticUsed = false;
-    if (embeddingsEnabled()) {
+    if (useEmbeddingsThisRun) {
       try {
         const computed = await withTimeout(computeEmbeddings(db, subjects, titles, send), EMBED_TIMEOUT_MS, "Embedding");
         subjectEmbeddings = computed.subjectEmbeddings;
