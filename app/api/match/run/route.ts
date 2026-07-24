@@ -32,7 +32,7 @@ export type MatchProgressEvent =
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
   | { phase: "matching"; done: number; total: number }
-  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number }
+  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number; failed_subjects: { course_code: string; error: string }[] }
   | { phase: "error"; error: string };
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -140,6 +140,13 @@ export async function POST(req: Request) {
     const titleEmbeddingCache = new Map<number, number[]>();
     let totalMatches = 0;
     let done = 0;
+    // A subject with an unusually broad/generic title can make the
+    // candidate query expensive enough to hit Postgres's statement
+    // timeout. That subject failing shouldn't take the whole run down with
+    // it -- every other subject still gets matched, and this one is
+    // reported back so it can be investigated (e.g. re-run alone, or given
+    // a more specific title) instead of silently losing everyone's results.
+    const failedSubjects: { course_code: string; error: string }[] = [];
     send({ phase: "matching", done: 0, total: subjects.length });
 
     for (let i = 0; i < subjects.length; i += SUBJECT_CONCURRENCY) {
@@ -148,13 +155,20 @@ export async function POST(req: Request) {
       const batchCandidates = await Promise.all(batch.map(async (subject) => {
         const terms = subjectQueryTerms(subject);
         if (!terms.length) return { subject, candidates: [] as Candidate[] };
-        const { data, error } = await db.rpc("match_titles_candidates", {
-          query_text: terms.join(" | "),
-          must_text: subjectMustQuery(subject),
-          limit_n: CANDIDATE_LIMIT,
-        });
-        if (error) throw new Error(error.message);
-        return { subject, candidates: (data ?? []) as Candidate[] };
+        try {
+          const { data, error } = await db.rpc("match_titles_candidates", {
+            query_text: terms.join(" | "),
+            must_text: subjectMustQuery(subject),
+            limit_n: CANDIDATE_LIMIT,
+          });
+          if (error) throw new Error(error.message);
+          return { subject, candidates: (data ?? []) as Candidate[] };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`match_titles_candidates failed for subject ${subject.course_code}:`, message);
+          failedSubjects.push({ course_code: subject.course_code ?? String(subject.id), error: message });
+          return { subject, candidates: [] as Candidate[] };
+        }
       }));
 
       if (useEmbeddingsThisRun) {
@@ -234,11 +248,12 @@ export async function POST(req: Request) {
       titles: titleCount ?? 0,
       semantic_used: semanticUsed,
       locked_skipped: lockedSkipped,
+      failed_subjects: failedSubjects,
     });
     await logActivity(db, {
       userEmail, action: "match_run",
-      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${lockedSkipped ? `, ${lockedSkipped} locked subject${lockedSkipped === 1 ? "" : "s"} skipped` : ""}`,
-      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, locked_skipped: lockedSkipped, semantic_used: semanticUsed },
+      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${lockedSkipped ? `, ${lockedSkipped} locked subject${lockedSkipped === 1 ? "" : "s"} skipped` : ""}${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
+      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, locked_skipped: lockedSkipped, semantic_used: semanticUsed, failed_subjects: failedSubjects },
     });
   });
 

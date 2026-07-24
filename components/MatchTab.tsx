@@ -155,6 +155,17 @@ export default function MatchTab() {
               {!progress.semantic_used && (
                 <p className="text-amber-700 mt-1">Semantic matching wasn&apos;t available this run — fell back to keyword matching (BM25) only. Safe to ignore unless this persists.</p>
               )}
+              {progress.failed_subjects.length > 0 && (
+                <div className="text-red-700 mt-1">
+                  <p>{progress.failed_subjects.length} subject{progress.failed_subjects.length === 1 ? "" : "s"} couldn&apos;t be matched this run (query timed out or errored) and were left with no auto-matched titles:</p>
+                  <ul className="list-disc ml-4 mt-1">
+                    {progress.failed_subjects.map((f, i) => (
+                      <li key={i}>{f.course_code} — {f.error}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-1">Try running matching again for just that subject&apos;s program, or with a lower Top K.</p>
+                </div>
+              )}
             </div>
           )}
           {error && <p className="mt-2 text-red-700 text-xs">{error}</p>}
