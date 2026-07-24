@@ -7,6 +7,7 @@ import { pageThroughParallel } from "@/lib/paging";
 import type { SubjectRow } from "@/lib/types";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,22 +97,39 @@ export async function POST(req: Request) {
   let failedSoFar: { course_code: string; error: string }[] = [];
   try { failedSoFar = JSON.parse(url.searchParams.get("failed_so_far") ?? "[]"); } catch { /* ignore malformed */ }
   const userEmail = userEmailFromRequest(req);
-  const perms = await getUserPermissions(serviceClient(), userEmail);
+  const permsDb = serviceClient();
+  const perms = await getUserPermissions(permsDb, userEmail);
   if (!perms.isAdmin && !perms.tabs["match"]?.can_edit) {
     return new Response(JSON.stringify({ error: "Your account doesn't have permission to run matching." }), {
       status: 403, headers: { "Content-Type": "application/json" },
     });
   }
+  let allowedProgramIds: Set<number> | null = null;
+  if (perms.campusIds !== null) {
+    allowedProgramIds = await getAllowedProgramIds(permsDb, perms.campusIds);
+    if (programId && !allowedProgramIds.has(Number(programId))) {
+      return new Response(JSON.stringify({ error: "This program isn't offered at any of your assigned campuses." }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
 
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
 
-    const allSubjects = await fetchAllWithProgress<SubjectRow>(
+    const fetchedSubjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
       "id, program_id, course_code, course_title, description, locked",
       "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
+    // No specific program requested (running "all programs") and the
+    // caller is campus-restricted -- narrow to only their allowed
+    // programs' subjects. When a specific program_id WAS requested, it's
+    // already been verified above and fetchAllWithProgress filtered to it.
+    const allSubjects = !programId && allowedProgramIds
+      ? fetchedSubjects.filter((s) => allowedProgramIds!.has(s.program_id!))
+      : fetchedSubjects;
     if (!allSubjects.length) {
       send({ phase: "error", error: "Need at least one subject before matching." });
       return;

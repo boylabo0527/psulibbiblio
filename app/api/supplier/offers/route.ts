@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
@@ -19,6 +20,8 @@ export type SupplierOfferRow = {
   created_at: string;
   decided_at: string | null;
   decided_by: string;
+  batch_id: string | null;
+  batch_size?: number;
   subject_label?: string;
 };
 
@@ -48,9 +51,15 @@ export async function GET(req: Request) {
       for (const s of subs ?? []) labelMap.set(s.id, [s.course_code, s.course_title].filter(Boolean).join(" — "));
     }
 
+    const batchSizes = new Map<string, number>();
+    for (const o of data ?? []) {
+      if (!o.batch_id) continue;
+      batchSizes.set(o.batch_id, (batchSizes.get(o.batch_id) ?? 0) + 1);
+    }
     const rows: SupplierOfferRow[] = (data ?? []).map((o) => ({
       ...o,
       subject_label: o.subject_id != null ? labelMap.get(o.subject_id) ?? "" : "",
+      batch_size: o.batch_id ? batchSizes.get(o.batch_id) : undefined,
     }));
     return NextResponse.json({ rows });
   } catch (err) {
@@ -58,8 +67,13 @@ export async function GET(req: Request) {
   }
 }
 
-/** POST /api/supplier/offers -- a supplier offers a title against a need.
- *  Body: { subject_id, title, author, format, price, notes }. */
+type OfferInput = { title?: string; author?: string; format?: string; price?: number; notes?: string };
+
+/** POST /api/supplier/offers -- a supplier offers one or more titles against
+ *  a need in one submission (e.g. a course short 3 titles). Body:
+ *  { subject_id, offers: [{ title, author, format, price, notes }, ...] }.
+ *  A single-title offer is just an `offers` array of length 1 -- there's no
+ *  separate single-offer shape to keep in sync. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -68,29 +82,33 @@ export async function POST(req: Request) {
     if (!perms.isAdmin && !perms.tabs["supplier-view"]?.can_edit) {
       return NextResponse.json({ error: "Your account doesn't have permission to submit offers." }, { status: 403 });
     }
-    const body = await req.json() as {
-      subject_id?: number; title?: string; author?: string; format?: string; price?: number; notes?: string;
-    };
-    const title = (body.title ?? "").trim();
-    if (!title) return NextResponse.json({ error: "Title is required." }, { status: 400 });
+    const body = await req.json() as { subject_id?: number; offers?: OfferInput[] };
+    const inputs = (body.offers ?? []).filter((o) => (o.title ?? "").trim());
+    if (!inputs.length) return NextResponse.json({ error: "At least one title is required." }, { status: 400 });
 
-    const { data, error } = await db.from("supplier_offers").insert({
+    const batchId = inputs.length > 1 ? randomUUID() : null;
+    const insertRows = inputs.map((o) => ({
       subject_id: body.subject_id ?? null,
       supplier_email: email,
-      title,
-      author: (body.author ?? "").trim(),
-      format: (body.format ?? "").trim(),
-      price: body.price ?? null,
-      notes: (body.notes ?? "").trim(),
-    }).select().single();
+      title: (o.title ?? "").trim(),
+      author: (o.author ?? "").trim(),
+      format: (o.format ?? "").trim(),
+      price: o.price ?? null,
+      notes: (o.notes ?? "").trim(),
+      batch_id: batchId,
+    }));
+
+    const { data, error } = await db.from("supplier_offers").insert(insertRows).select();
     if (error) throw error;
 
     await logActivity(db, {
       userEmail: email, action: "supplier_offer_submit",
-      summary: `${email} offered "${title}"${body.price ? ` at ${body.price}` : ""}`,
-      detail: { offer_id: data.id, subject_id: body.subject_id ?? null },
+      summary: inputs.length === 1
+        ? `${email} offered "${insertRows[0].title}"${insertRows[0].price ? ` at ${insertRows[0].price}` : ""}`
+        : `${email} offered ${inputs.length} titles${body.subject_id ? " for one subject" : ""}: ${inputs.map((o) => `"${o.title}"`).join(", ")}`,
+      detail: { offer_ids: (data ?? []).map((d) => d.id), subject_id: body.subject_id ?? null, batch_id: batchId },
     });
-    return NextResponse.json({ offer: data });
+    return NextResponse.json({ offers: data });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }

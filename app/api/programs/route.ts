@@ -1,16 +1,31 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+// The Dashboard is intentionally public, so this route stays reachable
+// without an email -- an anonymous visitor is always unrestricted (there's
+// no per-user campus scope to apply). A signed-in user restricted to
+// specific campuses only sees programs offered there.
+export async function GET(req: Request) {
   try {
     const db = serviceClient();
-    const { data, error } = await db.from("programs")
-      .select("id, name, cost_per_title").order("name");
+    const email = userEmailFromRequest(req);
+    let allowedProgramIds: Set<number> | null = null;
+    if (email) {
+      const perms = await getUserPermissions(db, email);
+      if (perms.campusIds !== null) allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
+    }
+
+    let q = db.from("programs").select("id, name, cost_per_title").order("name");
+    if (allowedProgramIds) {
+      q = q.in("id", allowedProgramIds.size ? Array.from(allowedProgramIds) : [-1]);
+    }
+    const { data, error } = await q;
     if (error) throw error;
     return NextResponse.json({ programs: data ?? [] });
   } catch (err) {

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       const sourceTab = body["_tab"] === "campus-validation" ? "campus-validation" : "programs";
       if (!perms.isAdmin && !perms.tabs[sourceTab]?.can_edit) {
         return NextResponse.json({ error: "Your account doesn't have permission to edit courses." }, { status: 403 });
+      }
+    }
+
+    if (perms.campusIds !== null) {
+      const { data: subj } = await db.from("subjects").select("program_id").eq("id", id).maybeSingle();
+      const allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
+      if (!subj || !allowedProgramIds.has(subj.program_id)) {
+        return NextResponse.json({ error: "This course isn't in one of your assigned campuses." }, { status: 403 });
       }
     }
 

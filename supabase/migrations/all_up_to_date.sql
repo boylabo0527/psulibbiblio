@@ -7,7 +7,8 @@
 -- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
 -- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
--- 14_supplier_offers.sql in order. If you've already run some of those
+-- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
+-- 16_user_campus_scope.sql in order. If you've already run some of those
 -- individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
@@ -285,3 +286,20 @@ update role_tab_permissions
 set can_edit = true
 where tab_id = 'supplier-view'
   and role_id in (select id from roles where name = 'Supplier');
+
+-- ---------------------------------------------------------------------------
+-- 15: supplier offer batches
+-- ---------------------------------------------------------------------------
+alter table supplier_offers add column if not exists batch_id uuid;
+create index if not exists supplier_offers_batch_idx on supplier_offers (batch_id);
+
+-- ---------------------------------------------------------------------------
+-- 16: per-user campus scope
+-- ---------------------------------------------------------------------------
+create table if not exists user_campuses (
+  email      text not null,
+  campus_id  bigint not null references campuses(id) on delete cascade,
+  created_at timestamptz default now(),
+  primary key (email, campus_id)
+);
+create index if not exists user_campuses_email_idx on user_campuses (email);

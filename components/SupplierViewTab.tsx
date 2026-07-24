@@ -96,7 +96,9 @@ export default function SupplierViewTab() {
                     <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.current_digital}</td>
                     <td className="py-1.5 px-2 text-right font-semibold tabular-nums text-red-600">+{r.gap}</td>
                     <td className="py-1.5 pl-2 text-right">
-                      <button className="text-psu text-[11px] underline" onClick={() => setOfferFor(r)}>Offer</button>
+                      <button className="text-psu text-[11px] underline" onClick={() => setOfferFor(r)}>
+                        {r.gap > 1 ? `Offer titles` : "Offer"}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -127,7 +129,14 @@ export default function SupplierViewTab() {
             <tbody>
               {offers.map((o) => (
                 <tr key={o.id} className="border-b border-slate-100">
-                  <td className="py-1.5 pr-2 text-slate-500">{o.subject_label || "—"}</td>
+                  <td className="py-1.5 pr-2 text-slate-500">
+                    {o.subject_label || "—"}
+                    {o.batch_size && o.batch_size > 1 && (
+                      <span className="ml-1 inline-block rounded px-1 py-0.5 text-[9px] font-medium bg-slate-100 text-slate-500" title="Submitted together with other titles for this subject">
+                        1 of {o.batch_size}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-1.5 pr-2">{o.title}</td>
                   <td className="py-1.5 px-2 text-slate-500">{o.format || "—"}</td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{o.price != null ? o.price.toLocaleString() : "—"}</td>
@@ -146,6 +155,12 @@ export default function SupplierViewTab() {
   );
 }
 
+type OfferRowInput = { title: string; author: string; format: string; price: string; notes: string };
+
+function emptyOfferRow(): OfferRowInput {
+  return { title: "", author: "", format: "", price: "", notes: "" };
+}
+
 function OfferForm({
   need, onClose, onSubmitted,
 }: {
@@ -153,16 +168,27 @@ function OfferForm({
   onClose: () => void;
   onSubmitted: () => void;
 }) {
-  const [title, setTitle] = useState("");
-  const [author, setAuthor] = useState("");
-  const [format, setFormat] = useState("");
-  const [price, setPrice] = useState("");
-  const [notes, setNotes] = useState("");
+  // Seeded with one row per title still needed (capped so a huge gap
+  // doesn't dump 50 blank rows on the supplier) -- they can add or remove
+  // rows freely from there.
+  const seedCount = Math.max(1, Math.min(need.gap || 1, 10));
+  const [items, setItems] = useState<OfferRowInput[]>(() => Array.from({ length: seedCount }, emptyOfferRow));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  function updateItem(i: number, patch: Partial<OfferRowInput>) {
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  }
+  function addRow() {
+    setItems((prev) => [...prev, emptyOfferRow()]);
+  }
+  function removeRow(i: number) {
+    setItems((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
   async function submit() {
-    if (!title.trim()) { setErr("Title is required."); return; }
+    const filled = items.filter((it) => it.title.trim());
+    if (!filled.length) { setErr("At least one title is required."); return; }
     setBusy(true);
     setErr(null);
     try {
@@ -170,8 +196,11 @@ function OfferForm({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          subject_id: need.subject_id, title, author, format,
-          price: price.trim() === "" ? null : Number(price), notes,
+          subject_id: need.subject_id,
+          offers: filled.map((it) => ({
+            title: it.title, author: it.author, format: it.format,
+            price: it.price.trim() === "" ? null : Number(it.price), notes: it.notes,
+          })),
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -186,33 +215,53 @@ function OfferForm({
 
   return (
     <div className="card border-2 border-psu-light">
-      <h3 className="text-psu font-semibold mb-1">Offer a title for &quot;{need.course_title}&quot;</h3>
-      <p className="text-xs text-slate-500 mb-3">{need.program} · {need.course_code}</p>
-      <div className="grid grid-cols-2 gap-3 mb-3">
-        <label className="label flex-col items-start">
-          Title
-          <input className="input w-full" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label className="label flex-col items-start">
-          Author
-          <input className="input w-full" value={author} onChange={(e) => setAuthor(e.target.value)} />
-        </label>
-        <label className="label flex-col items-start">
-          Format (e.g. printed book, ebook)
-          <input className="input w-full" value={format} onChange={(e) => setFormat(e.target.value)} />
-        </label>
-        <label className="label flex-col items-start">
-          Price (₱)
-          <input type="number" min={0} step="0.01" className="input w-full" value={price} onChange={(e) => setPrice(e.target.value)} />
-        </label>
-        <label className="label flex-col items-start col-span-2">
-          Notes (availability, edition, etc.)
-          <textarea className="input w-full" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
-        </label>
+      <h3 className="text-psu font-semibold mb-1">Offer titles for &quot;{need.course_title}&quot;</h3>
+      <p className="text-xs text-slate-500 mb-3">
+        {need.program} · {need.course_code} · needs {need.gap} more title{need.gap === 1 ? "" : "s"}
+      </p>
+
+      <div className="space-y-3 mb-3">
+        {items.map((it, i) => (
+          <div key={i} className="border border-slate-200 rounded p-2.5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-slate-500">Title {i + 1}</span>
+              {items.length > 1 && (
+                <button className="text-red-600 text-[11px] underline" onClick={() => removeRow(i)}>Remove</button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="label flex-col items-start">
+                Title
+                <input className="input w-full" value={it.title} onChange={(e) => updateItem(i, { title: e.target.value })} />
+              </label>
+              <label className="label flex-col items-start">
+                Author
+                <input className="input w-full" value={it.author} onChange={(e) => updateItem(i, { author: e.target.value })} />
+              </label>
+              <label className="label flex-col items-start">
+                Format (e.g. printed book, ebook)
+                <input className="input w-full" value={it.format} onChange={(e) => updateItem(i, { format: e.target.value })} />
+              </label>
+              <label className="label flex-col items-start">
+                Price (₱)
+                <input type="number" min={0} step="0.01" className="input w-full" value={it.price} onChange={(e) => updateItem(i, { price: e.target.value })} />
+              </label>
+              <label className="label flex-col items-start col-span-2">
+                Notes (availability, edition, etc.)
+                <textarea className="input w-full" rows={2} value={it.notes} onChange={(e) => updateItem(i, { notes: e.target.value })} />
+              </label>
+            </div>
+          </div>
+        ))}
       </div>
+
+      <button className="btn-outline text-xs mb-3" onClick={addRow}>+ Add another title</button>
+
       {err && <p className="text-red-700 text-xs mb-2">{err}</p>}
       <div className="flex gap-2">
-        <button className="btn text-xs" disabled={busy} onClick={submit}>{busy ? "Submitting…" : "Submit offer"}</button>
+        <button className="btn text-xs" disabled={busy} onClick={submit}>
+          {busy ? "Submitting…" : items.filter((it) => it.title.trim()).length > 1 ? "Submit all titles" : "Submit offer"}
+        </button>
         <button className="btn-outline text-xs" disabled={busy} onClick={onClose}>Cancel</button>
       </div>
     </div>

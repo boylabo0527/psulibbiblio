@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import { ACCREDITATION_MIN, RECENCY_YEARS } from "@/lib/compliance";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -33,11 +34,15 @@ export async function GET(req: Request) {
 
     const yearCutoff = new Date().getFullYear() - RECENCY_YEARS;
 
+    const allowedProgramIds = perms.campusIds !== null ? await getAllowedProgramIds(db, perms.campusIds) : null;
+
     type SubjectRec = { id: number; program_id: number; course_code: string; course_title: string };
     const subjects = await pageThrough<SubjectRec>(
-      (from, to) => db.from("subjects")
-        .select("id, program_id, course_code, course_title")
-        .range(from, to) as unknown as PromiseLike<{ data: SubjectRec[] | null; error: { message: string } | null }>,
+      (from, to) => {
+        let q = db.from("subjects").select("id, program_id, course_code, course_title").range(from, to);
+        if (allowedProgramIds) q = q.in("program_id", allowedProgramIds.size ? Array.from(allowedProgramIds) : [-1]);
+        return q as unknown as PromiseLike<{ data: SubjectRec[] | null; error: { message: string } | null }>;
+      },
     );
     if (!subjects.length) return NextResponse.json({ rows: [] });
 

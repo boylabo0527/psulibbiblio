@@ -10,6 +10,7 @@ type Role = {
   permissions: Record<string, Perm>;
 };
 type UserAssignment = { email: string; role_id: number; role_name: string | null; is_admin: boolean; created_at: string };
+type Campus = { id: number; name: string };
 
 const TAB_LABELS: Record<string, string> = {
   upload: "Upload",
@@ -43,6 +44,8 @@ export default function UserManagementTab() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [draft, setDraft] = useState<Draft>({});
   const [users, setUsers] = useState<UserAssignment[]>([]);
+  const [campuses, setCampuses] = useState<Campus[]>([]);
+  const [userCampuses, setUserCampuses] = useState<Record<string, number[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -54,19 +57,46 @@ export default function UserManagementTab() {
     setLoading(true);
     setErr(null);
     try {
-      const [rolesRes, usersRes] = await Promise.all([
+      const [rolesRes, usersRes, campusesRes, userCampusesRes] = await Promise.all([
         apiFetch("/api/admin/roles").then((r) => r.json()),
         apiFetch("/api/admin/users").then((r) => r.json()),
+        apiFetch("/api/campuses").then((r) => r.json()),
+        apiFetch("/api/admin/user-campuses").then((r) => r.json()),
       ]);
       if (rolesRes.error) throw new Error(rolesRes.error);
       if (usersRes.error) throw new Error(usersRes.error);
+      if (campusesRes.error) throw new Error(campusesRes.error);
+      if (userCampusesRes.error) throw new Error(userCampusesRes.error);
       setRoles(rolesRes.roles ?? []);
       setDraft(draftFromRoles(rolesRes.roles ?? []));
       setUsers(usersRes.users ?? []);
+      setCampuses(campusesRes.campuses ?? []);
+      setUserCampuses(userCampusesRes.user_campuses ?? {});
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveCampusScope(email: string, campusIds: number[]) {
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/admin/user-campuses", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, campus_ids: campusIds }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setUserCampuses((prev) => {
+        const next = { ...prev };
+        if (campusIds.length) next[email] = campusIds;
+        else delete next[email];
+        return next;
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -269,6 +299,7 @@ export default function UserManagementTab() {
                 <tr className="text-left text-slate-500 border-b border-slate-200">
                   <th className="py-1 pr-2">Email</th>
                   <th className="py-1 pr-2">Role</th>
+                  <th className="py-1 pr-2">Campus access</th>
                   <th className="py-1 pl-2 text-right"></th>
                 </tr>
               </thead>
@@ -277,13 +308,24 @@ export default function UserManagementTab() {
                   <tr key={u.email} className="border-b border-slate-100">
                     <td className="py-1.5 pr-2">{u.email}</td>
                     <td className="py-1.5 pr-2">{u.role_name}{u.is_admin && <span className="ml-1 text-[10px] bg-psu-light text-psu rounded px-1">admin</span>}</td>
+                    <td className="py-1.5 pr-2">
+                      {u.is_admin ? (
+                        <span className="text-slate-400">All (admin)</span>
+                      ) : (
+                        <CampusAccessCell
+                          campuses={campuses}
+                          selected={userCampuses[u.email] ?? []}
+                          onSave={(ids) => saveCampusScope(u.email, ids)}
+                        />
+                      )}
+                    </td>
                     <td className="py-1.5 pl-2 text-right">
                       <button className="text-red-600 text-xs hover:underline" onClick={() => removeUser(u.email)}>Remove</button>
                     </td>
                   </tr>
                 ))}
                 {users.length === 0 && (
-                  <tr><td colSpan={3} className="py-2 text-slate-400">No users assigned yet.</td></tr>
+                  <tr><td colSpan={4} className="py-2 text-slate-400">No users assigned yet.</td></tr>
                 )}
               </tbody>
             </table>
@@ -299,6 +341,74 @@ export default function UserManagementTab() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Per-user campus restriction editor. No selection = unrestricted (sees
+ *  every campus) -- that's today's default behavior, so nothing changes
+ *  for a user until an admin explicitly picks one or more campuses here.
+ *  Kept as its own local draft + explicit Save (not auto-save-per-click),
+ *  same reasoning as the Roles &amp; Permissions matrix above. */
+function CampusAccessCell({
+  campuses, selected, onSave,
+}: {
+  campuses: Campus[];
+  selected: number[];
+  onSave: (ids: number[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draftIds, setDraftIds] = useState<number[]>(selected);
+  const [saving, setSaving] = useState(false);
+
+  function startEdit() {
+    setDraftIds(selected);
+    setOpen(true);
+  }
+
+  function toggle(id: number) {
+    setDraftIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onSave(draftIds);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className={selected.length ? "" : "text-slate-400"}>
+          {selected.length
+            ? campuses.filter((c) => selected.includes(c.id)).map((c) => c.name).join(", ")
+            : "All campuses"}
+        </span>
+        <button className="text-psu underline shrink-0" onClick={startEdit}>Edit</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded p-2 min-w-[220px]">
+      <div className="max-h-32 overflow-y-auto space-y-0.5 mb-2">
+        {campuses.map((c) => (
+          <label key={c.id} className="flex items-center gap-1.5">
+            <input type="checkbox" checked={draftIds.includes(c.id)} onChange={() => toggle(c.id)} />
+            <span>{c.name}</span>
+          </label>
+        ))}
+        {campuses.length === 0 && <p className="text-slate-400">No campuses yet.</p>}
+      </div>
+      <p className="text-slate-400 mb-2">No campuses checked = unrestricted (sees all).</p>
+      <div className="flex gap-2">
+        <button className="btn text-xs" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        <button className="btn-outline text-xs" disabled={saving} onClick={() => setOpen(false)}>Cancel</button>
+      </div>
     </div>
   );
 }

@@ -26,6 +26,7 @@ const ACTION_LABEL: Record<string, string> = {
   role_permission_edit: "Role permissions changed",
   user_role_assign: "User access assigned",
   user_role_remove: "User access removed",
+  user_campus_scope_edit: "User campus access changed",
   supplier_offer_submit: "Supplier offer submitted",
   supplier_offer_decide: "Supplier offer decided",
 };

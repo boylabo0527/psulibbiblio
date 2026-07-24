@@ -9,9 +9,13 @@ export type Permissions = {
   role: string | null;
   isAdmin: boolean;
   tabs: Record<string, TabPermission>;
+  /** null = unrestricted (sees every campus). Non-null = restricted to
+   *  exactly these campus ids, set by an admin in User Management. */
+  campusIds: number[] | null;
+  campusNames: string[];
 };
 
-const EMPTY: Permissions = { email: "", role: null, isAdmin: false, tabs: {} };
+const EMPTY: Permissions = { email: "", role: null, isAdmin: false, tabs: {}, campusIds: null, campusNames: [] };
 
 /** Fetches the signed-in user's role/tab permissions once per session.
  *  Returns EMPTY (no access to anything but the public Dashboard) while

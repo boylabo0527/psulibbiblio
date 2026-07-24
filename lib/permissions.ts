@@ -8,6 +8,13 @@ export type UserPermissions = {
   isAdmin: boolean;
   /** tab_id -> permission. Absent entries mean no access at all. */
   tabs: Record<string, TabPermission>;
+  /** null = unrestricted (sees every campus's data, today's default
+   *  behavior). Non-null = restricted to exactly these campus ids, set by
+   *  an admin per-user in User Management -- independent of role, since
+   *  two librarians with the same role can be based at different campuses.
+   *  Admins are always unrestricted regardless of any rows on their email. */
+  campusIds: number[] | null;
+  campusNames: string[];
 };
 
 const ALL_TAB_IDS = [
@@ -15,15 +22,29 @@ const ALL_TAB_IDS = [
   "procurement", "canvassing", "purchase-request", "activity", "supplier-view",
 ];
 
-/** Resolves a signed-in user's role and per-tab permissions. Unassigned
- *  emails get no access at all (empty tabs, isAdmin=false) -- an account
- *  existing in Supabase Auth doesn't imply any app permissions until an
- *  admin assigns it a role. */
+async function getCampusScope(
+  db: ReturnType<typeof serviceClient>,
+  email: string,
+  isAdmin: boolean,
+): Promise<{ campusIds: number[] | null; campusNames: string[] }> {
+  if (isAdmin) return { campusIds: null, campusNames: [] };
+  const { data } = await db.from("user_campuses").select("campus_id, campuses(name)").eq("email", email);
+  if (!data || data.length === 0) return { campusIds: null, campusNames: [] };
+  return {
+    campusIds: data.map((r) => r.campus_id as number),
+    campusNames: data.map((r) => (r.campuses as unknown as { name: string } | null)?.name).filter((n): n is string => !!n),
+  };
+}
+
+/** Resolves a signed-in user's role, per-tab permissions, and campus scope.
+ *  Unassigned emails get no access at all (empty tabs, isAdmin=false) -- an
+ *  account existing in Supabase Auth doesn't imply any app permissions
+ *  until an admin assigns it a role. */
 export async function getUserPermissions(
   db: ReturnType<typeof serviceClient>,
   email: string,
 ): Promise<UserPermissions> {
-  if (!email) return { email, role: null, isAdmin: false, tabs: {} };
+  if (!email) return { email, role: null, isAdmin: false, tabs: {}, campusIds: null, campusNames: [] };
 
   const { data: assignment } = await db
     .from("user_roles")
@@ -31,15 +52,16 @@ export async function getUserPermissions(
     .eq("email", email)
     .maybeSingle();
 
-  if (!assignment) return { email, role: null, isAdmin: false, tabs: {} };
+  if (!assignment) return { email, role: null, isAdmin: false, tabs: {}, campusIds: null, campusNames: [] };
 
   const roleInfo = assignment.roles as unknown as { name: string; is_admin: boolean } | null;
   const isAdmin = !!roleInfo?.is_admin;
+  const scope = await getCampusScope(db, email, isAdmin);
 
   if (isAdmin) {
     const tabs: Record<string, TabPermission> = {};
     for (const id of ALL_TAB_IDS) tabs[id] = { can_view: true, can_edit: true };
-    return { email, role: roleInfo?.name ?? "Admin", isAdmin: true, tabs };
+    return { email, role: roleInfo?.name ?? "Admin", isAdmin: true, tabs, ...scope };
   }
 
   const { data: perms } = await db
@@ -51,7 +73,7 @@ export async function getUserPermissions(
   for (const p of perms ?? []) {
     tabs[p.tab_id] = { can_view: p.can_view, can_edit: p.can_edit };
   }
-  return { email, role: roleInfo?.name ?? null, isAdmin: false, tabs };
+  return { email, role: roleInfo?.name ?? null, isAdmin: false, tabs, ...scope };
 }
 
 /** Throws a plain Error (caller should map to a 403 JSON response) unless

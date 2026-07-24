@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,12 @@ export async function POST(req: Request) {
     }
     if (!courseCode && !courseTitle) {
       return NextResponse.json({ error: "Course code or title is required" }, { status: 400 });
+    }
+    if (perms.campusIds !== null) {
+      const allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
+      if (!allowedProgramIds.has(programId as number)) {
+        return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
+      }
     }
 
     const { data: maxRow } = await db.from("subjects")

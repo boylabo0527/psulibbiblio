@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,9 +21,15 @@ export type HeatmapCell = {
 
 /** Per-program × per-campus compliance summary, for a heatmap view of where
  *  procurement gaps are across campuses offering the same program. */
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const db = serviceClient();
+    const email = userEmailFromRequest(req);
+    let allowedCampusNames: string[] | null = null;
+    if (email) {
+      const perms = await getUserPermissions(db, email);
+      if (perms.campusIds !== null) allowedCampusNames = perms.campusNames;
+    }
     const currentYear = new Date().getFullYear();
     const yearCutoff = currentYear - RECENCY_YEARS;
 
@@ -119,7 +127,8 @@ export async function GET() {
       }
     }
 
-    return NextResponse.json({ cells });
+    const visibleCells = allowedCampusNames ? cells.filter((c) => allowedCampusNames!.includes(c.campus)) : cells;
+    return NextResponse.json({ cells: visibleCells });
   } catch (err) {
     const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err));
     return NextResponse.json({ error: msg }, { status: 500 });
