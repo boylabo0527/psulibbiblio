@@ -7,7 +7,9 @@ export type ActivityAction =
   | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate"
   | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge"
   | "title_merge"
-  | "assignment_add" | "assignment_remove";
+  | "assignment_add" | "assignment_remove"
+  | "role_create" | "role_delete" | "role_permission_edit"
+  | "user_role_assign" | "user_role_remove";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed

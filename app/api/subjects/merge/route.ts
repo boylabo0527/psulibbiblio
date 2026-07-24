@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,11 @@ export const dynamic = "force-dynamic";
  *  then source_id is deleted. */
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to merge courses." }, { status: 403 });
+    }
     const body = await req.json() as { source_id?: number; target_id?: number };
     const sourceId = body.source_id;
     const targetId = body.target_id;
@@ -20,7 +26,6 @@ export async function POST(req: Request) {
     if (sourceId === targetId) {
       return NextResponse.json({ error: "source_id and target_id must differ" }, { status: 400 });
     }
-    const db = serviceClient();
 
     const { data: srcSubj } = await db.from("subjects").select("course_code, course_title").eq("id", sourceId as number).maybeSingle();
     const { data: tgtSubj } = await db.from("subjects").select("course_code, course_title").eq("id", targetId as number).maybeSingle();

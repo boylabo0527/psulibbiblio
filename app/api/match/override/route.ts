@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["programs"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to change assignments." }, { status: 403 });
+    }
     const body = await req.json();
     const subject_id = Number(body.subject_id);
     const title_id = Number(body.title_id);
@@ -14,7 +20,6 @@ export async function POST(req: Request) {
     if (!subject_id || !title_id) {
       return NextResponse.json({ error: "subject_id and title_id required" }, { status: 400 });
     }
-    const db = serviceClient();
     if (keep) {
       const { error } = await db.from("assignments").upsert(
         { subject_id, title_id, score: 1, rank: 0, explanation: "Manual", manual: 1 },

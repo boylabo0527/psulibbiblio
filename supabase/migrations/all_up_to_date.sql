@@ -6,8 +6,9 @@
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
 -- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
 -- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
--- 12_procurement_cost_estimate.sql in order. If you've already run some of
--- those individually, running this on top is still safe.
+-- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql in order.
+-- If you've already run some of those individually, running this on top is
+-- still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -188,3 +189,70 @@ alter table activity_log enable row level security;
 -- ---------------------------------------------------------------------------
 alter table programs add column if not exists cost_per_title numeric;
 alter table subjects add column if not exists cost_per_title numeric;
+
+-- ---------------------------------------------------------------------------
+-- 13: admin-configurable roles and per-tab view/edit permissions
+-- ---------------------------------------------------------------------------
+create table if not exists roles (
+  id bigserial primary key,
+  name text not null unique,
+  is_admin boolean not null default false,
+  created_at timestamptz default now()
+);
+
+create table if not exists role_tab_permissions (
+  role_id bigint not null references roles(id) on delete cascade,
+  tab_id text not null,
+  can_view boolean not null default false,
+  can_edit boolean not null default false,
+  primary key (role_id, tab_id)
+);
+
+create table if not exists user_roles (
+  email text primary key,
+  role_id bigint not null references roles(id) on delete cascade,
+  created_at timestamptz default now()
+);
+
+insert into roles (name, is_admin) values
+  ('Admin', true),
+  ('Librarian', false),
+  ('Library Staff', false),
+  ('Supplier', false)
+on conflict (name) do nothing;
+
+insert into user_roles (email, role_id)
+select 'cbnalica@gmail.com', id from roles where name = 'Admin'
+on conflict (email) do update set role_id = excluded.role_id;
+
+insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
+select r.id, t.tab_id, true, true
+from roles r, (values
+  ('upload'), ('match'), ('programs'), ('campus-validation'),
+  ('procurement'), ('canvassing'), ('purchase-request'), ('activity')
+) as t(tab_id)
+where r.name = 'Librarian'
+on conflict (role_id, tab_id) do nothing;
+
+insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
+select r.id, t.tab_id, true, true
+from roles r, (values
+  ('upload'), ('match'), ('programs'), ('campus-validation'),
+  ('procurement'), ('canvassing'), ('purchase-request')
+) as t(tab_id)
+where r.name = 'Library Staff'
+on conflict (role_id, tab_id) do nothing;
+
+insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
+select r.id, 'activity', true, false
+from roles r where r.name = 'Library Staff'
+on conflict (role_id, tab_id) do nothing;
+
+insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
+select r.id, 'supplier-view', true, false
+from roles r where r.name = 'Supplier'
+on conflict (role_id, tab_id) do nothing;
+
+alter table roles enable row level security;
+alter table role_tab_permissions enable row level security;
+alter table user_roles enable row level security;

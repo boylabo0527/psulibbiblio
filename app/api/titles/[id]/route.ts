@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { mergeTitles, type MergeableTitle } from "@/lib/merge-titles";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +22,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad title id" }, { status: 400 });
     }
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["programs"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to edit titles." }, { status: 403 });
+    }
     const body = await req.json() as Record<string, unknown>;
     const allowed = ["title", "author", "publisher", "year", "isbn", "issn", "call_no", "copies", "url", "campus"];
     const patch: Record<string, unknown> = {};
@@ -27,7 +34,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
-    const db = serviceClient();
     const { data, error } = await db.from("titles").update(patch).eq("id", id).select().single();
     if (error) throw error;
 

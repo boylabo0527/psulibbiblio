@@ -1,31 +1,43 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** PATCH /api/programs/:id — rename a program and/or set its default
- *  cost-per-title procurement estimate. */
+/** PATCH /api/programs/:id — rename a program (Campus Validation tab)
+ *  and/or set its default cost-per-title procurement estimate
+ *  (Procurement Analysis tab) -- gated separately since either field can
+ *  be sent independently by either tab's UI. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad program id" }, { status: 400 });
     }
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
     const body = await req.json() as { name?: string; cost_per_title?: number | null };
     const patch: Record<string, unknown> = {};
     let name: string | undefined;
     if ("name" in body) {
+      if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+        return NextResponse.json({ error: "Your account doesn't have permission to rename programs." }, { status: 403 });
+      }
       name = (body.name ?? "").trim();
       if (!name) return NextResponse.json({ error: "Program name is required." }, { status: 400 });
       patch.name = name;
     }
-    if ("cost_per_title" in body) patch.cost_per_title = body.cost_per_title;
+    if ("cost_per_title" in body) {
+      if (!perms.isAdmin && !perms.tabs["procurement"]?.can_edit) {
+        return NextResponse.json({ error: "Your account doesn't have permission to set cost estimates." }, { status: 403 });
+      }
+      patch.cost_per_title = body.cost_per_title;
+    }
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
-    const db = serviceClient();
     const { data: before } = await db.from("programs").select("name, cost_per_title").eq("id", id).maybeSingle();
     const { data, error } = await db.from("programs").update(patch).eq("id", id).select("id, name, cost_per_title").single();
     if (error) {
@@ -69,6 +81,10 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       return NextResponse.json({ error: "Bad program id" }, { status: 400 });
     }
     const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to delete programs." }, { status: 403 });
+    }
 
     const { count, error: countErr } = await db.from("subjects")
       .select("id", { count: "exact", head: true }).eq("program_id", id);

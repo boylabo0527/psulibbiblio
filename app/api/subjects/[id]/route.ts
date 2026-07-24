@@ -1,18 +1,23 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions, canEditAny } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** PATCH /api/subjects/:id — update editable subject fields.
- *  Allowed fields: course_code, course_title, description, sort_order, locked, cost_per_title. */
+ *  Allowed fields: course_code, course_title, description, sort_order, locked, cost_per_title.
+ *  Different fields come from different tabs' UI, so each is gated
+ *  against whichever tab(s) actually send it. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad subject id" }, { status: 400 });
     }
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
     const body = await req.json() as Record<string, unknown>;
     const allowed = ["course_code", "course_title", "description", "sort_order", "locked", "cost_per_title"];
     const patch: Record<string, unknown> = {};
@@ -20,7 +25,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
-    const db = serviceClient();
+    if ("cost_per_title" in patch && !canEditAny(perms, ["procurement"])) {
+      return NextResponse.json({ error: "Your account doesn't have permission to set cost estimates." }, { status: 403 });
+    }
+    if ("locked" in patch && !canEditAny(perms, ["programs"])) {
+      return NextResponse.json({ error: "Your account doesn't have permission to lock/unlock courses." }, { status: 403 });
+    }
+    const otherFields = Object.keys(patch).some((k) => !["cost_per_title", "locked"].includes(k));
+    if (otherFields && !canEditAny(perms, ["programs", "campus-validation"])) {
+      return NextResponse.json({ error: "Your account doesn't have permission to edit courses." }, { status: 403 });
+    }
+
     const { data, error } = await db.from("subjects").update(patch).eq("id", id).select().single();
     if (error) throw error;
 

@@ -4,6 +4,7 @@ import { pageThrough } from "@/lib/paging";
 import { parseYear } from "@/lib/years";
 import { isResourceTypeId } from "@/lib/resources";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +97,10 @@ export async function POST(req: Request) {
     }
     const db = serviceClient();
     const userEmail = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, userEmail);
+    if (!perms.isAdmin && !perms.tabs["upload"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to bulk-delete." }, { status: 403 });
+    }
 
     if (body.table === "titles") {
       const rows = await matchingTitles(db, body);

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,12 +12,16 @@ export const dynamic = "force-dynamic";
  *  reverted, and only once. */
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["activity"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to revert uploads." }, { status: 403 });
+    }
     const body = await req.json() as { activity_id?: number };
     const activityId = body.activity_id;
     if (!Number.isFinite(activityId)) {
       return NextResponse.json({ error: "activity_id is required" }, { status: 400 });
     }
-    const db = serviceClient();
 
     const { data: log, error: logErr } = await db.from("activity_log")
       .select("*").eq("id", activityId as number).maybeSingle();

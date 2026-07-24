@@ -21,6 +21,11 @@ const ACTION_LABEL: Record<string, string> = {
   title_merge: "Titles combined",
   assignment_add: "Title added to course",
   assignment_remove: "Title removed from course",
+  role_create: "Role created",
+  role_delete: "Role deleted",
+  role_permission_edit: "Role permissions changed",
+  user_role_assign: "User access assigned",
+  user_role_remove: "User access removed",
 };
 
 function actionColor(action: string): string {

@@ -3,6 +3,7 @@ import { pageThrough } from "@/lib/paging";
 import { ndjsonStream } from "@/lib/streaming";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -32,6 +33,12 @@ export async function POST(req: Request) {
   }
 
   const userEmail = userEmailFromRequest(req);
+  const perms = await getUserPermissions(serviceClient(), userEmail);
+  if (!perms.isAdmin && !perms.tabs["upload"]?.can_edit) {
+    return new Response(JSON.stringify({ error: "Your account doesn't have permission to upload." }), {
+      status: 403, headers: { "Content-Type": "application/json" },
+    });
+  }
   const batchId = randomUUID();
 
   const stream = ndjsonStream(async (send) => {

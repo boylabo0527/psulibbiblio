@@ -6,6 +6,7 @@ import { ndjsonStream } from "@/lib/streaming";
 import { pageThroughParallel } from "@/lib/paging";
 import type { SubjectRow } from "@/lib/types";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +70,12 @@ export async function POST(req: Request) {
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
   const userEmail = userEmailFromRequest(req);
+  const perms = await getUserPermissions(serviceClient(), userEmail);
+  if (!perms.isAdmin && !perms.tabs["match"]?.can_edit) {
+    return new Response(JSON.stringify({ error: "Your account doesn't have permission to run matching." }), {
+      status: 403, headers: { "Content-Type": "application/json" },
+    });
+  }
 
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();

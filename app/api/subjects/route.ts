@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +9,11 @@ export const dynamic = "force-dynamic";
 /** POST /api/subjects — manually add a single course under a program. */
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to add courses." }, { status: 403 });
+    }
     const body = await req.json() as { program_id?: number; course_code?: string; course_title?: string; description?: string };
     const programId = body.program_id;
     const courseCode = (body.course_code ?? "").trim();
@@ -18,7 +24,6 @@ export async function POST(req: Request) {
     if (!courseCode && !courseTitle) {
       return NextResponse.json({ error: "Course code or title is required" }, { status: 400 });
     }
-    const db = serviceClient();
 
     const { data: maxRow } = await db.from("subjects")
       .select("sort_order").eq("program_id", programId as number)
