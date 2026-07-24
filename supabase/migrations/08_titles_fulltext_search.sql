@@ -7,12 +7,16 @@
 --
 -- IMPORTANT: run each of the three blocks below as SEPARATE statements
 -- (separate "Run" clicks in the Supabase SQL editor), not pasted together.
--- On a 500k+ row table:
---   - adding the generated column rewrites the whole table to compute it,
---     which is slow enough to hit Supabase's default statement_timeout.
---   - CREATE INDEX CONCURRENTLY can't run inside a multi-statement/implicit
---     transaction block, and is used here specifically so building the
---     index doesn't hold a long lock on titles while the site is live.
+-- On a 500k+ row table, adding the generated column rewrites the whole
+-- table to compute it, which is slow enough to hit Supabase's default
+-- statement_timeout.
+--
+-- Step 2 uses a plain CREATE INDEX, not CONCURRENTLY -- Supabase's SQL
+-- editor runs every query inside an implicit transaction block, and
+-- CONCURRENTLY is rejected inside one ("cannot run inside a transaction
+-- block"). A plain CREATE INDEX takes a lock that blocks writes (uploads)
+-- to titles for as long as the build takes, but reads keep working; run it
+-- at a quiet time if you can.
 
 -- ---------------------------------------------------------------------------
 -- Step 1: add the generated search column (run alone)
@@ -30,12 +34,12 @@ alter table titles add column if not exists search_vector tsvector
   ) stored;
 
 -- ---------------------------------------------------------------------------
--- Step 2: build the index CONCURRENTLY (run alone, in its own statement --
--- do not combine with Step 1 or Step 3 in the same "Run")
+-- Step 2: build the index (run alone, in its own statement -- do not
+-- combine with Step 1 or Step 3 in the same "Run")
 -- ---------------------------------------------------------------------------
 set statement_timeout = '15min';
 
-create index concurrently if not exists titles_search_idx on titles using gin (search_vector);
+create index if not exists titles_search_idx on titles using gin (search_vector);
 
 -- ---------------------------------------------------------------------------
 -- Step 3: candidate-retrieval function (run alone)

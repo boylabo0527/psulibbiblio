@@ -95,7 +95,7 @@ alter table titles add column if not exists search_vector tsvector
     )
   ) stored;
 
-create index concurrently if not exists titles_search_idx on titles using gin (search_vector);
+create index if not exists titles_search_idx on titles using gin (search_vector);
 
 create or replace function match_titles_candidates(query_text text, limit_n int)
 returns table (
