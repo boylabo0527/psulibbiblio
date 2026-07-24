@@ -112,7 +112,17 @@ as $$
          g.lexical_rank, g.is_must_match
   from grouped g
   join titles t on t.id = g.id
-  order by g.lexical_rank desc
+  -- is_must_match must be ordered first, not just returned as a flag: this
+  -- LIMIT is where candidates actually get cut down to limit_n, inside the
+  -- database. ts_rank_cd has no length normalization, so a short, sparsely
+  -- catalogued exact-title match (e.g. a title that's just "Constitutional
+  -- law") can score a lower raw lexical_rank than dozens of broader OR
+  -- matches that merely share more individual words. Ordering by
+  -- lexical_rank alone let those broader matches fill the limit_n slots
+  -- and silently cut the true match before it ever reached the caller --
+  -- the caller's own is_must_match re-ranking can't recover a candidate
+  -- that was never in the returned set to begin with.
+  order by g.is_must_match desc, g.lexical_rank desc
   limit limit_n;
 $$;
 

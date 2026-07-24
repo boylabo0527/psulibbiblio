@@ -136,7 +136,7 @@ as $$
          g.lexical_rank, g.is_must_match
   from grouped g
   join titles t on t.id = g.id
-  order by g.lexical_rank desc
+  order by g.is_must_match desc, g.lexical_rank desc
   limit limit_n;
 $$;
 
