@@ -70,7 +70,7 @@ export default function MatchTab() {
       <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
         Hybrid keyword (full-text search) + semantic (sentence embedding) matching on the subject description.
-        Auto-assigns the top K books (eBooks + Printed) per subject. Manual additions and pins are preserved.
+        Auto-assigns the top K titles across all formats (eBooks, printed books, journals) per subject. Manual additions and pins are preserved.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <label className="label">

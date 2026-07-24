@@ -79,7 +79,12 @@ alter table titles add column if not exists barcodes jsonb default '[]'::jsonb;
 
 -- ---------------------------------------------------------------------------
 -- 08: full-text search index for scalable matching (500k+ row catalogs)
+-- NOTE: on a large catalog, run this section's statements SEPARATELY (see
+-- supabase/migrations/08_titles_fulltext_search.sql for the split-out,
+-- copy-pasteable version) -- combined here only for smaller/fresh databases.
 -- ---------------------------------------------------------------------------
+set statement_timeout = '15min';
+
 alter table titles add column if not exists search_vector tsvector
   generated always as (
     to_tsvector('english',
@@ -90,7 +95,7 @@ alter table titles add column if not exists search_vector tsvector
     )
   ) stored;
 
-create index if not exists titles_search_idx on titles using gin (search_vector);
+create index concurrently if not exists titles_search_idx on titles using gin (search_vector);
 
 create or replace function match_titles_candidates(query_text text, limit_n int)
 returns table (
