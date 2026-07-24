@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export type SupplierNeedRow = {
+  subject_id: number;
   program: string;
   course_code: string;
   course_title: string;
@@ -76,6 +77,7 @@ export async function GET(req: Request) {
         const recent = recentMap.get(s.id) ?? 0;
         const gap = Math.max(0, ACCREDITATION_MIN - recent);
         return {
+          subject_id: s.id,
           program: programMap.get(s.program_id) ?? "",
           course_code: s.course_code,
           course_title: s.course_title,

@@ -9,7 +9,8 @@ export type ActivityAction =
   | "title_merge"
   | "assignment_add" | "assignment_remove"
   | "role_create" | "role_delete" | "role_permission_edit"
-  | "user_role_assign" | "user_role_remove";
+  | "user_role_assign" | "user_role_remove"
+  | "supplier_offer_submit" | "supplier_offer_decide";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed
