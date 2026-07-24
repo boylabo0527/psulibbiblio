@@ -48,6 +48,16 @@ create index if not exists titles_search_idx on titles using gin (search_vector)
 -- (e.g. "biology | genetics | ecology"), ranked by text-search relevance,
 -- across every title format (ebooks, printed books, journals -- no format
 -- filter here).
+--
+-- The inner subquery's LIMIT (with no ORDER BY) is what keeps this fast:
+-- ts_rank_cd() has to be computed for every row that matches the tsquery
+-- before Postgres can sort and return the top N, and for a broad subject
+-- whose keywords are common words, that match set can be a huge share of
+-- a 500k+ row table -- easily enough to blow through a statement timeout
+-- on its own. Capping how many matching rows even get ranked bounds the
+-- cost of one subject's query regardless of catalog size or how common
+-- its terms are, at the cost of only ranking within that first batch
+-- rather than the true full match set.
 create or replace function match_titles_candidates(query_text text, limit_n int)
 returns table (
   id bigint,
@@ -62,10 +72,15 @@ returns table (
 )
 language sql stable
 as $$
-  select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
-         t.embedding, ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
-  from titles t
-  where t.search_vector @@ to_tsquery('english', query_text)
+  select sub.id, sub.format, sub.title, sub.author, sub.publisher, sub.year, sub.subjects,
+         sub.embedding, ts_rank_cd(sub.search_vector, to_tsquery('english', query_text)) as lexical_rank
+  from (
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
+           t.embedding, t.search_vector
+    from titles t
+    where t.search_vector @@ to_tsquery('english', query_text)
+    limit greatest(limit_n * 20, 3000)
+  ) sub
   order by lexical_rank desc
   limit limit_n;
 $$;

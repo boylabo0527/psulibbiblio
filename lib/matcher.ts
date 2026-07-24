@@ -48,12 +48,23 @@ export function subjectText(s: SubjectRow): string {
   return [s.course_title, s.description, s.course_code].filter(Boolean).join(" ");
 }
 
+// Caps how many terms get OR'd into one query. A subject with a long
+// description can produce dozens of unigrams; OR-ing all of them together
+// casts an increasingly wide net (more terms = more titles matched = more
+// rows Postgres has to rank), so this keeps query breadth -- and therefore
+// per-subject query cost -- roughly constant regardless of description
+// length. Longer words are kept preferentially as a cheap proxy for
+// specificity (e.g. "photosynthesis" over "study").
+const MAX_QUERY_TERMS = 12;
+
 /** Unigram terms for a subject, OR'd together (e.g. "biology | genetics")
  *  to build a Postgres to_tsquery expression -- this is what lets the
  *  database find candidate titles instead of the whole catalog being
  *  pulled into memory. */
 export function subjectQueryTerms(s: SubjectRow): string[] {
-  return unigrams(subjectText(s));
+  const terms = unigrams(subjectText(s));
+  if (terms.length <= MAX_QUERY_TERMS) return terms;
+  return [...terms].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS);
 }
 
 export type Candidate = TitleRow & { id: number; embedding: number[] | null; lexical_rank: number };

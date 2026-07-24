@@ -78,7 +78,11 @@ export async function POST(req: Request) {
       return;
     }
 
-    const { count: titleCount } = await db.from("titles").select("id", { count: "exact", head: true });
+    // "estimated" uses the query planner's row estimate instead of a real
+    // COUNT(*) -- this is purely informational (shown in the done summary),
+    // and an exact count over a 500k+ row table is itself slow enough to
+    // risk hitting Supabase's statement timeout.
+    const { count: titleCount } = await db.from("titles").select("id", { count: "estimated", head: true });
 
     const useEmbeddingsThisRun = embeddingsEnabled();
     let subjectEmbeddings: Map<number, number[]> | undefined;

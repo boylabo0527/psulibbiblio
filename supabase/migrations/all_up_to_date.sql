@@ -111,10 +111,15 @@ returns table (
 )
 language sql stable
 as $$
-  select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
-         t.embedding, ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
-  from titles t
-  where t.search_vector @@ to_tsquery('english', query_text)
+  select sub.id, sub.format, sub.title, sub.author, sub.publisher, sub.year, sub.subjects,
+         sub.embedding, ts_rank_cd(sub.search_vector, to_tsquery('english', query_text)) as lexical_rank
+  from (
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
+           t.embedding, t.search_vector
+    from titles t
+    where t.search_vector @@ to_tsquery('english', query_text)
+    limit greatest(limit_n * 20, 3000)
+  ) sub
   order by lexical_rank desc
   limit limit_n;
 $$;
