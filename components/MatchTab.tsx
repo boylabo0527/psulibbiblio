@@ -6,8 +6,7 @@ import type { MatchProgressEvent } from "@/app/api/match/run/route";
 
 type Program = { id: number; name: string };
 
-const PHASE_LABEL: Record<MatchProgressEvent["phase"], string> = {
-  fetching: "Loading subjects and titles…",
+const PHASE_LABEL: Record<Exclude<MatchProgressEvent["phase"], "fetching">, string> = {
   embedding_model: "Loading embedding model (first run after a deploy takes longer)…",
   embedding: "Embedding titles…",
   matching: "Scoring matches (BM25 + semantic)…",
@@ -15,6 +14,11 @@ const PHASE_LABEL: Record<MatchProgressEvent["phase"], string> = {
   done: "Done",
   error: "Error",
 };
+
+function phaseLabel(progress: MatchProgressEvent): string {
+  if (progress.phase === "fetching") return `Loading ${progress.label}…`;
+  return PHASE_LABEL[progress.phase];
+}
 
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -36,7 +40,7 @@ export default function MatchTab() {
   async function run() {
     setBusy(true);
     setError(null);
-    setProgress({ phase: "fetching" });
+    setProgress({ phase: "fetching", done: 0, total: 0, label: "subjects" });
     const startedAt = Date.now();
     setElapsedMs(0);
     tickerRef.current = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
@@ -56,7 +60,9 @@ export default function MatchTab() {
     }
   }
 
-  const pct = progress && (progress.phase === "embedding" || progress.phase === "saving") && progress.total > 0
+  const pct = progress
+    && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "saving")
+    && progress.total > 0
     ? Math.round((progress.done / progress.total) * 100)
     : null;
 
@@ -94,9 +100,9 @@ export default function MatchTab() {
         <div className="mt-3">
           <div className="flex justify-between text-xs text-slate-600 mb-1">
             <span>
-              {PHASE_LABEL[progress.phase]}
-              {pct !== null && progress.phase !== "done" && progress.phase !== "error"
-                ? ` (${(progress as { done: number }).done.toLocaleString()} / ${(progress as { total: number }).total.toLocaleString()})`
+              {phaseLabel(progress)}
+              {pct !== null && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "saving")
+                ? ` (${progress.done.toLocaleString()} / ${progress.total.toLocaleString()})`
                 : ""}
             </span>
             <span>{(elapsedMs / 1000).toFixed(1)}s</span>

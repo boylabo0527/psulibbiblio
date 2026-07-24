@@ -2,18 +2,18 @@ import { runMatch, subjectText, titleText } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import { ndjsonStream } from "@/lib/streaming";
+import { pageThroughParallel } from "@/lib/paging";
 import type { SubjectRow, TitleRow } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const PAGE = 1000;
 const EMBED_BATCH = 64;
 const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
 
 export type MatchProgressEvent =
-  | { phase: "fetching" }
+  | { phase: "fetching"; done: number; total: number; label: string }
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
   | { phase: "matching" }
@@ -21,21 +21,23 @@ export type MatchProgressEvent =
   | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean }
   | { phase: "error"; error: string };
 
-async function fetchAll<T>(
-  db: ReturnType<typeof serviceClient>, table: string, columns: string,
+/** Fetches pages concurrently (not one at a time) — for a titles table with
+ *  tens of thousands of rows, sequential pages meant total time scaled with
+ *  page count x round-trip latency, slow enough to look identical to a
+ *  hang. Reports progress as it goes instead of one silent wait. */
+async function fetchAllWithProgress<T>(
+  db: ReturnType<typeof serviceClient>, table: string, columns: string, label: string,
+  send: (e: MatchProgressEvent) => void,
   filter?: { col: string; value: number },
 ): Promise<T[]> {
-  const out: T[] = [];
-  for (let from = 0; ; from += PAGE) {
-    let q = db.from(table).select(columns).range(from, from + PAGE - 1);
-    if (filter) q = q.eq(filter.col, filter.value);
-    const { data, error } = await q;
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    out.push(...(data as unknown as T[]));
-    if (data.length < PAGE) break;
-  }
-  return out;
+  return pageThroughParallel<T>(
+    (from, to) => {
+      let q = db.from(table).select(columns, { count: "exact" }).range(from, to);
+      if (filter) q = q.eq(filter.col, filter.value);
+      return q as unknown as PromiseLike<{ data: T[] | null; count: number | null; error: { message: string } | null }>;
+    },
+    (done, total) => send({ phase: "fetching", done, total, label }),
+  );
 }
 
 /** Compute (or reuse cached) embeddings for subjects and titles. Any failure
@@ -88,15 +90,16 @@ export async function POST(req: Request) {
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
 
-    send({ phase: "fetching" });
-    const subjects = await fetchAll<SubjectRow>(
+    const subjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
       "id, program_id, course_code, course_title, description",
+      "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    const titles = await fetchAll<TitleRow & { id: number; embedding: number[] | null }>(
+    const titles = await fetchAllWithProgress<TitleRow & { id: number; embedding: number[] | null }>(
       db, "titles",
       "id, format, title, author, publisher, year, subjects, embedding",
+      "titles", send,
     );
     if (!subjects.length || !titles.length) {
       send({ phase: "error", error: "Need at least one subject and one title before matching." });
