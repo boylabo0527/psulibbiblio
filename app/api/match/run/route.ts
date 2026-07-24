@@ -43,7 +43,12 @@ export type MatchProgressEvent =
   | { phase: "fetching"; done: number; total: number; label: string }
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
-  | { phase: "matching"; done: number; total: number }
+  // matches_so_far/failed_so_far are included on every progress tick (not
+  // just "paused") so the client can checkpoint after every batch -- if
+  // the connection dies mid-run (e.g. the machine sleeps) with no chance
+  // to send a "paused" event, the client still has an up-to-date resume
+  // point from the last batch that actually committed.
+  | { phase: "matching"; done: number; total: number; matches_so_far: number; failed_so_far: { course_code: string; error: string }[] }
   | { phase: "paused"; done: number; total: number; next_offset: number; matches_so_far: number; failed_so_far: { course_code: string; error: string }[] }
   | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number; failed_subjects: { course_code: string; error: string }[] }
   | { phase: "error"; error: string };
@@ -166,7 +171,7 @@ export async function POST(req: Request) {
     // a more specific title) instead of silently losing everyone's results.
     const failedSubjects: { course_code: string; error: string }[] = [...failedSoFar];
     const runStart = Date.now();
-    send({ phase: "matching", done, total: subjects.length });
+    send({ phase: "matching", done, total: subjects.length, matches_so_far: totalMatches, failed_so_far: failedSubjects });
 
     for (let i = 0; i < remainingSubjects.length; i += SUBJECT_CONCURRENCY) {
       const batch = remainingSubjects.slice(i, i + SUBJECT_CONCURRENCY);
@@ -277,7 +282,7 @@ export async function POST(req: Request) {
       }
 
       done += batch.length;
-      send({ phase: "matching", done, total: subjects.length });
+      send({ phase: "matching", done, total: subjects.length, matches_so_far: totalMatches, failed_so_far: failedSubjects });
 
       if (Date.now() - runStart > TIME_BUDGET_MS && done < subjects.length) {
         send({

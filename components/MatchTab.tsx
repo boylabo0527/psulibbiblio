@@ -6,6 +6,42 @@ import type { MatchProgressEvent } from "@/app/api/match/run/route";
 
 type Program = { id: number; name: string };
 
+// Persisted so an interrupted run (laptop sleeps, tab closes, network
+// drops mid-chunk) can be resumed from its last committed batch instead of
+// restarting from subject 1 -- localStorage survives a sleep/wake cycle
+// even though the in-flight network connection driving the run doesn't.
+const CHECKPOINT_KEY = "psulib-match-checkpoint-v1";
+
+type MatchCheckpoint = {
+  offset: number;
+  total: number;
+  matchesSoFar: number;
+  failedSoFar: { course_code: string; error: string }[];
+  params: {
+    topK: number; minScore: number; programId: string;
+    balanceFormats: boolean; topKPrinted: number; topKDigital: number;
+  };
+  savedAt: number;
+};
+
+function loadCheckpoint(): MatchCheckpoint | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(CHECKPOINT_KEY);
+    return raw ? (JSON.parse(raw) as MatchCheckpoint) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCheckpoint(cp: MatchCheckpoint) {
+  try { window.localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(cp)); } catch { /* ignore */ }
+}
+
+function clearCheckpoint() {
+  try { window.localStorage.removeItem(CHECKPOINT_KEY); } catch { /* ignore */ }
+}
+
 const PHASE_LABEL: Record<Exclude<MatchProgressEvent["phase"], "fetching">, string> = {
   embedding_model: "Loading embedding model (first run after a deploy takes longer)…",
   embedding: "Embedding subjects…",
@@ -32,36 +68,50 @@ export default function MatchTab() {
   const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [resumable, setResumable] = useState<MatchCheckpoint | null>(null);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    setResumable(loadCheckpoint());
+  }, []);
+
   useEffect(() => () => { if (tickerRef.current) clearInterval(tickerRef.current); }, []);
 
-  async function run() {
+  async function run(resume?: MatchCheckpoint) {
     setBusy(true);
     setError(null);
+    setResumable(null);
     setProgress({ phase: "fetching", done: 0, total: 0, label: "subjects" });
     const startedAt = Date.now();
     setElapsedMs(0);
     tickerRef.current = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
+    // A resumed run keeps using the ORIGINAL run's settings throughout,
+    // even if the form has since been changed -- mixing settings across
+    // chunks of the same logical run would produce an incoherent result.
+    const p = resume?.params ?? { topK, minScore, programId, balanceFormats, topKPrinted, topKDigital };
     try {
       // A large catalog can take longer to match than a single serverless
       // request is allowed to run. Rather than fail once the platform's
       // time limit hits, the server stops itself early and reports how far
       // it got ("paused") -- this loop just keeps asking it to continue
-      // from there until the whole run is actually done.
-      let offset = 0;
-      let matchesSoFar = 0;
-      let failedSoFar: { course_code: string; error: string }[] = [];
+      // from there until the whole run is actually done. Progress is also
+      // checkpointed to localStorage after every batch, so if the browser
+      // itself gets interrupted (e.g. the machine sleeps) partway through,
+      // the next visit can resume from the last committed batch instead of
+      // restarting from subject 1.
+      let offset = resume?.offset ?? 0;
+      let matchesSoFar = resume?.matchesSoFar ?? 0;
+      let failedSoFar: { course_code: string; error: string }[] = resume?.failedSoFar ?? [];
       for (;;) {
-        const params = new URLSearchParams({ top_k: String(topK), min_score: String(minScore) });
-        if (programId) params.set("program_id", programId);
-        if (balanceFormats) {
-          params.set("top_k_printed", String(topKPrinted));
-          params.set("top_k_digital", String(topKDigital));
+        const params = new URLSearchParams({ top_k: String(p.topK), min_score: String(p.minScore) });
+        if (p.programId) params.set("program_id", p.programId);
+        if (p.balanceFormats) {
+          params.set("top_k_printed", String(p.topKPrinted));
+          params.set("top_k_digital", String(p.topKDigital));
         }
         if (offset > 0) {
           params.set("offset", String(offset));
@@ -74,19 +124,33 @@ export default function MatchTab() {
           setProgress(ev);
           if (ev.phase === "error") setError(ev.error);
           if (ev.phase === "paused") paused = ev;
+          if (ev.phase === "matching" || ev.phase === "paused") {
+            saveCheckpoint({
+              offset: ev.done, total: ev.total,
+              matchesSoFar: ev.matches_so_far, failedSoFar: ev.failed_so_far,
+              params: p, savedAt: Date.now(),
+            });
+          }
         });
         if (!paused) break;
-        const p: Extract<MatchProgressEvent, { phase: "paused" }> = paused;
-        offset = p.next_offset;
-        matchesSoFar = p.matches_so_far;
-        failedSoFar = p.failed_so_far;
+        const pausedEv: Extract<MatchProgressEvent, { phase: "paused" }> = paused;
+        offset = pausedEv.next_offset;
+        matchesSoFar = pausedEv.matches_so_far;
+        failedSoFar = pausedEv.failed_so_far;
       }
+      clearCheckpoint();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setResumable(loadCheckpoint());
     } finally {
       if (tickerRef.current) clearInterval(tickerRef.current);
       setBusy(false);
     }
+  }
+
+  function discardCheckpoint() {
+    clearCheckpoint();
+    setResumable(null);
   }
 
   const pct = progress
@@ -124,8 +188,21 @@ export default function MatchTab() {
           <input type="number" min={0} max={1} step={0.01} className="input ml-1 w-20"
             value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
-        <button className="btn" onClick={run} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
+        <button className="btn" onClick={() => run()} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
       </div>
+
+      {resumable && !busy && (
+        <div className="mb-3 bg-amber-50 border border-amber-200 rounded p-2.5 text-xs flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            A previous matching run was interrupted at <strong>{resumable.offset.toLocaleString()} / {resumable.total.toLocaleString()}</strong> subjects
+            (e.g. the browser lost its connection, or the computer went to sleep). Nothing already matched was lost.
+          </span>
+          <div className="flex gap-2 shrink-0">
+            <button className="btn text-xs" onClick={() => run(resumable)}>Resume</button>
+            <button className="btn-outline text-xs" onClick={discardCheckpoint}>Discard</button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <label className="flex items-center gap-1.5 text-sm text-slate-600">
