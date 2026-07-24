@@ -120,6 +120,17 @@ export type Candidate = TitleRow & { id: number; embedding: number[] | null; lex
 // mainly so the displayed score/explanation reads sensibly.
 const MUST_MATCH_SCORE_FLOOR = 0.8;
 
+// Accreditors' checklists specifically count printed holdings, so a printed
+// title that's genuinely relevant should usually outrank an ebook that's
+// only slightly more relevant on paper. This is deliberately a modest
+// additive nudge, not a hard tier like is_must_match: unlike an exact
+// title match (itself strong evidence of relevance), print-vs-digital is a
+// policy preference independent of topical fit, so hard-tiering it risks a
+// barely-relevant printed book beating a clearly-better-matching ebook.
+// Callers who want printed titles guaranteed regardless of relevance
+// should use topKPrinted/topKDigital instead.
+const PRINT_SCORE_BONUS = 0.06;
+
 export type ScoreOptions = {
   topK?: number;
   /** When set (either one), ignores topK and instead picks the top
@@ -156,6 +167,8 @@ export function scoreCandidates(
   const alpha = useEmbeddings ? Math.min(1, Math.max(0, opts.semanticWeight ?? 0.5)) : 0;
   const subjectTerms = subjectQueryTerms(subject);
 
+  const isPrinted = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.medium === "print";
+
   const scored = candidates
     .map((c) => {
       let lexicalNorm = c.lexical_rank / (c.lexical_rank + 1);
@@ -165,8 +178,10 @@ export function scoreCandidates(
         const titleVec = opts.titleEmbeddings!.get(c.id);
         if (titleVec) semantic = opts.cosineSim!(opts.subjectEmbedding!, titleVec);
       }
-      const score = alpha * semantic + (1 - alpha) * lexicalNorm;
-      return { c, score, lexicalNorm, semantic };
+      let score = alpha * semantic + (1 - alpha) * lexicalNorm;
+      const printed = isPrinted(c.format);
+      if (printed) score = Math.min(1, score + PRINT_SCORE_BONUS);
+      return { c, score, lexicalNorm, semantic, printed };
     })
     .filter((s) => s.score >= minScore)
     // Course-title matches are a strictly higher tier, not just a score
@@ -178,9 +193,8 @@ export function scoreCandidates(
   const balanced = opts.topKPrinted != null || opts.topKDigital != null;
   let selected: typeof scored;
   if (balanced) {
-    const isPrint = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.medium === "print";
-    const printed = scored.filter((s) => isPrint(s.c.format)).slice(0, opts.topKPrinted ?? 0);
-    const digital = scored.filter((s) => !isPrint(s.c.format)).slice(0, opts.topKDigital ?? 0);
+    const printed = scored.filter((s) => s.printed).slice(0, opts.topKPrinted ?? 0);
+    const digital = scored.filter((s) => !s.printed).slice(0, opts.topKDigital ?? 0);
     selected = [...printed, ...digital]
       .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
   } else {
@@ -189,14 +203,15 @@ export function scoreCandidates(
 
   const results: AssignmentRow[] = [];
   let rank = 0;
-  for (const { c, score, lexicalNorm, semantic } of selected) {
+  for (const { c, score, lexicalNorm, semantic, printed } of selected) {
     rank++;
     const candTokens = new Set(unigrams(titleText(c)));
     const shared = subjectTerms.filter((t) => candTokens.has(t)).slice(0, 5).join(", ") || "n/a";
     const mustNote = c.is_must_match ? " (title matches course name exactly)" : "";
+    const printNote = printed ? " (printed)" : "";
     const explanation = useEmbeddings
-      ? `hybrid=${score.toFixed(3)} (semantic=${semantic.toFixed(3)}, lexical=${lexicalNorm.toFixed(3)}); shared terms: ${shared}${mustNote}`
-      : `lexical=${lexicalNorm.toFixed(3)}; shared terms: ${shared}${mustNote}`;
+      ? `hybrid=${score.toFixed(3)} (semantic=${semantic.toFixed(3)}, lexical=${lexicalNorm.toFixed(3)}); shared terms: ${shared}${mustNote}${printNote}`
+      : `lexical=${lexicalNorm.toFixed(3)}; shared terms: ${shared}${mustNote}${printNote}`;
     results.push({
       subject_id: subject.id!,
       title_id: c.id,
