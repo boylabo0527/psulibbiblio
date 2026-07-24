@@ -19,8 +19,11 @@ const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
 // Bounded and independent of total catalog size -- this is what keeps a
 // run's cost from scaling with how many titles have been uploaded overall.
 const CANDIDATE_LIMIT = parseInt(process.env.MATCH_CANDIDATE_LIMIT ?? "300", 10);
-// How many subjects are searched/scored concurrently per batch.
-const SUBJECT_CONCURRENCY = parseInt(process.env.MATCH_SUBJECT_CONCURRENCY ?? "8", 10);
+// How many subjects are searched/scored concurrently per batch. Lower
+// reduces load on a free-tier database (each search is expensive enough
+// that running many at once can cause contention-driven timeouts even on
+// subjects whose own query would normally be fast).
+const SUBJECT_CONCURRENCY = parseInt(process.env.MATCH_SUBJECT_CONCURRENCY ?? "5", 10);
 // The embedding model downloads from the Hugging Face CDN on a cold start,
 // with no built-in timeout on that fetch. If the connection from Vercel's
 // serverless region to the CDN stalls, the run would otherwise hang forever
@@ -178,20 +181,33 @@ export async function POST(req: Request) {
       const batchCandidates = await Promise.all(batch.map(async (subject) => {
         const terms = subjectQueryTerms(subject);
         if (!terms.length) return { subject, candidates: [] as Candidate[] };
-        try {
-          const { data, error } = await db.rpc("match_titles_candidates", {
-            query_text: terms.join(" | "),
-            must_text: subjectMustQuery(subject),
-            limit_n: CANDIDATE_LIMIT,
-          });
-          if (error) throw new Error(error.message);
-          return { subject, candidates: (data ?? []) as Candidate[] };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`match_titles_candidates failed for subject ${subject.course_code}:`, message);
-          failedSubjects.push({ course_code: subject.course_code ?? String(subject.id), error: message });
-          return { subject, candidates: [] as Candidate[] };
+        // A timeout here is usually transient contention (several subjects'
+        // searches running concurrently against a free-tier database), not
+        // something wrong with this particular subject -- one retry after
+        // a short pause resolves the vast majority of these without
+        // needing a manual re-run.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const { data, error } = await db.rpc("match_titles_candidates", {
+              query_text: terms.join(" | "),
+              must_text: subjectMustQuery(subject),
+              limit_n: CANDIDATE_LIMIT,
+            });
+            if (error) throw new Error(error.message);
+            return { subject, candidates: (data ?? []) as Candidate[] };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (attempt === 0) {
+              console.warn(`match_titles_candidates failed for subject ${subject.course_code}, retrying:`, message);
+              await new Promise((r) => setTimeout(r, 2000));
+              continue;
+            }
+            console.error(`match_titles_candidates failed for subject ${subject.course_code} (after retry):`, message);
+            failedSubjects.push({ course_code: subject.course_code ?? String(subject.id), error: message });
+            return { subject, candidates: [] as Candidate[] };
+          }
         }
+        return { subject, candidates: [] as Candidate[] };
       }));
 
       if (useEmbeddingsThisRun) {

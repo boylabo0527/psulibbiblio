@@ -85,6 +85,16 @@ returns table (
   is_must_match boolean
 )
 language sql stable
+-- The app calls this function over the API (db.rpc), not through the SQL
+-- editor's own session -- and that API role's default statement_timeout is
+-- typically much shorter than what an admin sees running queries by hand
+-- in the SQL editor. Under concurrent load (several subjects' searches
+-- running at once during a full matching run), a query that's normally
+-- fast can occasionally take longer than that short default and get
+-- canceled, even though nothing is actually wrong with it. Setting the
+-- timeout on the function itself guarantees a generous, known budget no
+-- matter which role or client calls it.
+set statement_timeout = '30s'
 as $$
   with must_matches as (
     -- must_text is an AND of a handful of course-title words, so this is

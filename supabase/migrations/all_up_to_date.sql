@@ -113,6 +113,7 @@ returns table (
   is_must_match boolean
 )
 language sql stable
+set statement_timeout = '30s'
 as $$
   with must_matches as (
     select t.id, ts_rank_cd(t.search_vector, to_tsquery('english', must_text)) as lexical_rank, true as is_must
