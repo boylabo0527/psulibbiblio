@@ -4,9 +4,9 @@
 --
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
--- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql
--- in order. If you've already run some of those individually, running this
--- on top is still safe.
+-- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
+-- 09_institutional_repository.sql in order. If you've already run some of
+-- those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -123,3 +123,16 @@ as $$
   order by lexical_rank desc
   limit limit_n;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 09: institutional_repository title format
+-- ---------------------------------------------------------------------------
+alter table titles drop constraint if exists titles_format_check;
+
+alter table titles add constraint titles_format_check check (format in (
+  'ebook_paid', 'ebook_open',
+  'book_printed',
+  'journal_printed',
+  'journal_online_paid', 'journal_online_open',
+  'institutional_repository'
+));

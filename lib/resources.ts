@@ -59,6 +59,14 @@ export const RESOURCE_TYPES = [
     campusScoped: false,
     dedupBy: "issn-or-title",
   },
+  {
+    id: "institutional_repository",
+    uiLabel: "Institutional Repository",
+    sectionLabel: "Institutional Repository",
+    kind: "book",  access: "open", medium: "digital",
+    campusScoped: false,
+    dedupBy: "isbn-or-tuple",
+  },
 ] as const;
 
 export type ResourceTypeId = (typeof RESOURCE_TYPES)[number]["id"];

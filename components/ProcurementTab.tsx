@@ -21,6 +21,18 @@ function statusOf(r: ProcurementRow): "compliant" | "partial" | "outdated" | "ne
   return "needs";
 }
 
+/** Splits a subject's per-format counts into printed vs. digital/eBook,
+ *  using each resource type's `medium` (print | digital). */
+function mediumBreakdown(counts: Record<ResourceTypeId, number>): { printed: number; digital: number } {
+  let printed = 0, digital = 0;
+  for (const rt of RESOURCE_TYPES) {
+    const c = counts[rt.id] ?? 0;
+    if (rt.medium === "print") printed += c;
+    else digital += c;
+  }
+  return { printed, digital };
+}
+
 export default function ProcurementTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string | null>(null);
@@ -92,15 +104,20 @@ export default function ProcurementTab() {
     acc[rt.id] = displayRows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
+  const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
+  const totalDigital = RESOURCE_TYPES.filter((rt) => rt.medium === "digital").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
 
   async function exportReport(fmt: "xlsx" | "csv") {
     const XLSX = await import("xlsx");
-    const headers = ["Program", "Code", "Subject", "Total Titles", `Recent (${cutoffYear}+)`, "Required", "Gap", "Status"];
+    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Required", "Gap", "Status"];
     const statusLabel = { compliant: "OK", partial: "Partial", outdated: "Outdated", needs: "Procure" };
-    const aoa = [headers, ...filtered.map((r) => [
-      r.program, r.course_code, r.course_title, r.total_titles, r.recent_titles,
-      ACCREDITATION_MIN, r.gap, statusLabel[statusOf(r)],
-    ])];
+    const aoa = [headers, ...filtered.map((r) => {
+      const { printed, digital } = mediumBreakdown(r.counts);
+      return [
+        r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles,
+        ACCREDITATION_MIN, r.gap, statusLabel[statusOf(r)],
+      ];
+    })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
     const wb = XLSX.utils.book_new();
@@ -195,6 +212,18 @@ export default function ProcurementTab() {
               </div>
             </div>
 
+            {/* Printed vs. digital breakdown */}
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div className="bg-slate-50 border border-slate-200 rounded p-2">
+                <div className="text-xs text-slate-500">Printed (books + journals)</div>
+                <div className="text-lg font-semibold text-psu">{totalPrinted.toLocaleString()}</div>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded p-2">
+                <div className="text-xs text-slate-500">Digital/eBook (eBooks, online journals, repository)</div>
+                <div className="text-lg font-semibold text-psu">{totalDigital.toLocaleString()}</div>
+              </div>
+            </div>
+
             {/* Per-type breakdown */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
               {RESOURCE_TYPES.map((rt) => (
@@ -274,6 +303,8 @@ export default function ProcurementTab() {
                     <th className="py-1 pr-2 w-24">Code</th>
                     <th className="py-1 pr-2">Subject</th>
                     <th className="py-1 px-2 text-right" title="All titles regardless of year">Total Titles</th>
+                    <th className="py-1 px-2 text-right" title="Printed books and journals">Printed</th>
+                    <th className="py-1 px-2 text-right" title="eBooks, online journals, and institutional repository items">Digital/eBook</th>
                     <th className="py-1 px-2 text-right" title={`Titles published ${cutoffYear} or later`}>
                       Recent ({cutoffYear}+)
                     </th>
@@ -285,6 +316,7 @@ export default function ProcurementTab() {
                 <tbody>
                   {grp.rows.map((r) => {
                     const status = statusOf(r);
+                    const { printed, digital } = mediumBreakdown(r.counts);
                     return (
                     <tr key={r.subject_id} className={
                       "border-b border-slate-100 " + (
@@ -296,6 +328,8 @@ export default function ProcurementTab() {
                       <td className="py-1.5 pr-2 text-slate-500">{r.course_code}</td>
                       <td className="py-1.5 pr-2">{r.course_title}</td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.total_titles}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{printed}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{digital}</td>
                       <td className="py-1.5 px-2 text-right font-semibold tabular-nums">{r.recent_titles}</td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{ACCREDITATION_MIN}</td>
                       <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.gap > 0 ? "text-red-600" : "text-green-600")}>

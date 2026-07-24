@@ -323,7 +323,16 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="4. Printed Books"
+        title="4. Institutional Repository"
+        hint="Theses, capstones, and faculty research hosted in the university's own repository. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
+        endpoint="/api/upload/institutional_repository"
+        templates={[
+          { label: "institutional_repository_template.xlsx", href: "/templates/institutional_repository_template.xlsx" },
+          { label: "institutional_repository_template.csv",  href: "/templates/institutional_repository_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="5. Printed Books"
         hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/book_printed"
         templates={[
@@ -335,7 +344,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="5. Printed Journals"
+        title="6. Printed Journals"
         hint="Print journal subscriptions. Campus-specific. Per-row Campus column wins over the dropdown. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/journal_printed"
         templates={[
@@ -347,7 +356,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="6. Subscribed Online Journals"
+        title="7. Subscribed Online Journals"
         hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
         endpoint="/api/upload/journal_online_paid"
         templates={[
@@ -356,7 +365,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="7. Open Source Online Journals"
+        title="8. Open Source Online Journals"
         hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
         endpoint="/api/upload/journal_online_open"
         templates={[
