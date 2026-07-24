@@ -5,6 +5,7 @@ import type { ResourceTypeId } from "@/lib/resources";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 
 const ACCREDITATION_MIN = 5;
 const PARTIAL_MIN = 3;
@@ -28,6 +29,7 @@ export default function ProcurementTab() {
   const [rows, setRows] = useState<ProcurementRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showHeatmap, setShowHeatmap] = useState(false);
 
   const cutoffYear = new Date().getFullYear() - RECENCY_YEARS;
   const campuses = useCampuses();
@@ -203,6 +205,27 @@ export default function ProcurementTab() {
               ))}
             </div>
           </>
+        )}
+      </div>
+
+      {/* Compliance heatmap across campuses */}
+      <div className="card">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-psu font-semibold">Compliance Heatmap — Programs Across Campuses</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Compare the same program's compliance across every campus that offers it — useful for
+              spotting which branch of a shared program needs procurement attention.
+            </p>
+          </div>
+          <button className="btn-outline text-xs whitespace-nowrap" onClick={() => setShowHeatmap((v) => !v)}>
+            {showHeatmap ? "Hide" : "Show"} heatmap
+          </button>
+        </div>
+        {showHeatmap && (
+          <div className="mt-3">
+            <ProcurementHeatmap />
+          </div>
         )}
       </div>
 
