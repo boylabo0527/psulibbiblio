@@ -1,4 +1,4 @@
-import { scoreCandidates, subjectText, subjectQueryTerms, titleText } from "@/lib/matcher";
+import { scoreCandidates, subjectText, subjectQueryTerms, subjectMustQuery, titleText } from "@/lib/matcher";
 import type { Candidate } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
@@ -139,6 +139,7 @@ export async function POST(req: Request) {
         if (!terms.length) return { subject, candidates: [] as Candidate[] };
         const { data, error } = await db.rpc("match_titles_candidates", {
           query_text: terms.join(" | "),
+          must_text: subjectMustQuery(subject),
           limit_n: CANDIDATE_LIMIT,
         });
         if (error) throw new Error(error.message);

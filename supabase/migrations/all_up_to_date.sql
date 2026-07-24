@@ -98,7 +98,7 @@ alter table titles add column if not exists search_vector tsvector
 
 create index if not exists titles_search_idx on titles using gin (search_vector);
 
-create or replace function match_titles_candidates(query_text text, limit_n int)
+create or replace function match_titles_candidates(query_text text, must_text text, limit_n int)
 returns table (
   id bigint,
   format text,
@@ -112,18 +112,33 @@ returns table (
 )
 language sql stable
 as $$
-  select sub.id, sub.format, sub.title, sub.author, sub.publisher, sub.year, sub.subjects,
-         sub.embedding, ts_rank_cd(sub.search_vector, to_tsquery('english', query_text)) as lexical_rank
-  from (
-    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
-           t.embedding, t.search_vector
+  with must_matches as (
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
+           ts_rank_cd(t.search_vector, to_tsquery('english', must_text)) as lexical_rank
+    from titles t
+    where must_text is not null and must_text <> ''
+      and t.search_vector @@ to_tsquery('english', must_text)
+    limit 20000
+  ),
+  broad_matches as (
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
+           ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
     from titles t
     where t.search_vector @@ to_tsquery('english', query_text)
-    limit greatest(limit_n * 20, 3000)
-  ) sub
+    limit greatest(limit_n * 20, 6000)
+  ),
+  deduped as (
+    select distinct on (id) id, format, title, author, publisher, year, subjects, embedding, lexical_rank
+    from (select * from must_matches union all select * from broad_matches) combined
+    order by id, lexical_rank desc
+  )
+  select id, format, title, author, publisher, year, subjects, embedding, lexical_rank
+  from deduped
   order by lexical_rank desc
   limit limit_n;
 $$;
+
+drop function if exists match_titles_candidates(text, int);
 
 -- ---------------------------------------------------------------------------
 -- 09: institutional_repository title format

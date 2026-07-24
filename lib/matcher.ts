@@ -82,6 +82,29 @@ export function subjectQueryTerms(s: SubjectRow): string[] {
   return [...titleTerms, ...pickedDesc];
 }
 
+// Only the "core" part of the course title -- text before any parenthetical
+// qualifier/alternate name (e.g. "Constitutional Law I (Political Law)"
+// -> "Constitutional Law I") -- and only its first few significant words.
+// The course code is deliberately excluded: it's an administrative label
+// ("JD301"), never something a book's own title/author text would contain,
+// so ANDing it in would make the phrase impossible to satisfy.
+const MUST_QUERY_WORDS = 3;
+
+/** AND-of-terms built from just the course title's core words (e.g.
+ *  "constitutional & law"), passed as match_titles_candidates' must_text.
+ *  Unlike the broad OR query, this is deliberately selective -- a title
+ *  matching it is guaranteed to be ranked rather than risking being
+ *  dropped by the broad query's row cap on a catalog with 500k+ titles.
+ *  Concretely: a subject titled "Constitutional Law I (Political Law)"
+ *  produces "constitutional & law", not "constitutional & law & political
+ *  & jd301" -- the latter would fail to match a book titled plainly
+ *  "Constitutional law", since it mentions neither "political" nor the
+ *  course code anywhere in its own text. */
+export function subjectMustQuery(s: SubjectRow): string {
+  const core = (s.course_title ?? "").split("(")[0];
+  return unigrams(core).slice(0, MUST_QUERY_WORDS).join(" & ");
+}
+
 export type Candidate = TitleRow & { id: number; embedding: number[] | null; lexical_rank: number };
 
 export type ScoreOptions = {

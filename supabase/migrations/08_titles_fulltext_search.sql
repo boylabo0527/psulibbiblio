@@ -44,21 +44,27 @@ create index if not exists titles_search_idx on titles using gin (search_vector)
 -- ---------------------------------------------------------------------------
 -- Step 3: candidate-retrieval function (run alone)
 -- ---------------------------------------------------------------------------
--- Returns up to `limit_n` titles matching the OR-of-terms `query_text`
--- (e.g. "biology | genetics | ecology"), ranked by text-search relevance,
--- across every title format (ebooks, printed books, journals -- no format
--- filter here).
+-- Returns up to `limit_n` titles, combining two searches:
+--   - must_text: an AND-of-terms phrase built from the subject's course
+--     title/code (e.g. "constitutional & law"). This is deliberately
+--     selective, so it's never subject to the row cap below -- every
+--     matching row gets ranked. This is what guarantees a book whose own
+--     title literally is the subject's topic (e.g. "Constitutional law")
+--     is never lost, however common a catalog of 500k+ titles makes it.
+--   - query_text: the broader OR-of-terms query (e.g. "biology | genetics
+--     | ecology") for recall beyond an exact title-phrase match.
 --
--- The inner subquery's LIMIT (with no ORDER BY) is what keeps this fast:
--- ts_rank_cd() has to be computed for every row that matches the tsquery
--- before Postgres can sort and return the top N, and for a broad subject
--- whose keywords are common words, that match set can be a huge share of
--- a 500k+ row table -- easily enough to blow through a statement timeout
--- on its own. Capping how many matching rows even get ranked bounds the
--- cost of one subject's query regardless of catalog size or how common
--- its terms are, at the cost of only ranking within that first batch
--- rather than the true full match set.
-create or replace function match_titles_candidates(query_text text, limit_n int)
+-- The broad side's inner LIMIT (with no ORDER BY) is what keeps IT fast:
+-- ts_rank_cd() has to be computed for every row matching the tsquery
+-- before Postgres can sort and return the top N, and for a subject whose
+-- keywords include common words, that match set can be a huge share of a
+-- 500k+ row table -- easily enough to blow through a statement timeout on
+-- its own, AND (before the must_text split) risked silently dropping a
+-- genuinely relevant title if it didn't happen to land in that first
+-- unordered batch. Splitting the query this way means that risk now only
+-- applies to the supplementary broad matches, not to an exact title-phrase
+-- hit.
+create or replace function match_titles_candidates(query_text text, must_text text, limit_n int)
 returns table (
   id bigint,
   format text,
@@ -72,15 +78,34 @@ returns table (
 )
 language sql stable
 as $$
-  select sub.id, sub.format, sub.title, sub.author, sub.publisher, sub.year, sub.subjects,
-         sub.embedding, ts_rank_cd(sub.search_vector, to_tsquery('english', query_text)) as lexical_rank
-  from (
-    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
-           t.embedding, t.search_vector
+  must_matches as (
+    -- must_text is an AND of a handful of course-title words, so this is
+    -- normally small (rarely more than a few dozen rows) -- but a subject
+    -- titled with just one very common word (e.g. "Statistics") could still
+    -- match thousands, so this keeps a generous but real cap as a backstop.
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
+           ts_rank_cd(t.search_vector, to_tsquery('english', must_text)) as lexical_rank
+    from titles t
+    where must_text is not null and must_text <> ''
+      and t.search_vector @@ to_tsquery('english', must_text)
+    limit 20000
+  ),
+  broad_matches as (
+    select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects, t.embedding,
+           ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
     from titles t
     where t.search_vector @@ to_tsquery('english', query_text)
-    limit greatest(limit_n * 20, 3000)
-  ) sub
+    limit greatest(limit_n * 20, 6000)
+  ),
+  deduped as (
+    select distinct on (id) id, format, title, author, publisher, year, subjects, embedding, lexical_rank
+    from (select * from must_matches union all select * from broad_matches) combined
+    order by id, lexical_rank desc
+  )
+  select id, format, title, author, publisher, year, subjects, embedding, lexical_rank
+  from deduped
   order by lexical_rank desc
   limit limit_n;
 $$;
+
+drop function if exists match_titles_candidates(text, int);
