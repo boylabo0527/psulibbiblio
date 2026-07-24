@@ -78,7 +78,7 @@ returns table (
 )
 language sql stable
 as $$
-  must_matches as (
+  with must_matches as (
     -- must_text is an AND of a handful of course-title words, so this is
     -- normally small (rarely more than a few dozen rows) -- but a subject
     -- titled with just one very common word (e.g. "Statistics") could still
