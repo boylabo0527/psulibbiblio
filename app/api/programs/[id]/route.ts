@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Program name is required." }, { status: 400 });
     }
     const db = serviceClient();
+    const { data: before } = await db.from("programs").select("name").eq("id", id).maybeSingle();
     const { data, error } = await db.from("programs").update({ name }).eq("id", id).select("id, name").single();
     if (error) {
       if (error.code === "23505") {
@@ -24,6 +26,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
       throw error;
     }
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "program_rename",
+      summary: `Renamed program "${before?.name ?? "?"}" to "${name}"`,
+      detail: { program_id: id, old_name: before?.name ?? null, new_name: name },
+    });
     return NextResponse.json({ program: data });
   } catch (err) {
     return NextResponse.json(
@@ -55,8 +62,14 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       );
     }
 
+    const { data: before } = await db.from("programs").select("name").eq("id", id).maybeSingle();
     const { error } = await db.from("programs").delete().eq("id", id);
     if (error) throw error;
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "program_delete",
+      summary: `Deleted program "${before?.name ?? "?"}"`,
+      detail: { program_id: id, name: before?.name ?? null },
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

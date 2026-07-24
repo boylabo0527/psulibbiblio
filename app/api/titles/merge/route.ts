@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { mergeTitles, type MergeableTitle } from "@/lib/merge-titles";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,11 @@ export async function POST(req: Request) {
     }
 
     const merged = await mergeTitles(db, a, b);
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "title_merge",
+      summary: `Combined title "${a.title}" into "${b.title}"`,
+      detail: { source_id: sourceId, target_id: targetId },
+    });
     return NextResponse.json({ title: merged });
   } catch (err) {
     return NextResponse.json(

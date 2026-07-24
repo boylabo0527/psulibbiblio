@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const db = serviceClient();
     const { data, error } = await db.from("subjects").update(patch).eq("id", id).select().single();
     if (error) throw error;
+
+    const userEmail = userEmailFromRequest(req);
+    if ("locked" in patch) {
+      await logActivity(db, {
+        userEmail, action: patch.locked ? "subject_lock" : "subject_unlock",
+        summary: `${patch.locked ? "Locked" : "Unlocked"} course "${data.course_code || data.course_title}"${patch.locked ? " — Match runs will skip it" : ""}`,
+        detail: { subject_id: id },
+      });
+    } else {
+      await logActivity(db, {
+        userEmail, action: "subject_edit",
+        summary: `Edited course "${data.course_code || data.course_title}" (${Object.keys(patch).join(", ")})`,
+        detail: { subject_id: id, fields: Object.keys(patch) },
+      });
+    }
     return NextResponse.json({ subject: data });
   } catch (err) {
     return NextResponse.json(

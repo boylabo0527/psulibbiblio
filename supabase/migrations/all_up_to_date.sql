@@ -5,8 +5,9 @@
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
 -- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
--- 09_institutional_repository.sql + 10_subject_lock.sql in order. If you've
--- already run some of those individually, running this on top is still safe.
+-- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql
+-- in order. If you've already run some of those individually, running this
+-- on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -141,3 +142,27 @@ alter table titles add constraint titles_format_check check (format in (
 -- 10: per-subject lock, so a curated title list survives future Match runs
 -- ---------------------------------------------------------------------------
 alter table subjects add column if not exists locked boolean not null default false;
+
+-- ---------------------------------------------------------------------------
+-- 11: activity log + upload-batch tracking for revert
+-- ---------------------------------------------------------------------------
+alter table titles   add column if not exists batch_id uuid;
+alter table subjects add column if not exists batch_id uuid;
+create index if not exists titles_batch_idx   on titles (batch_id);
+create index if not exists subjects_batch_idx on subjects (batch_id);
+
+create table if not exists activity_log (
+  id          bigserial primary key,
+  created_at  timestamptz default now(),
+  user_email  text default '',
+  action      text not null,
+  summary     text not null,
+  detail      jsonb default '{}'::jsonb,
+  batch_id    uuid,
+  revertible  boolean default false,
+  reverted_at timestamptz
+);
+create index if not exists activity_log_created_idx on activity_log (created_at desc);
+create index if not exists activity_log_batch_idx   on activity_log (batch_id);
+
+alter table activity_log enable row level security;

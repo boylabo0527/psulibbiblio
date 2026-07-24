@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,9 @@ export async function POST(req: Request) {
     }
     const db = serviceClient();
 
+    const { data: srcSubj } = await db.from("subjects").select("course_code, course_title").eq("id", sourceId as number).maybeSingle();
+    const { data: tgtSubj } = await db.from("subjects").select("course_code, course_title").eq("id", targetId as number).maybeSingle();
+
     const { data: assigns, error: assignErr } = await db.from("assignments")
       .select("id").eq("subject_id", sourceId as number);
     if (assignErr) throw assignErr;
@@ -38,6 +42,11 @@ export async function POST(req: Request) {
     const { error: delErr } = await db.from("subjects").delete().eq("id", sourceId as number);
     if (delErr) throw delErr;
 
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "subject_merge",
+      summary: `Merged course "${srcSubj?.course_code || srcSubj?.course_title || "?"}" into "${tgtSubj?.course_code || tgtSubj?.course_title || "?"}" (${moved} assignment${moved === 1 ? "" : "s"} moved)`,
+      detail: { source_id: sourceId, target_id: targetId, moved },
+    });
     return NextResponse.json({ ok: true, moved });
   } catch (err) {
     return NextResponse.json(

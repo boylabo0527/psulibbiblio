@@ -3,6 +3,8 @@ import { ndjsonStream } from "@/lib/streaming";
 import { RESOURCE_BY_ID, isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
 import type { TitleRow } from "@/lib/types";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,35 +33,39 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     campusInput = ((form.get("campus") as string | null) ?? "").trim();
   }
 
-  const stream = ndjsonStream(async (send) => {
-    if (!isResourceTypeId(params.type)) {
-      throw new Error(`Unknown resource type: ${params.type}`);
-    }
-    const rt = RESOURCE_BY_ID[params.type];
-    if (!file) throw new Error("Missing file");
-    const defaultCampus = rt.campusScoped ? campusInput : "";
-    send({ phase: "parsing" });
+  const userEmail = userEmailFromRequest(req);
+  const batchId = randomUUID();
 
-    let records: TitleRow[];
-    if (preRows) {
-      // Client already parsed the spreadsheet; just apply column aliases.
-      records = buildTitleRowsFromRaw(file.name, preRows, rt);
-    } else {
-      const buf = Buffer.from(await (file as File).arrayBuffer());
-      if (rt.kind === "journal") {
-        records = await parseJournals(file.name, buf);
-      } else if (rt.medium === "print") {
-        records = await parsePrintedBooks(file.name, buf);
-      } else {
-        records = await parseEbookTitles(file.name, buf);
-      }
-    }
-    send({ phase: "parsed", total: records.length });
-    if (!records.length) {
-      send({ phase: "done", received: 0, inserted: 0, skipped: 0 });
-      return;
-    }
+  const stream = ndjsonStream(async (send) => {
     const db = serviceClient();
+    try {
+      if (!isResourceTypeId(params.type)) {
+        throw new Error(`Unknown resource type: ${params.type}`);
+      }
+      const rt = RESOURCE_BY_ID[params.type];
+      if (!file) throw new Error("Missing file");
+      const defaultCampus = rt.campusScoped ? campusInput : "";
+      send({ phase: "parsing" });
+
+      let records: TitleRow[];
+      if (preRows) {
+        // Client already parsed the spreadsheet; just apply column aliases.
+        records = buildTitleRowsFromRaw(file.name, preRows, rt);
+      } else {
+        const buf = Buffer.from(await (file as File).arrayBuffer());
+        if (rt.kind === "journal") {
+          records = await parseJournals(file.name, buf);
+        } else if (rt.medium === "print") {
+          records = await parsePrintedBooks(file.name, buf);
+        } else {
+          records = await parseEbookTitles(file.name, buf);
+        }
+      }
+      send({ phase: "parsed", total: records.length });
+      if (!records.length) {
+        send({ phase: "done", received: 0, inserted: 0, skipped: 0 });
+        return;
+      }
 
     const rowCampus = (r: TitleRow): string => {
       if (!rt.campusScoped) return "";
@@ -185,6 +191,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
             subjects: row.subjects ?? "",
             campus: c,
             barcodes: Array.from(barcodes),
+            batch_id: batchId,
           };
           toInsert.push(row2);
         }
@@ -214,6 +221,12 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       }
 
       send({ phase: "done", received: records.length, inserted, skipped: updated, duplicates });
+      await logActivity(db, {
+        userEmail, action: "upload_titles",
+        summary: `Uploaded ${rt.uiLabel}: ${inserted} new, ${updated} updated, ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped`,
+        detail: { format: rt.id, received: records.length, inserted, updated, duplicates },
+        batchId, revertible: inserted > 0,
+      });
       return;
     }
 
@@ -359,6 +372,7 @@ export async function POST(req: Request, { params }: { params: { type: string } 
           copies: r.copies ?? 1,
           url: r.url ?? "",
           subjects: r.subjects ?? "",
+          batch_id: batchId,
         };
         if (rt.campusScoped) row.campus = c;
         toInsert.push(row);
@@ -371,6 +385,20 @@ export async function POST(req: Request, { params }: { params: { type: string } 
       send({ phase: "inserting", inserted, skipped, total: records.length });
     }
     send({ phase: "done", received: records.length, inserted, skipped });
+    await logActivity(db, {
+      userEmail, action: "upload_titles",
+      summary: `Uploaded ${rt.uiLabel}: ${inserted} new, ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped`,
+      detail: { format: rt.id, received: records.length, inserted, skipped },
+      batchId, revertible: inserted > 0,
+    });
+    } catch (err) {
+      await logActivity(db, {
+        userEmail, action: "upload_titles",
+        summary: `Upload FAILED for ${params.type}: ${err instanceof Error ? err.message : String(err)}`,
+        detail: { type: params.type, error: err instanceof Error ? err.message : String(err) },
+      });
+      throw err;
+    }
   });
 
   return new Response(stream, {

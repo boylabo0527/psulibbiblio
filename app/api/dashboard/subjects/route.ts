@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
 import { yearInRange } from "@/lib/years";
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,11 @@ export type SubjectSummaryRow = {
   counts: Record<ResourceTypeId, number>;
   total_titles: number;
   total_volumes: number;
+  recent_titles: number;
+  recent_year_cutoff: number;
+  gap: number;
+  compliant: boolean;
+  partial: boolean;
 };
 
 export async function GET(req: Request) {
@@ -29,6 +35,7 @@ export async function GET(req: Request) {
     const minYear = Number.isFinite(minYearParam) ? minYearParam : undefined;
     const maxYear = Number.isFinite(maxYearParam) ? maxYearParam : undefined;
     const db = serviceClient();
+    const yearCutoff = new Date().getFullYear() - RECENCY_YEARS;
 
     // Subjects (optionally filtered by program).
     type SubjectRec = { id: number; program_id: number; course_code: string; course_title: string; sort_order: number };
@@ -70,6 +77,7 @@ export async function GET(req: Request) {
     // Aggregate per subject.
     const countMap = new Map<number, Record<string, number>>();
     const volumeMap = new Map<number, number>();
+    const recentCountMap = new Map<number, number>();
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
@@ -85,15 +93,27 @@ export async function GET(req: Request) {
 
       const vol = isCampusScoped ? Math.max(1, t.copies ?? 1) : 1;
       volumeMap.set(sid, (volumeMap.get(sid) ?? 0) + vol);
+
+      const titleYear = parseInt(t.year ?? "", 10);
+      if (!isNaN(titleYear) && titleYear >= yearCutoff) {
+        recentCountMap.set(sid, (recentCountMap.get(sid) ?? 0) + 1);
+      }
     }
 
     const rows: SubjectSummaryRow[] = subjects.map((s) => {
       const counts = (countMap.get(s.id) ?? {}) as Record<ResourceTypeId, number>;
       const total_titles = Object.values(counts).reduce((a, b) => a + b, 0);
       const total_volumes = volumeMap.get(s.id) ?? total_titles;
+      const recent_titles = recentCountMap.get(s.id) ?? 0;
+      const compliant = recent_titles >= ACCREDITATION_MIN;
       return {
         subject_id: s.id,
         program_id: s.program_id,
+        recent_titles,
+        recent_year_cutoff: yearCutoff,
+        gap: Math.max(0, ACCREDITATION_MIN - recent_titles),
+        compliant,
+        partial: !compliant && recent_titles >= PARTIAL_MIN,
         program: programMap.get(s.program_id) ?? "",
         course_code: s.course_code,
         course_title: s.course_title,

@@ -5,6 +5,7 @@ import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import { ndjsonStream } from "@/lib/streaming";
 import { pageThroughParallel } from "@/lib/paging";
 import type { SubjectRow } from "@/lib/types";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,6 +64,7 @@ export async function POST(req: Request) {
   const topK = parseInt(url.searchParams.get("top_k") ?? "10", 10);
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
+  const userEmail = userEmailFromRequest(req);
 
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
@@ -220,6 +222,11 @@ export async function POST(req: Request) {
       titles: titleCount ?? 0,
       semantic_used: semanticUsed,
       locked_skipped: lockedSkipped,
+    });
+    await logActivity(db, {
+      userEmail, action: "match_run",
+      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${lockedSkipped ? `, ${lockedSkipped} locked subject${lockedSkipped === 1 ? "" : "s"} skipped` : ""}`,
+      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, locked_skipped: lockedSkipped, semantic_used: semanticUsed },
     });
   });
 

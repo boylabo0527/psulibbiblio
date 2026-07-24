@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,11 @@ export async function POST(req: Request) {
       sort_order: nextOrder,
     }).select().single();
     if (error) throw error;
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "subject_create",
+      summary: `Added course "${courseCode || courseTitle}" manually`,
+      detail: { subject_id: data.id, program_id: programId, course_code: courseCode, course_title: courseTitle },
+    });
     return NextResponse.json({ subject: data });
   } catch (err) {
     return NextResponse.json(

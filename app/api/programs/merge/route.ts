@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "source_id and target_id must differ" }, { status: 400 });
     }
     const db = serviceClient();
+
+    const { data: srcProg } = await db.from("programs").select("name").eq("id", sourceId as number).maybeSingle();
+    const { data: tgtProg } = await db.from("programs").select("name").eq("id", targetId as number).maybeSingle();
 
     type Subj = { id: number; course_code: string; course_title: string };
     const { data: sourceSubjects, error: srcErr } = await db.from("subjects")
@@ -69,6 +73,11 @@ export async function POST(req: Request) {
     const { error: delProgErr } = await db.from("programs").delete().eq("id", sourceId as number);
     if (delProgErr) throw delProgErr;
 
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "program_merge",
+      summary: `Merged program "${srcProg?.name ?? "?"}" into "${tgtProg?.name ?? "?"}" (${moved} subject${moved === 1 ? "" : "s"} moved, ${merged} combined)`,
+      detail: { source_id: sourceId, target_id: targetId, moved, merged },
+    });
     return NextResponse.json({ ok: true, moved, merged });
   } catch (err) {
     return NextResponse.json(
