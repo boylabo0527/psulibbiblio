@@ -1,8 +1,37 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
+import { isSpreadsheet, parseSheetRows } from "@/lib/parse-client";
 import type { SupplierNeedRow } from "@/app/api/supplier/needs/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
+
+const UPLOAD_ALIASES: Record<string, string[]> = {
+  course_code: ["code", "course code", "course_code"],
+  title: ["offer title", "title"],
+  author: ["offer author", "author"],
+  format: ["offer format", "format"],
+  price: ["price", "price (₱)", "price (php)"],
+  notes: ["notes"],
+};
+
+function normHeader(s: string) {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function mapUploadRow(row: Record<string, string>): { course_code: string; title: string; author: string; format: string; price: string; notes: string } {
+  const normed = new Map(Object.keys(row).map((k) => [normHeader(k), k]));
+  const get = (canonical: string) => {
+    for (const alt of UPLOAD_ALIASES[canonical]) {
+      const actual = normed.get(alt);
+      if (actual) return row[actual] ?? "";
+    }
+    return "";
+  };
+  return {
+    course_code: get("course_code"), title: get("title"), author: get("author"),
+    format: get("format"), price: get("price"), notes: get("notes"),
+  };
+}
 
 const STATUS_LABEL: Record<string, string> = { pending: "Pending", accepted: "Accepted", declined: "Declined" };
 const STATUS_COLOR: Record<string, string> = {
@@ -17,6 +46,9 @@ export default function SupplierViewTab() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [offerFor, setOfferFor] = useState<SupplierNeedRow | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{ inserted: number; problems: { line: number; course_code: string; reason: string }[] } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   function load() {
     setLoading(true);
@@ -37,11 +69,15 @@ export default function SupplierViewTab() {
 
   useEffect(load, []);
 
+  // The export doubles as the bulk-upload template: a supplier downloads
+  // this, fills in Offer Title/Author/Format/Price/Notes on whichever rows
+  // they can supply -- adding extra rows with the same Code to offer more
+  // than one title for a single need -- and uploads it back below.
   function exportCsv() {
-    const headers = ["Program", "Code", "Subject", "Have (Printed)", "Have (Digital)", "Titles Needed"];
+    const headers = ["Program", "Code", "Subject", "Have (Printed)", "Have (Digital)", "Titles Needed", "Offer Title", "Offer Author", "Offer Format", "Price", "Notes"];
     const lines = [headers.join(",")];
     for (const r of rows) {
-      const cells = [r.program, r.course_code, r.course_title, r.current_printed, r.current_digital, r.gap]
+      const cells = [r.program, r.course_code, r.course_title, r.current_printed, r.current_digital, r.gap, "", "", "", "", ""]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`);
       lines.push(cells.join(","));
     }
@@ -53,20 +89,83 @@ export default function SupplierViewTab() {
     URL.revokeObjectURL(a.href);
   }
 
+  async function uploadOffersFile(file: File) {
+    setUploading(true);
+    setErr(null);
+    setUploadResult(null);
+    try {
+      if (!isSpreadsheet(file)) throw new Error("Please upload the .csv or .xlsx file (the same one you downloaded).");
+      const rawRows = await parseSheetRows(file);
+      const mapped = rawRows.map(mapUploadRow).filter((r) => r.course_code.trim() && r.title.trim());
+      if (!mapped.length) {
+        throw new Error("No rows with both a Code and an Offer Title were found. Fill those in on the downloaded template first.");
+      }
+      const res = await apiFetch("/api/supplier/offers/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: mapped }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setUploadResult({ inserted: j.inserted ?? 0, problems: j.problems ?? [] });
+      load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="card">
         <div className="flex items-start justify-between gap-3 mb-1">
           <h2 className="text-psu font-semibold">Titles We Need</h2>
-          <button className="btn-outline text-xs whitespace-nowrap" disabled={!rows.length} onClick={exportCsv}>
-            Download CSV
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <button className="btn-outline text-xs whitespace-nowrap" disabled={!rows.length} onClick={exportCsv}>
+              Download CSV
+            </button>
+            <button
+              className="btn-outline text-xs whitespace-nowrap"
+              disabled={uploading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {uploading ? "Uploading…" : "Upload offers file"}
+            </button>
+            <input
+              ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadOffersFile(f); }}
+            />
+          </div>
         </div>
         <p className="text-sm text-slate-600 mb-4">
           Subjects currently short of the required number of recent titles. Numbers show what&apos;s already in our
           collection (printed / digital) and how many more titles are still needed overall. Click &quot;Offer&quot;
-          to propose a title against a specific need.
+          to propose a title against a specific need, or offer many at once: download the CSV, fill in Offer
+          Title/Author/Format/Price/Notes on whichever rows you can supply (add extra rows with the same Code to
+          offer more than one title for a need), then upload it back with &quot;Upload offers file&quot;.
         </p>
+
+        {uploadResult && (
+          <div className="mb-3 bg-slate-50 border border-slate-200 rounded p-2.5 text-xs">
+            <p className={uploadResult.inserted ? "text-green-700" : "text-slate-600"}>
+              {uploadResult.inserted
+                ? `${uploadResult.inserted} title offer${uploadResult.inserted === 1 ? "" : "s"} submitted from your file.`
+                : "No offers were submitted from that file."}
+            </p>
+            {uploadResult.problems.length > 0 && (
+              <div className="text-amber-700 mt-1">
+                <p>{uploadResult.problems.length} row{uploadResult.problems.length === 1 ? "" : "s"} skipped:</p>
+                <ul className="list-disc ml-4 mt-1">
+                  {uploadResult.problems.map((p, i) => (
+                    <li key={i}>Row {p.line} (code &quot;{p.course_code}&quot;): {p.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
         {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}
