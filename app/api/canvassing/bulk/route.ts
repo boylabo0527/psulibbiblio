@@ -1,16 +1,22 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["canvassing"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to add canvassing records." }, { status: 403 });
+    }
     const { rows, canvass_date } = await req.json();
     if (!Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json({ error: "rows array is required" }, { status: 400 });
     }
-    const db = serviceClient();
     const inserts = rows.map((r: Record<string, unknown>) => ({
       title: String(r.title ?? "").trim(),
       author: String(r.author ?? "").trim() || null,

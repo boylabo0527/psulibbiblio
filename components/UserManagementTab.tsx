@@ -2,11 +2,12 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 
+type Perm = { can_view: boolean; can_edit: boolean };
 type Role = {
   id: number;
   name: string;
   is_admin: boolean;
-  permissions: Record<string, { can_view: boolean; can_edit: boolean }>;
+  permissions: Record<string, Perm>;
 };
 type UserAssignment = { email: string; role_id: number; role_name: string | null; is_admin: boolean; created_at: string };
 
@@ -23,10 +24,27 @@ const TAB_LABELS: Record<string, string> = {
 };
 const TAB_IDS = Object.keys(TAB_LABELS);
 
+// draft[roleId][tabId] -- edited locally; nothing is sent to the server
+// until "Save changes" is clicked.
+type Draft = Record<number, Record<string, Perm>>;
+
+function draftFromRoles(roles: Role[]): Draft {
+  const d: Draft = {};
+  for (const r of roles) {
+    d[r.id] = {};
+    for (const tabId of TAB_IDS) {
+      d[r.id][tabId] = { ...(r.permissions[tabId] ?? { can_view: false, can_edit: false }) };
+    }
+  }
+  return d;
+}
+
 export default function UserManagementTab() {
   const [roles, setRoles] = useState<Role[]>([]);
+  const [draft, setDraft] = useState<Draft>({});
   const [users, setUsers] = useState<UserAssignment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [newRoleName, setNewRoleName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -43,6 +61,7 @@ export default function UserManagementTab() {
       if (rolesRes.error) throw new Error(rolesRes.error);
       if (usersRes.error) throw new Error(usersRes.error);
       setRoles(rolesRes.roles ?? []);
+      setDraft(draftFromRoles(rolesRes.roles ?? []));
       setUsers(usersRes.users ?? []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -55,20 +74,54 @@ export default function UserManagementTab() {
 
   const editableRoles = roles.filter((r) => !r.is_admin);
 
-  async function setPermission(roleId: number, tabId: string, canView: boolean, canEdit: boolean) {
+  function setDraftCell(roleId: number, tabId: string, canView: boolean, canEdit: boolean) {
+    setDraft((prev) => ({
+      ...prev,
+      [roleId]: { ...prev[roleId], [tabId]: { can_view: canView, can_edit: canEdit && canView } },
+    }));
+  }
+
+  const dirty = editableRoles.some((r) =>
+    TAB_IDS.some((tabId) => {
+      const orig = r.permissions[tabId] ?? { can_view: false, can_edit: false };
+      const d = draft[r.id]?.[tabId] ?? { can_view: false, can_edit: false };
+      return orig.can_view !== d.can_view || orig.can_edit !== d.can_edit;
+    }),
+  );
+
+  async function saveChanges() {
+    setSaving(true);
     setErr(null);
     try {
-      const res = await apiFetch("/api/admin/roles", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role_id: roleId, tab_id: tabId, can_view: canView, can_edit: canEdit }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      const changes: { role_id: number; tab_id: string; can_view: boolean; can_edit: boolean }[] = [];
+      for (const r of editableRoles) {
+        for (const tabId of TAB_IDS) {
+          const orig = r.permissions[tabId] ?? { can_view: false, can_edit: false };
+          const d = draft[r.id]?.[tabId] ?? { can_view: false, can_edit: false };
+          if (orig.can_view !== d.can_view || orig.can_edit !== d.can_edit) {
+            changes.push({ role_id: r.id, tab_id: tabId, can_view: d.can_view, can_edit: d.can_edit });
+          }
+        }
+      }
+      for (const c of changes) {
+        const res = await apiFetch("/api/admin/roles", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(c),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      }
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
     }
+  }
+
+  function discardChanges() {
+    setDraft(draftFromRoles(roles));
   }
 
   async function addRole() {
@@ -148,6 +201,7 @@ export default function UserManagementTab() {
             <p className="text-xs text-slate-500 mb-3">
               View lets a role see the tab at all; Edit lets them make changes (upload, save, delete, etc.).
               The Admin role always has full access to everything and isn&apos;t shown here.
+              Changes below aren&apos;t applied until you click <strong>Save changes</strong>.
             </p>
             <div className="overflow-x-auto">
               <table className="text-xs border-collapse">
@@ -167,17 +221,17 @@ export default function UserManagementTab() {
                     <tr key={tabId}>
                       <td className="p-1.5 pr-3 border-b border-slate-100 whitespace-nowrap">{TAB_LABELS[tabId]}</td>
                       {editableRoles.map((r) => {
-                        const p = r.permissions[tabId] ?? { can_view: false, can_edit: false };
+                        const p = draft[r.id]?.[tabId] ?? { can_view: false, can_edit: false };
                         return (
                           <td key={r.id} className="p-1.5 text-center border-b border-slate-100 whitespace-nowrap">
                             <label className="mr-2" title="Can view this tab">
                               <input type="checkbox" checked={p.can_view}
-                                onChange={(e) => setPermission(r.id, tabId, e.target.checked, e.target.checked ? p.can_edit : false)} />
+                                onChange={(e) => setDraftCell(r.id, tabId, e.target.checked, e.target.checked ? p.can_edit : false)} />
                               <span className="ml-0.5 text-slate-500">View</span>
                             </label>
                             <label title="Can make changes in this tab">
                               <input type="checkbox" checked={p.can_edit} disabled={!p.can_view}
-                                onChange={(e) => setPermission(r.id, tabId, p.can_view, e.target.checked)} />
+                                onChange={(e) => setDraftCell(r.id, tabId, p.can_view, e.target.checked)} />
                               <span className="ml-0.5 text-slate-500">Edit</span>
                             </label>
                           </td>
@@ -189,6 +243,15 @@ export default function UserManagementTab() {
               </table>
             </div>
             <div className="flex items-center gap-2 mt-3">
+              <button className="btn text-xs" disabled={!dirty || saving} onClick={saveChanges}>
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+              <button className="btn-outline text-xs" disabled={!dirty || saving} onClick={discardChanges}>
+                Discard changes
+              </button>
+              {dirty && !saving && <span className="text-xs text-amber-700">Unsaved changes</span>}
+            </div>
+            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
               <input className="input text-xs" placeholder="New role name" value={newRoleName}
                 onChange={(e) => setNewRoleName(e.target.value)} />
               <button className="btn-outline text-xs" onClick={addRole}>Add role</button>

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,12 +19,16 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to add campuses." }, { status: 403 });
+    }
     const body = await req.json() as { name?: string };
     const name = (body.name ?? "").trim();
     if (!name) {
       return NextResponse.json({ error: "Campus name is required." }, { status: 400 });
     }
-    const db = serviceClient();
     const { data, error } = await db.from("campuses").insert({ name }).select("id, name").single();
     if (error) {
       if (error.code === "23505") {

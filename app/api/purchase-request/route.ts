@@ -1,11 +1,20 @@
 import { generatePurchaseRequestXlsx } from "@/lib/exports-pr";
 import type { PRData } from "@/lib/exports-pr";
+import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
+    const perms = await getUserPermissions(serviceClient(), userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["purchase-request"]?.can_edit) {
+      return new Response(JSON.stringify({ error: "Your account doesn't have permission to generate purchase requests." }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
     const data: PRData = await req.json();
     const buf = generatePurchaseRequestXlsx(data);
     const filename = `PR_${(data.prNo || "draft").replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;

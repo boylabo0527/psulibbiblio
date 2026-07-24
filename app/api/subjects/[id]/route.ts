@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
-import { getUserPermissions, canEditAny } from "@/lib/permissions";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** PATCH /api/subjects/:id — update editable subject fields.
  *  Allowed fields: course_code, course_title, description, sort_order, locked, cost_per_title.
- *  Different fields come from different tabs' UI, so each is gated
- *  against whichever tab(s) actually send it. */
+ *
+ *  course_code/course_title/description/sort_order are sent from BOTH
+ *  Programs & Export and Campus Validation's UI, so a caller must declare
+ *  which one it's acting as via `_tab` -- checking "does the user have
+ *  edit rights on programs OR campus-validation" would let a role with
+ *  edit rights on the OTHER tab bypass a restriction specifically placed
+ *  on this one, which is exactly the bug this replaced. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
@@ -25,15 +30,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
-    if ("cost_per_title" in patch && !canEditAny(perms, ["procurement"])) {
+    if ("cost_per_title" in patch && !perms.isAdmin && !perms.tabs["procurement"]?.can_edit) {
       return NextResponse.json({ error: "Your account doesn't have permission to set cost estimates." }, { status: 403 });
     }
-    if ("locked" in patch && !canEditAny(perms, ["programs"])) {
+    if ("locked" in patch && !perms.isAdmin && !perms.tabs["programs"]?.can_edit) {
       return NextResponse.json({ error: "Your account doesn't have permission to lock/unlock courses." }, { status: 403 });
     }
     const otherFields = Object.keys(patch).some((k) => !["cost_per_title", "locked"].includes(k));
-    if (otherFields && !canEditAny(perms, ["programs", "campus-validation"])) {
-      return NextResponse.json({ error: "Your account doesn't have permission to edit courses." }, { status: 403 });
+    if (otherFields) {
+      const sourceTab = body["_tab"] === "campus-validation" ? "campus-validation" : "programs";
+      if (!perms.isAdmin && !perms.tabs[sourceTab]?.can_edit) {
+        return NextResponse.json({ error: "Your account doesn't have permission to edit courses." }, { status: 403 });
+      }
     }
 
     const { data, error } = await db.from("subjects").update(patch).eq("id", id).select().single();

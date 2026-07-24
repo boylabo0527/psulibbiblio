@@ -89,7 +89,7 @@ export function subjectQueryTerms(s: SubjectRow): string[] {
 // The course code is deliberately excluded: it's an administrative label
 // ("JD301"), never something a book's own title/author text would contain,
 // so ANDing it in would make the phrase impossible to satisfy.
-const MUST_QUERY_WORDS = 3;
+const MUST_QUERY_WORDS = 6;
 
 /** AND-of-terms built from just the course title's core words (e.g.
  *  "constitutional & law"), passed as match_titles_candidates' must_text.
@@ -110,11 +110,14 @@ export type Candidate = TitleRow & { id: number; embedding: number[] | null; lex
 
 // ts_rank_cd has no length normalization, so it rewards a title matching
 // MORE of the broad query's terms (e.g. one whose subjects/publisher text
-// happens to also mention "philippine", "government", "political", ...)
-// over a sparse, minimally-catalogued classic text whose own title *is*
-// the subject's exact topic phrase but otherwise has little text to match
-// against. A floor for is_must_match candidates keeps that from silently
-// outranking a title that's a literal, guaranteed-relevant match.
+// happens to also mention several generic description words) over a
+// sparse, minimally-catalogued classic text whose own title *is* the
+// subject's exact topic phrase but otherwise has little text to match
+// against. A numeric floor alone isn't a hard guarantee -- a description
+// match with enough overlapping terms could still approach the same
+// range -- so is_must_match candidates are sorted as a strictly higher
+// tier below, not just score-boosted. The floor still applies on top,
+// mainly so the displayed score/explanation reads sensibly.
 const MUST_MATCH_SCORE_FLOOR = 0.8;
 
 export type ScoreOptions = {
@@ -166,7 +169,11 @@ export function scoreCandidates(
       return { c, score, lexicalNorm, semantic };
     })
     .filter((s) => s.score >= minScore)
-    .sort((a, b) => b.score - a.score);
+    // Course-title matches are a strictly higher tier, not just a score
+    // boost -- a title literally matching the subject's name must never
+    // be beaten by a title that merely overlaps with more of the
+    // (necessarily fuzzier) description text.
+    .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
 
   const balanced = opts.topKPrinted != null || opts.topKDigital != null;
   let selected: typeof scored;
@@ -174,7 +181,8 @@ export function scoreCandidates(
     const isPrint = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.medium === "print";
     const printed = scored.filter((s) => isPrint(s.c.format)).slice(0, opts.topKPrinted ?? 0);
     const digital = scored.filter((s) => !isPrint(s.c.format)).slice(0, opts.topKDigital ?? 0);
-    selected = [...printed, ...digital].sort((a, b) => b.score - a.score);
+    selected = [...printed, ...digital]
+      .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
   } else {
     selected = scored.slice(0, topK);
   }

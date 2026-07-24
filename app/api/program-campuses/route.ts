@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,13 +31,17 @@ export async function GET() {
  *  Body: { program_id: number, campus_ids: number[] } */
 export async function PUT(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to change campus offerings." }, { status: 403 });
+    }
     const body = await req.json() as { program_id?: number; campus_ids?: number[] };
     const programId = body.program_id;
     const campusIds = body.campus_ids ?? [];
     if (!Number.isFinite(programId)) {
       return NextResponse.json({ error: "program_id is required" }, { status: 400 });
     }
-    const db = serviceClient();
     const { error: delErr } = await db.from("program_campuses").delete().eq("program_id", programId as number);
     if (delErr) throw delErr;
     if (campusIds.length) {

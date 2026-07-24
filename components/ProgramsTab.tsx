@@ -339,7 +339,7 @@ function SubjectDescription({
       const res = await apiFetch(`/api/subjects/${subject.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: draft }),
+        body: JSON.stringify({ description: draft, _tab: "programs" }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
