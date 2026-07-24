@@ -8,8 +8,12 @@ import type { ProcurementRow } from "@/app/api/procurement/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
-type Program = { id: number; name: string };
+type Program = { id: number; name: string; cost_per_title: number | null };
 type ViewFilter = "all" | "compliant" | "partial" | "needs";
+
+function money(n: number): string {
+  return "₱" + Math.round(n).toLocaleString();
+}
 
 function statusOf(r: ProcurementRow): "compliant" | "partial" | "outdated" | "needs" {
   if (r.compliant) return "compliant";
@@ -56,7 +60,7 @@ export default function ProcurementTab() {
       .catch(() => setProgramId(""));
   }, []);
 
-  useEffect(() => {
+  function loadRows() {
     if (programId === null) return;
     setLoading(true); setErr(null);
     const p = new URLSearchParams();
@@ -67,7 +71,10 @@ export default function ProcurementTab() {
       .then((j) => { if (j.error) setErr(j.error); else setRows(j.rows ?? []); })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [programId, campus]);
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(loadRows, [programId, campus]);
 
   // When "All [campus] programs" is selected, filter rows to programs offered at that campus.
   const validProgramIds = campus && !programId
@@ -104,15 +111,19 @@ export default function ProcurementTab() {
   const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
   const totalDigital = RESOURCE_TYPES.filter((rt) => rt.medium === "digital").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
 
+  const needingProcurement = displayRows.filter((r) => r.gap > 0);
+  const totalEstimatedCost = needingProcurement.reduce((a, r) => a + (r.estimated_cost ?? 0), 0);
+  const missingEstimateCount = needingProcurement.filter((r) => r.cost_per_title == null).length;
+
   async function exportReport(fmt: "xlsx" | "csv") {
     const XLSX = await import("xlsx");
-    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Required", "Gap", "Status"];
+    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Required", "Gap", "Est. Cost/Title", "Est. Cost", "Status"];
     const statusLabel = { compliant: "OK", partial: "Partial", outdated: "Outdated", needs: "Procure" };
     const aoa = [headers, ...filtered.map((r) => {
       const { printed, digital } = mediumBreakdown(r.counts);
       return [
         r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles,
-        ACCREDITATION_MIN, r.gap, statusLabel[statusOf(r)],
+        ACCREDITATION_MIN, r.gap, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
       ];
     })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -167,6 +178,15 @@ export default function ProcurementTab() {
               {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
+          {programId && (
+            <ProgramCostEditor
+              program={programs.find((p) => String(p.id) === programId) ?? null}
+              onSaved={(updated) => {
+                setPrograms((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+                loadRows();
+              }}
+            />
+          )}
         </div>
 
         {/* Summary cards */}
@@ -219,6 +239,16 @@ export default function ProcurementTab() {
                 <div className="text-xs text-slate-500">Digital/eBook (eBooks, online journals, repository)</div>
                 <div className="text-lg font-semibold text-psu">{totalDigital.toLocaleString()}</div>
               </div>
+            </div>
+
+            {/* Estimated procurement cost */}
+            <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-2">
+              <div className="text-xs text-amber-700">Estimated Procurement Cost</div>
+              <div className="text-xl font-semibold text-amber-700">{money(totalEstimatedCost)}</div>
+              <p className="text-[11px] text-amber-700 mt-1">
+                {needingProcurement.length} subject{needingProcurement.length === 1 ? "" : "s"} need title(s).
+                {missingEstimateCount > 0 && ` ${missingEstimateCount} of them have no cost-per-title estimate set yet, so this total is understated — set a program default above or per-subject below.`}
+              </p>
             </div>
 
             {/* Per-type breakdown */}
@@ -307,6 +337,8 @@ export default function ProcurementTab() {
                     </th>
                     <th className="py-1 px-2 text-right">Required</th>
                     <th className="py-1 px-2 text-right">Gap</th>
+                    <th className="py-1 px-2 text-right" title="Overrides the program default for just this subject">Est. Cost/Title</th>
+                    <th className="py-1 px-2 text-right">Est. Cost</th>
                     <th className="py-1 pl-2 text-right">Status</th>
                   </tr>
                 </thead>
@@ -332,6 +364,12 @@ export default function ProcurementTab() {
                       <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.gap > 0 ? "text-red-600" : "text-green-600")}>
                         {r.gap > 0 ? `+${r.gap}` : "—"}
                       </td>
+                      <td className="py-1.5 px-2 text-right">
+                        <SubjectCostInput subjectId={r.subject_id} value={r.cost_per_title} onSaved={loadRows} />
+                      </td>
+                      <td className="py-1.5 px-2 text-right tabular-nums text-slate-600">
+                        {r.estimated_cost != null ? money(r.estimated_cost) : "—"}
+                      </td>
                       <td className="py-1.5 pl-2 text-right">
                         {status === "compliant" ? (
                           <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">OK</span>
@@ -353,5 +391,113 @@ export default function ProcurementTab() {
         ))}
       </div>
     </div>
+  );
+}
+
+/** Edits a program's default cost-per-title estimate (/api/programs/:id).
+ *  Falls back to nothing set (blank) if the program has no estimate yet. */
+function ProgramCostEditor({
+  program, onSaved,
+}: {
+  program: Program | null;
+  onSaved: (updated: Program) => void;
+}) {
+  const [draft, setDraft] = useState(program?.cost_per_title != null ? String(program.cost_per_title) : "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(program?.cost_per_title != null ? String(program.cost_per_title) : "");
+  }, [program?.id, program?.cost_per_title]);
+
+  async function save() {
+    if (!program) return;
+    const value = draft.trim() === "" ? null : Number(draft);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      setErr("Enter a valid non-negative number");
+      return;
+    }
+    if (value === (program.cost_per_title ?? null)) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/programs/${program.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cost_per_title: value }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      onSaved(j.program);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <label className="label">
+      Default cost/title (₱)
+      <input
+        type="number" min={0} step="0.01" className="input ml-1 w-28"
+        placeholder="e.g. 1500"
+        value={draft}
+        disabled={saving}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+      />
+      {err && <span className="text-red-700 text-xs ml-2">{err}</span>}
+    </label>
+  );
+}
+
+/** Overrides the cost-per-title estimate for one subject specifically
+ *  (/api/subjects/:id). `value` is the already-resolved figure (subject's
+ *  own override if set, else the program default), shown as the starting
+ *  point -- saving here always writes an explicit subject-level override. */
+function SubjectCostInput({
+  subjectId, value, onSaved,
+}: {
+  subjectId: number;
+  value: number | null;
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState(value != null ? String(value) : "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(value != null ? String(value) : "");
+  }, [subjectId, value]);
+
+  async function save() {
+    const newValue = draft.trim() === "" ? null : Number(draft);
+    if (newValue !== null && (!Number.isFinite(newValue) || newValue < 0)) return;
+    if (newValue === (value ?? null)) return;
+    setSaving(true);
+    try {
+      const res = await apiFetch(`/api/subjects/${subjectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cost_per_title: newValue }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onSaved();
+    } catch {
+      setDraft(value != null ? String(value) : ""); // revert on failure
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <input
+      type="number" min={0} step="0.01" className="input w-24 text-right text-xs py-0.5"
+      placeholder="—"
+      value={draft}
+      disabled={saving}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={save}
+    />
   );
 }

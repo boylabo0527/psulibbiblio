@@ -5,32 +5,50 @@ import { logActivity, userEmailFromRequest } from "@/lib/activity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** PATCH /api/programs/:id — rename a program. */
+/** PATCH /api/programs/:id — rename a program and/or set its default
+ *  cost-per-title procurement estimate. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad program id" }, { status: 400 });
     }
-    const body = await req.json() as { name?: string };
-    const name = (body.name ?? "").trim();
-    if (!name) {
-      return NextResponse.json({ error: "Program name is required." }, { status: 400 });
+    const body = await req.json() as { name?: string; cost_per_title?: number | null };
+    const patch: Record<string, unknown> = {};
+    let name: string | undefined;
+    if ("name" in body) {
+      name = (body.name ?? "").trim();
+      if (!name) return NextResponse.json({ error: "Program name is required." }, { status: 400 });
+      patch.name = name;
+    }
+    if ("cost_per_title" in body) patch.cost_per_title = body.cost_per_title;
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
     const db = serviceClient();
-    const { data: before } = await db.from("programs").select("name").eq("id", id).maybeSingle();
-    const { data, error } = await db.from("programs").update({ name }).eq("id", id).select("id, name").single();
+    const { data: before } = await db.from("programs").select("name, cost_per_title").eq("id", id).maybeSingle();
+    const { data, error } = await db.from("programs").update(patch).eq("id", id).select("id, name, cost_per_title").single();
     if (error) {
       if (error.code === "23505") {
         return NextResponse.json({ error: `A program named "${name}" already exists.` }, { status: 409 });
       }
       throw error;
     }
-    await logActivity(db, {
-      userEmail: userEmailFromRequest(req), action: "program_rename",
-      summary: `Renamed program "${before?.name ?? "?"}" to "${name}"`,
-      detail: { program_id: id, old_name: before?.name ?? null, new_name: name },
-    });
+    const userEmail = userEmailFromRequest(req);
+    if (name) {
+      await logActivity(db, {
+        userEmail, action: "program_rename",
+        summary: `Renamed program "${before?.name ?? "?"}" to "${name}"`,
+        detail: { program_id: id, old_name: before?.name ?? null, new_name: name },
+      });
+    }
+    if ("cost_per_title" in patch) {
+      await logActivity(db, {
+        userEmail, action: "program_cost_estimate",
+        summary: `Set default cost per title for "${data.name}" to ${patch.cost_per_title ?? "unset"}`,
+        detail: { program_id: id, cost_per_title: patch.cost_per_title },
+      });
+    }
     return NextResponse.json({ program: data });
   } catch (err) {
     return NextResponse.json(

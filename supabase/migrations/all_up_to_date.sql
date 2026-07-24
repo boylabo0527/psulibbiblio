@@ -5,9 +5,9 @@
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
 -- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
--- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql
--- in order. If you've already run some of those individually, running this
--- on top is still safe.
+-- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
+-- 12_procurement_cost_estimate.sql in order. If you've already run some of
+-- those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -166,3 +166,9 @@ create index if not exists activity_log_created_idx on activity_log (created_at 
 create index if not exists activity_log_batch_idx   on activity_log (batch_id);
 
 alter table activity_log enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 12: per-program / per-subject procurement cost-per-title estimates
+-- ---------------------------------------------------------------------------
+alter table programs add column if not exists cost_per_title numeric;
+alter table subjects add column if not exists cost_per_title numeric;

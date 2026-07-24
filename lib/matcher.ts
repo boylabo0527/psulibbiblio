@@ -60,11 +60,26 @@ const MAX_QUERY_TERMS = 12;
 /** Unigram terms for a subject, OR'd together (e.g. "biology | genetics")
  *  to build a Postgres to_tsquery expression -- this is what lets the
  *  database find candidate titles instead of the whole catalog being
- *  pulled into memory. */
+ *  pulled into memory.
+ *
+ *  Course title/code words are always included, however short -- they're
+ *  the subject's authoritative topic label (e.g. "Constitutional Law"),
+ *  so dropping "law" in favor of a longer but generic word pulled from the
+ *  description (like "alternatively" or "evaluation") was silently
+ *  excluding an obviously-relevant title whose own title/author text only
+ *  contained the short, common word. Only the remaining budget is filled
+ *  from the free-text description, longest-first. */
 export function subjectQueryTerms(s: SubjectRow): string[] {
-  const terms = unigrams(subjectText(s));
-  if (terms.length <= MAX_QUERY_TERMS) return terms;
-  return [...terms].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS);
+  const titleTerms = unigrams([s.course_title, s.course_code].filter(Boolean).join(" "));
+  const remaining = MAX_QUERY_TERMS - titleTerms.length;
+  if (remaining <= 0) return titleTerms.slice(0, MAX_QUERY_TERMS);
+
+  const titleSeen = new Set(titleTerms);
+  const descTerms = unigrams(s.description ?? "").filter((t) => !titleSeen.has(t));
+  const pickedDesc = descTerms.length <= remaining
+    ? descTerms
+    : [...descTerms].sort((a, b) => b.length - a.length).slice(0, remaining);
+  return [...titleTerms, ...pickedDesc];
 }
 
 export type Candidate = TitleRow & { id: number; embedding: number[] | null; lexical_rank: number };

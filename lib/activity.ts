@@ -4,7 +4,7 @@ export type ActivityAction =
   | "upload_titles" | "upload_subjects"
   | "match_run"
   | "bulk_delete"
-  | "program_create" | "program_rename" | "program_delete" | "program_merge"
+  | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate"
   | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge"
   | "title_merge"
   | "assignment_add" | "assignment_remove";

@@ -12,6 +12,7 @@ const ACTION_LABEL: Record<string, string> = {
   program_rename: "Program renamed",
   program_delete: "Program deleted",
   program_merge: "Programs merged",
+  program_cost_estimate: "Cost estimate set",
   subject_create: "Course added",
   subject_edit: "Course edited",
   subject_lock: "Course locked",

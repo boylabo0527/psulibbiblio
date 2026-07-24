@@ -5,7 +5,6 @@ import type { ResourceTypeId } from "@/lib/resources";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
-import { ACCREDITATION_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 type Program = { id: number; name: string };
 
@@ -88,11 +87,16 @@ export default function DashboardTab() {
   const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
   const totalDigital = RESOURCE_TYPES.filter((rt) => rt.medium === "digital").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
 
-  const cutoffYear = new Date().getFullYear() - RECENCY_YEARS;
-  const compliantCount = displaySubjects.filter((s) => s.compliant).length;
-  const partialCount = displaySubjects.filter((s) => s.partial).length;
-  const needsCount = summarySubjects - compliantCount - partialCount;
-  const complianceRate = summarySubjects > 0 ? Math.round((compliantCount / summarySubjects) * 100) : 0;
+  /** Splits one subject's per-format counts into printed vs. digital/eBook. */
+  function mediumBreakdown(counts: Record<ResourceTypeId, number>): { printed: number; digital: number } {
+    let printed = 0, digital = 0;
+    for (const rt of RESOURCE_TYPES) {
+      const c = counts[rt.id] ?? 0;
+      if (rt.medium === "print") printed += c;
+      else digital += c;
+    }
+    return { printed, digital };
+  }
 
   async function exportCitations(
     fmt: "citations-docx" | "citations-txt",
@@ -181,38 +185,6 @@ export default function DashboardTab() {
         </div>
       </div>
 
-      {/* Accreditation compliance — same rule as Procurement Analysis */}
-      <div className="card">
-        <h2 className="text-psu font-semibold mb-3">Accreditation Compliance</h2>
-        <p className="text-xs text-slate-500 mb-3">
-          Share of subjects with at least {ACCREDITATION_MIN} titles published within the last {RECENCY_YEARS} years ({cutoffYear}–present).
-        </p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-          <div className="bg-green-50 border border-green-200 rounded p-4">
-            <div className="text-xs text-green-700">Compliant</div>
-            <div className="text-2xl font-semibold text-green-700">{compliantCount}</div>
-          </div>
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-4">
-            <div className="text-xs text-yellow-700">Partial Compliance</div>
-            <div className="text-2xl font-semibold text-yellow-700">{partialCount}</div>
-          </div>
-          <div className="bg-red-50 border border-red-200 rounded p-4">
-            <div className="text-xs text-red-700">Needs Procurement</div>
-            <div className="text-2xl font-semibold text-red-700">{needsCount}</div>
-          </div>
-          <div className="bg-psu-light rounded p-4">
-            <div className="text-xs text-slate-600">Compliance Rate</div>
-            <div className="text-2xl font-semibold text-psu">{complianceRate}%</div>
-          </div>
-        </div>
-        <div className="w-full bg-slate-200 rounded-full h-2">
-          <div className="h-2 rounded-full transition-all" style={{
-            width: `${complianceRate}%`,
-            backgroundColor: complianceRate >= 80 ? "#16a34a" : complianceRate >= 50 ? "#d97706" : "#dc2626",
-          }} />
-        </div>
-      </div>
-
       {/* Filters + per-subject table */}
       <div className="card">
         <h2 className="text-psu font-semibold mb-3">Titles per Subject</h2>
@@ -298,6 +270,8 @@ export default function DashboardTab() {
                         <th className="py-1 pr-2 w-24">Code</th>
                         <th className="py-1 pr-2">Subject</th>
                         <th className="py-1 px-2 text-right">Titles</th>
+                        <th className="py-1 px-2 text-right" title="Printed books and journals">Printed</th>
+                        <th className="py-1 px-2 text-right" title="eBooks, online journals, and institutional repository items">Digital/eBook</th>
                         <th className="py-1 px-2 text-right">Volumes</th>
                         <th className="py-1 pl-2 w-24 text-right">Citation</th>
                       </tr>
@@ -305,11 +279,14 @@ export default function DashboardTab() {
                     <tbody>
                       {grp.rows.map((s) => {
                         const label = [s.course_code, s.course_title].filter(Boolean).join("_");
+                        const { printed, digital } = mediumBreakdown(s.counts);
                         return (
                           <tr key={s.subject_id} className="border-b border-slate-100 hover:bg-slate-50">
                             <td className="py-1.5 pr-2 text-slate-500">{s.course_code}</td>
                             <td className="py-1.5 pr-2">{s.course_title}</td>
                             <td className="py-1.5 px-2 text-right font-semibold tabular-nums">{s.total_titles}</td>
+                            <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{printed}</td>
+                            <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{digital}</td>
                             <td className="py-1.5 px-2 text-right tabular-nums text-slate-600">{s.total_volumes}</td>
                             <td className="py-1.5 pl-2 text-right">
                               <button
