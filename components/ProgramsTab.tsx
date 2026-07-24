@@ -12,7 +12,7 @@ type Title = {
 };
 type Buckets = Record<ResourceTypeId, Title[]>;
 type SubjectDetail = {
-  subject: { id: number; section: string; course_code: string; course_title: string; description: string };
+  subject: { id: number; section: string; course_code: string; course_title: string; description: string; locked?: boolean };
   buckets: Buckets;
 };
 type Bibliography = {
@@ -249,10 +249,11 @@ function SubjectBlock({
   }
 
   return (
-    <div className="mb-5 border-l-4 border-psu-light pl-3">
+    <div className={"mb-5 border-l-4 pl-3 " + (detail.subject.locked ? "border-amber-400" : "border-psu-light")}>
       <div className="flex items-baseline gap-2">
         <span className="font-semibold">{detail.subject.course_code}</span>
         <span className="font-semibold">{detail.subject.course_title}</span>
+        <LockToggle subject={detail.subject} onReload={onReload} />
       </div>
       <SubjectDescription subject={detail.subject} />
       {RESOURCE_TYPES.map((t) => (
@@ -270,6 +271,53 @@ function SubjectBlock({
       </p>
       <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
     </div>
+  );
+}
+
+function LockToggle({
+  subject, onReload,
+}: {
+  subject: { id: number; locked?: boolean };
+  onReload: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const locked = !!subject.locked;
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      const res = await apiFetch(`/api/subjects/${subject.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locked: !locked }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      onReload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      className={
+        "text-[10px] px-1.5 py-0.5 rounded border font-medium " +
+        (locked
+          ? "bg-amber-100 text-amber-700 border-amber-300"
+          : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
+      }
+      disabled={busy}
+      onClick={toggle}
+      title={locked
+        ? "Locked — Run Matching will skip this subject and leave its titles untouched. Click to unlock."
+        : "Lock this subject so Run Matching never changes its title list. Click to lock."}
+    >
+      {locked ? "🔒 Locked" : "🔓 Unlocked"}
+    </button>
   );
 }
 

@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
-
-const ACCREDITATION_MIN = 5;
-const PARTIAL_MIN = 3;
-const RECENCY_YEARS = 5;
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

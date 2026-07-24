@@ -33,6 +33,9 @@ export type SubjectRow = {
   course_title: string;
   description?: string;
   sort_order?: number;
+  /** When true, /api/match/run skips this subject entirely so a curated
+   *  title list is never touched by a future match run. */
+  locked?: boolean;
 };
 
 export type AssignmentRow = {

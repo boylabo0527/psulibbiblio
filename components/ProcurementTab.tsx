@@ -6,10 +6,7 @@ import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
-
-const ACCREDITATION_MIN = 5;
-const PARTIAL_MIN = 3;
-const RECENCY_YEARS = 5;
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 type Program = { id: number; name: string };
 type ViewFilter = "all" | "compliant" | "partial" | "needs";

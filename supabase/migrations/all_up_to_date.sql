@@ -5,8 +5,8 @@
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
 -- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql +
--- 09_institutional_repository.sql in order. If you've already run some of
--- those individually, running this on top is still safe.
+-- 09_institutional_repository.sql + 10_subject_lock.sql in order. If you've
+-- already run some of those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -136,3 +136,8 @@ alter table titles add constraint titles_format_check check (format in (
   'journal_online_paid', 'journal_online_open',
   'institutional_repository'
 ));
+
+-- ---------------------------------------------------------------------------
+-- 10: per-subject lock, so a curated title list survives future Match runs
+-- ---------------------------------------------------------------------------
+alter table subjects add column if not exists locked boolean not null default false;

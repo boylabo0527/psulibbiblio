@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
-
-const ACCREDITATION_MIN = 5;          // minimum unique titles per subject for full compliance
-const PARTIAL_MIN = 3;                // minimum recent titles to count as partial compliance
-const RECENCY_YEARS = 5;              // titles must be published within last N years
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

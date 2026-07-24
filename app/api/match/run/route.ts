@@ -30,7 +30,7 @@ export type MatchProgressEvent =
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
   | { phase: "matching"; done: number; total: number }
-  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean }
+  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number }
   | { phase: "error"; error: string };
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -67,14 +67,23 @@ export async function POST(req: Request) {
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
 
-    const subjects = await fetchAllWithProgress<SubjectRow>(
+    const allSubjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
-      "id, program_id, course_code, course_title, description",
+      "id, program_id, course_code, course_title, description, locked",
       "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    if (!subjects.length) {
+    if (!allSubjects.length) {
       send({ phase: "error", error: "Need at least one subject before matching." });
+      return;
+    }
+    // Locked subjects are skipped entirely -- their assignment list (whatever
+    // mix of manual and auto-matched titles it currently has) is left
+    // untouched by this run.
+    const subjects = allSubjects.filter((s) => !s.locked);
+    const lockedSkipped = allSubjects.length - subjects.length;
+    if (!subjects.length) {
+      send({ phase: "error", error: "All selected subjects are locked. Unlock at least one before running matching." });
       return;
     }
 
@@ -210,6 +219,7 @@ export async function POST(req: Request) {
       subjects: subjects.length,
       titles: titleCount ?? 0,
       semantic_used: semanticUsed,
+      locked_skipped: lockedSkipped,
     });
   });
 

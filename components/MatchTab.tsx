@@ -119,6 +119,9 @@ export default function MatchTab() {
           {progress.phase === "done" && (
             <div className="mt-3 bg-slate-100 rounded p-2 text-xs">
               <p><strong>{progress.matches.toLocaleString()}</strong> matches assigned across <strong>{progress.subjects.toLocaleString()}</strong> subjects and <strong>{progress.titles.toLocaleString()}</strong> titles.</p>
+              {progress.locked_skipped > 0 && (
+                <p className="text-slate-500 mt-1">{progress.locked_skipped.toLocaleString()} locked subject{progress.locked_skipped === 1 ? "" : "s"} skipped — left untouched.</p>
+              )}
               {!progress.semantic_used && (
                 <p className="text-amber-700 mt-1">Semantic matching wasn&apos;t available this run — fell back to keyword matching (BM25) only. Safe to ignore unless this persists.</p>
               )}
