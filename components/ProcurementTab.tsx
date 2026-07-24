@@ -187,6 +187,17 @@ export default function ProcurementTab() {
               }}
             />
           )}
+          {!programId && campus && visiblePrograms.length > 0 && (
+            <BulkCampusCostEditor
+              campus={campus}
+              programs={visiblePrograms}
+              onSaved={(updated) => {
+                const byId = new Map(updated.map((p) => [p.id, p]));
+                setPrograms((prev) => prev.map((p) => byId.get(p.id) ?? p));
+                loadRows();
+              }}
+            />
+          )}
         </div>
 
         {/* Summary cards */}
@@ -447,6 +458,69 @@ function ProgramCostEditor({
         onChange={(e) => setDraft(e.target.value)}
         onBlur={save}
       />
+      {err && <span className="text-red-700 text-xs ml-2">{err}</span>}
+    </label>
+  );
+}
+
+/** Sets the same default cost-per-title across every program offered at one
+ *  campus in one action -- shown instead of ProgramCostEditor when "All
+ *  [campus] programs" is selected, since there's no single program to edit
+ *  but budgeting is still naturally done per campus. PATCHes each visible
+ *  program individually and reports back the updated rows. */
+function BulkCampusCostEditor({
+  campus, programs, onSaved,
+}: {
+  campus: string;
+  programs: Program[];
+  onSaved: (updated: Program[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function apply() {
+    const value = draft.trim() === "" ? null : Number(draft);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      setErr("Enter a valid non-negative number");
+      return;
+    }
+    if (!confirm(`Set the default cost/title to ${value ?? "unset"} for all ${programs.length} programs offered at ${campus}?`)) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const updated = await Promise.all(programs.map(async (p) => {
+        const res = await apiFetch(`/api/programs/${p.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cost_per_title: value }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        return j.program as Program;
+      }));
+      setDraft("");
+      onSaved(updated);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <label className="label">
+      Set cost/title (₱) for all {programs.length} {campus} programs
+      <input
+        type="number" min={0} step="0.01" className="input ml-1 w-28"
+        placeholder="e.g. 1500"
+        value={draft}
+        disabled={saving}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <button className="btn-outline text-xs ml-2" disabled={saving || draft.trim() === ""} onClick={apply}>
+        {saving ? "Applying…" : "Apply to all"}
+      </button>
       {err && <span className="text-red-700 text-xs ml-2">{err}</span>}
     </label>
   );
