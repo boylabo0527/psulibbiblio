@@ -1,9 +1,10 @@
-import { runMatch, subjectText, titleText } from "@/lib/matcher";
+import { scoreCandidates, subjectText, subjectQueryTerms, titleText } from "@/lib/matcher";
+import type { Candidate } from "@/lib/matcher";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import { ndjsonStream } from "@/lib/streaming";
 import { pageThroughParallel } from "@/lib/paging";
-import type { SubjectRow, TitleRow } from "@/lib/types";
+import type { SubjectRow } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,25 +12,37 @@ export const maxDuration = 300;
 
 const EMBED_BATCH = 64;
 const SEMANTIC_WEIGHT = parseFloat(process.env.MATCH_SEMANTIC_WEIGHT ?? "0.5");
+// How many candidate titles Postgres returns per subject (see
+// match_titles_candidates in supabase/migrations/08_titles_fulltext_search.sql).
+// Bounded and independent of total catalog size -- this is what keeps a
+// run's cost from scaling with how many titles have been uploaded overall.
+const CANDIDATE_LIMIT = parseInt(process.env.MATCH_CANDIDATE_LIMIT ?? "300", 10);
+// How many subjects are searched/scored concurrently per batch.
+const SUBJECT_CONCURRENCY = parseInt(process.env.MATCH_SUBJECT_CONCURRENCY ?? "8", 10);
 // The embedding model downloads from the Hugging Face CDN on a cold start,
 // with no built-in timeout on that fetch. If the connection from Vercel's
 // serverless region to the CDN stalls, the run would otherwise hang forever
-// looking frozen instead of falling back to BM25-only matching.
+// looking frozen instead of falling back to lexical-only matching.
 const EMBED_TIMEOUT_MS = parseInt(process.env.MATCH_EMBED_TIMEOUT_MS ?? "150000", 10);
 
 export type MatchProgressEvent =
   | { phase: "fetching"; done: number; total: number; label: string }
   | { phase: "embedding_model" }
   | { phase: "embedding"; done: number; total: number }
-  | { phase: "matching" }
-  | { phase: "saving"; done: number; total: number }
+  | { phase: "matching"; done: number; total: number }
   | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean }
   | { phase: "error"; error: string };
 
-/** Fetches pages concurrently (not one at a time) — for a titles table with
- *  tens of thousands of rows, sequential pages meant total time scaled with
- *  page count x round-trip latency, slow enough to look identical to a
- *  hang. Reports progress as it goes instead of one silent wait. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/** Fetches pages concurrently (not one at a time) -- for a subjects table
+ *  with progress reporting so the UI doesn't look frozen while it loads. */
 async function fetchAllWithProgress<T>(
   db: ReturnType<typeof serviceClient>, table: string, columns: string, label: string,
   send: (e: MatchProgressEvent) => void,
@@ -43,55 +56,6 @@ async function fetchAllWithProgress<T>(
     },
     (done, total) => send({ phase: "fetching", done, total, label }),
   );
-}
-
-/** Compute (or reuse cached) embeddings for subjects and titles. Any failure
- *  here — model unavailable, out of time, whatever — is caught by the
- *  caller, which falls back to BM25-only matching rather than failing the
- *  whole run. */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
-}
-
-async function computeEmbeddings(
-  db: ReturnType<typeof serviceClient>,
-  subjects: SubjectRow[],
-  titles: (TitleRow & { id: number; embedding: number[] | null })[],
-  send: (e: MatchProgressEvent) => void,
-): Promise<{ subjectEmbeddings: Map<number, number[]>; titleEmbeddings: Map<number, number[]> }> {
-  send({ phase: "embedding_model" });
-  const subjectEmbeddings = new Map<number, number[]>();
-  const subjVecs = await embedTexts(subjects.map((s) => subjectText(s)));
-  subjects.forEach((s, i) => subjectEmbeddings.set(s.id!, subjVecs[i]));
-
-  const titleEmbeddings = new Map<number, number[]>();
-  const missing: { id: number; text: string }[] = [];
-  for (const t of titles) {
-    if (Array.isArray(t.embedding) && t.embedding.length > 0) {
-      titleEmbeddings.set(t.id, t.embedding);
-    } else {
-      missing.push({ id: t.id, text: titleText(t) });
-    }
-  }
-
-  send({ phase: "embedding", done: 0, total: missing.length });
-  for (let i = 0; i < missing.length; i += EMBED_BATCH) {
-    const batch = missing.slice(i, i + EMBED_BATCH);
-    const vecs = await embedTexts(batch.map((m) => m.text));
-    const upsertRows = batch.map((m, k) => {
-      titleEmbeddings.set(m.id, vecs[k]);
-      return { id: m.id, embedding: vecs[k] };
-    });
-    const { error } = await db.from("titles").upsert(upsertRows, { onConflict: "id" });
-    if (error) throw error;
-    send({ phase: "embedding", done: Math.min(i + EMBED_BATCH, missing.length), total: missing.length });
-  }
-
-  return { subjectEmbeddings, titleEmbeddings };
 }
 
 export async function POST(req: Request) {
@@ -109,47 +73,36 @@ export async function POST(req: Request) {
       "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    // Only ask for the embedding column when it'll actually be used -- it's a
-    // ~384-number array per row, and pulling it for every title in a large
-    // catalog when embeddings are disabled multiplies the response payload
-    // for no reason.
-    const useEmbeddingsThisRun = embeddingsEnabled();
-    const titleColumns = useEmbeddingsThisRun
-      ? "id, format, title, author, publisher, year, subjects, embedding"
-      : "id, format, title, author, publisher, year, subjects";
-    const titles = await fetchAllWithProgress<TitleRow & { id: number; embedding: number[] | null }>(
-      db, "titles",
-      titleColumns,
-      "titles", send,
-    );
-    if (!subjects.length || !titles.length) {
-      send({ phase: "error", error: "Need at least one subject and one title before matching." });
+    if (!subjects.length) {
+      send({ phase: "error", error: "Need at least one subject before matching." });
       return;
     }
 
+    const { count: titleCount } = await db.from("titles").select("id", { count: "exact", head: true });
+
+    const useEmbeddingsThisRun = embeddingsEnabled();
     let subjectEmbeddings: Map<number, number[]> | undefined;
-    let titleEmbeddings: Map<number, number[]> | undefined;
     let semanticUsed = false;
     if (useEmbeddingsThisRun) {
       try {
-        const computed = await withTimeout(computeEmbeddings(db, subjects, titles, send), EMBED_TIMEOUT_MS, "Embedding");
-        subjectEmbeddings = computed.subjectEmbeddings;
-        titleEmbeddings = computed.titleEmbeddings;
+        subjectEmbeddings = await withTimeout(
+          (async () => {
+            send({ phase: "embedding_model" });
+            const vecs = await embedTexts(subjects.map((s) => subjectText(s)));
+            const m = new Map<number, number[]>();
+            subjects.forEach((s, i) => m.set(s.id!, vecs[i]));
+            return m;
+          })(),
+          EMBED_TIMEOUT_MS,
+          "Embedding",
+        );
         semanticUsed = true;
       } catch (embedErr) {
-        console.error("Embeddings unavailable this run (error or timeout), falling back to BM25-only:", embedErr);
+        console.error("Subject embeddings unavailable this run (error or timeout), falling back to lexical-only:", embedErr);
       }
     }
 
-    send({ phase: "matching" });
-    const results = runMatch(subjects, titles, {
-      topK, minScore,
-      semanticWeight: SEMANTIC_WEIGHT,
-      subjectEmbeddings, titleEmbeddings,
-      cosineSim: semanticUsed ? cosineSim : undefined,
-    });
-
-    // Drop prior auto assignments for these subjects; keep manual rows.
+    // Drop prior auto assignments for these subjects up front; manual rows are kept.
     const subjectIds = subjects.map((s) => s.id!);
     for (let i = 0; i < subjectIds.length; i += 200) {
       const slice = subjectIds.slice(i, i + 200);
@@ -158,28 +111,100 @@ export async function POST(req: Request) {
       if (error) throw error;
     }
 
-    const rows = results.map((r) => ({
-      subject_id: r.subject_id,
-      title_id: r.title_id,
-      score: r.score,
-      rank: r.rank,
-      explanation: r.explanation ?? "",
-      manual: 0,
-    }));
-    send({ phase: "saving", done: 0, total: rows.length });
-    for (let i = 0; i < rows.length; i += 1000) {
-      const slice = rows.slice(i, i + 1000);
-      const { error } = await db.from("assignments")
-        .upsert(slice, { onConflict: "subject_id,title_id", ignoreDuplicates: true });
-      if (error) throw error;
-      send({ phase: "saving", done: Math.min(i + 1000, rows.length), total: rows.length });
+    const titleEmbeddingCache = new Map<number, number[]>();
+    let totalMatches = 0;
+    let done = 0;
+    send({ phase: "matching", done: 0, total: subjects.length });
+
+    for (let i = 0; i < subjects.length; i += SUBJECT_CONCURRENCY) {
+      const batch = subjects.slice(i, i + SUBJECT_CONCURRENCY);
+
+      const batchCandidates = await Promise.all(batch.map(async (subject) => {
+        const terms = subjectQueryTerms(subject);
+        if (!terms.length) return { subject, candidates: [] as Candidate[] };
+        const { data, error } = await db.rpc("match_titles_candidates", {
+          query_text: terms.join(" | "),
+          limit_n: CANDIDATE_LIMIT,
+        });
+        if (error) throw new Error(error.message);
+        return { subject, candidates: (data ?? []) as Candidate[] };
+      }));
+
+      if (useEmbeddingsThisRun) {
+        const missing: { id: number; text: string }[] = [];
+        const queued = new Set<number>();
+        for (const { candidates } of batchCandidates) {
+          for (const c of candidates) {
+            if (titleEmbeddingCache.has(c.id) || queued.has(c.id)) continue;
+            if (Array.isArray(c.embedding) && c.embedding.length > 0) {
+              titleEmbeddingCache.set(c.id, c.embedding);
+            } else {
+              queued.add(c.id);
+              missing.push({ id: c.id, text: titleText(c) });
+            }
+          }
+        }
+        if (missing.length) {
+          try {
+            await withTimeout(
+              (async () => {
+                for (let j = 0; j < missing.length; j += EMBED_BATCH) {
+                  const chunk = missing.slice(j, j + EMBED_BATCH);
+                  const vecs = await embedTexts(chunk.map((m) => m.text));
+                  const upsertRows = chunk.map((m, k) => {
+                    titleEmbeddingCache.set(m.id, vecs[k]);
+                    return { id: m.id, embedding: vecs[k] };
+                  });
+                  const { error } = await db.from("titles").upsert(upsertRows, { onConflict: "id" });
+                  if (error) throw error;
+                }
+              })(),
+              EMBED_TIMEOUT_MS,
+              "Embedding",
+            );
+          } catch (embedErr) {
+            console.error("Title embeddings unavailable this batch (error or timeout), falling back to lexical-only for these candidates:", embedErr);
+          }
+        }
+      }
+
+      const rows: { subject_id: number; title_id: number; score: number; rank: number; explanation: string; manual: number }[] = [];
+      for (const { subject, candidates } of batchCandidates) {
+        const results = scoreCandidates(subject, candidates, {
+          topK, minScore,
+          semanticWeight: SEMANTIC_WEIGHT,
+          subjectEmbedding: subjectEmbeddings?.get(subject.id!),
+          titleEmbeddings: titleEmbeddingCache,
+          cosineSim: semanticUsed ? cosineSim : undefined,
+        });
+        totalMatches += results.length;
+        for (const r of results) {
+          rows.push({
+            subject_id: r.subject_id,
+            title_id: r.title_id,
+            score: r.score!,
+            rank: r.rank!,
+            explanation: r.explanation ?? "",
+            manual: 0,
+          });
+        }
+      }
+
+      if (rows.length) {
+        const { error } = await db.from("assignments")
+          .upsert(rows, { onConflict: "subject_id,title_id", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+
+      done += batch.length;
+      send({ phase: "matching", done, total: subjects.length });
     }
 
     send({
       phase: "done",
-      matches: results.length,
+      matches: totalMatches,
       subjects: subjects.length,
-      titles: titles.length,
+      titles: titleCount ?? 0,
       semantic_used: semanticUsed,
     });
   });

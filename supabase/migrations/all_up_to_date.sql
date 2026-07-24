@@ -4,8 +4,9 @@
 --
 -- Equivalent to running 02_resource_types.sql + 03_title_campus.sql +
 -- 04_curriculum_only_programs.sql + 05_campus_program_management.sql +
--- 06_title_embeddings.sql + 07_title_barcodes.sql in order. If you've
--- already run some of those individually, running this on top is still safe.
+-- 06_title_embeddings.sql + 07_title_barcodes.sql + 08_titles_fulltext_search.sql
+-- in order. If you've already run some of those individually, running this
+-- on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -75,3 +76,40 @@ alter table titles add column if not exists embedding jsonb;
 -- 07: track counted barcodes so repeat catalog uploads don't double-count
 -- ---------------------------------------------------------------------------
 alter table titles add column if not exists barcodes jsonb default '[]'::jsonb;
+
+-- ---------------------------------------------------------------------------
+-- 08: full-text search index for scalable matching (500k+ row catalogs)
+-- ---------------------------------------------------------------------------
+alter table titles add column if not exists search_vector tsvector
+  generated always as (
+    to_tsvector('english',
+      coalesce(title, '') || ' ' ||
+      coalesce(author, '') || ' ' ||
+      coalesce(publisher, '') || ' ' ||
+      coalesce(subjects, '')
+    )
+  ) stored;
+
+create index if not exists titles_search_idx on titles using gin (search_vector);
+
+create or replace function match_titles_candidates(query_text text, limit_n int)
+returns table (
+  id bigint,
+  format text,
+  title text,
+  author text,
+  publisher text,
+  year text,
+  subjects text,
+  embedding jsonb,
+  lexical_rank real
+)
+language sql stable
+as $$
+  select t.id, t.format, t.title, t.author, t.publisher, t.year, t.subjects,
+         t.embedding, ts_rank_cd(t.search_vector, to_tsquery('english', query_text)) as lexical_rank
+  from titles t
+  where t.search_vector @@ to_tsquery('english', query_text)
+  order by lexical_rank desc
+  limit limit_n;
+$$;

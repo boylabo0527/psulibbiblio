@@ -8,9 +8,8 @@ type Program = { id: number; name: string };
 
 const PHASE_LABEL: Record<Exclude<MatchProgressEvent["phase"], "fetching">, string> = {
   embedding_model: "Loading embedding model (first run after a deploy takes longer)…",
-  embedding: "Embedding titles…",
-  matching: "Scoring matches (BM25 + semantic)…",
-  saving: "Saving assignments…",
+  embedding: "Embedding subjects…",
+  matching: "Matching + saving subjects…",
   done: "Done",
   error: "Error",
 };
@@ -61,7 +60,7 @@ export default function MatchTab() {
   }
 
   const pct = progress
-    && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "saving")
+    && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching")
     && progress.total > 0
     ? Math.round((progress.done / progress.total) * 100)
     : null;
@@ -70,7 +69,7 @@ export default function MatchTab() {
     <div className="card">
       <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
-        Hybrid keyword (BM25) + semantic (sentence embedding) matching on the subject description.
+        Hybrid keyword (full-text search) + semantic (sentence embedding) matching on the subject description.
         Auto-assigns the top K books (eBooks + Printed) per subject. Manual additions and pins are preserved.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-3">
@@ -101,7 +100,7 @@ export default function MatchTab() {
           <div className="flex justify-between text-xs text-slate-600 mb-1">
             <span>
               {phaseLabel(progress)}
-              {pct !== null && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "saving")
+              {pct !== null && (progress.phase === "fetching" || progress.phase === "embedding" || progress.phase === "matching")
                 ? ` (${progress.done.toLocaleString()} / ${progress.total.toLocaleString()})`
                 : ""}
             </span>
