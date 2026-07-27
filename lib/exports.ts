@@ -21,6 +21,11 @@ export type ProgramBibliography = {
   /** Campus the report is generated for. Empty = "all campuses". */
   campus: string;
   bySection: { section: string; subjects: SubjectDetail[] }[];
+  /** Journals matched anywhere in this program, deduplicated -- a
+   *  subscription applies to the whole program, not one course, so these
+   *  are listed once here instead of repeated under every subject that
+   *  matched them (see loadProgramBibliography in lib/bibliography.ts). */
+  journals: Buckets;
 };
 
 function bucketTotals(books: TitleRow[]) {
@@ -162,6 +167,23 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
     }
   }
 
+  const journalTotals = subjectTotals(b.journals);
+  if (journalTotals.titles > 0) {
+    const journalSplit = subjectTotalsByAge(b.journals, currentYear);
+    const journalCells: (string | number)[] = [
+      "", "Journals (program-wide, all courses)",
+      journalSplit.recent.titles, journalSplit.recent.volumes,
+      journalSplit.old.titles, journalSplit.old.volumes,
+      journalTotals.titles, journalTotals.volumes,
+    ];
+    ws.getRow(r).values = journalCells;
+    ws.getRow(r).font = { italic: true };
+    for (let i = 0; i < colTotals.length; i++) {
+      colTotals[i] += Number(journalCells[i + 2]) || 0;
+    }
+    r++;
+  }
+
   r++;
   ws.getCell(r, 1).value = "Program Totals";
   ws.getRow(r).font = { bold: true };
@@ -232,6 +254,35 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
       r++;
     }
   }
+
+  if (NON_EMPTY_TYPES(b.journals).length > 0) {
+    ws.getCell(r, 2).value = "Journals (program-wide -- applies to every course, not repeated per course)";
+    ws.getRow(r).font = { bold: true };
+    r++;
+    ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"];
+    ws.getRow(r).font = { bold: true };
+    r++;
+    for (const t of NON_EMPTY_TYPES(b.journals)) {
+      ws.getCell(r, 1).value = t.sectionLabel;
+      ws.getRow(r).font = { italic: true };
+      r++;
+      for (const tt of b.journals[t.id]) {
+        const ident = tt.call_no || tt.issn || "";
+        ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
+        if (tt.url) ws.getCell(r, 7).value = { text: tt.url, hyperlink: tt.url };
+        r++;
+      }
+    }
+    const all = subjectTotals(b.journals);
+    ws.getCell(r, 1).value = "Titles";
+    ws.getCell(r, 2).value = all.titles;
+    ws.getRow(r).font = { bold: true };
+    r++;
+    ws.getCell(r, 1).value = "Volumes";
+    ws.getCell(r, 2).value = all.volumes;
+    ws.getRow(r).font = { bold: true };
+    r++;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +310,17 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
           ].map(escape).join(","));
         }
       }
+    }
+  }
+  // Journals apply to the whole program, not one course -- listed once
+  // here (blank course code/title) instead of repeated per subject.
+  for (const t of RESOURCE_TYPES) {
+    for (const tt of b.journals[t.id]) {
+      lines.push([
+        "", "", "(Program-wide)",
+        "", t.sectionLabel,
+        tt.call_no, tt.issn, tt.author, tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
+      ].map(escape).join(","));
     }
   }
   return Buffer.from(lines.join("\n"), "utf-8");
@@ -368,6 +430,33 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
       }));
       children.push(new Paragraph({ text: "" }));
     }
+  }
+
+  if (NON_EMPTY_TYPES(b.journals).length > 0) {
+    children.push(new Paragraph({ text: "Journals (program-wide -- applies to every course, not repeated per course)", heading: HeadingLevel.HEADING_2 }));
+    const journalRows: import("docx").TableRow[] = [columnHeaderRow()];
+    for (const t of NON_EMPTY_TYPES(b.journals)) {
+      journalRows.push(typeLabelRow(t.sectionLabel));
+      for (const tt of b.journals[t.id]) {
+        const ident = tt.call_no || tt.issn || "";
+        journalRows.push(dataRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
+      }
+    }
+    children.push(new Table({
+      width: { size: TOTAL_DXA, type: WidthType.DXA },
+      columnWidths: COL_DXA,
+      rows: journalRows,
+    }));
+    const journalTotals = subjectTotals(b.journals);
+    children.push(new Paragraph({
+      children: [
+        new TextRun({ text: "Titles: ", bold: true }),
+        new TextRun({ text: String(journalTotals.titles) }),
+        new TextRun({ text: "   Volumes: ", bold: true }),
+        new TextRun({ text: String(journalTotals.volumes) }),
+      ],
+    }));
+    children.push(new Paragraph({ text: "" }));
   }
 
   const doc = new Document({ sections: [{ children }] });
@@ -609,6 +698,34 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     }
   }
 
+  if (NON_EMPTY_TYPES(b.journals).length > 0) {
+    ensureSpace(24);
+    doc.x = LEFT;
+    doc.moveDown(0.4);
+    doc.fillColor("black");
+    doc.font("Helvetica-Bold").fontSize(11)
+      .text("Journals (program-wide -- applies to every course, not repeated per course)", LEFT, doc.y, { width: WIDTH });
+    doc.font("Helvetica").fontSize(10);
+    doc.moveDown(0.2);
+
+    drawRow(["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
+    for (const t of NON_EMPTY_TYPES(b.journals)) {
+      drawRow([t.sectionLabel, "", "", "", "", "", ""], { italic: true, merged: true });
+      for (const tt of b.journals[t.id]) {
+        const ident = tt.call_no || tt.issn || "";
+        drawRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""]);
+      }
+    }
+    const journalTotals = subjectTotals(b.journals);
+    doc.x = LEFT;
+    doc.moveDown(0.2);
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("black")
+      .text(`Titles: ${journalTotals.titles}    Volumes: ${journalTotals.volumes}`, LEFT, doc.y, { width: WIDTH });
+    doc.font("Helvetica");
+    doc.x = LEFT;
+    doc.moveDown(0.3);
+  }
+
   doc.end();
   return done;
 }
@@ -658,6 +775,18 @@ export async function programCitationsDocx(
     }
   }
 
+  const journalLines: string[] = [];
+  for (const t of RESOURCE_TYPES) {
+    for (const tt of b.journals[t.id]) journalLines.push(formatCitation(tt, style));
+  }
+  if (journalLines.length > 0) {
+    children.push(new Paragraph({ text: "Journals (program-wide -- applies to every course, not repeated per course)", heading: HeadingLevel.HEADING_2 }));
+    journalLines.sort((a, c) => a.localeCompare(c));
+    for (const line of journalLines) {
+      children.push(new Paragraph({ text: line, spacing: { after: 120 } }));
+    }
+  }
+
   const doc = new Document({ sections: [{ children }] });
   return await Packer.toBuffer(doc);
 }
@@ -689,6 +818,17 @@ export function programCitationsTxt(
       if (lines.length === 0) out.push("  (no assigned resources)");
       else for (const l of lines) out.push("  • " + l);
     }
+  }
+  const journalLines: string[] = [];
+  for (const t of RESOURCE_TYPES) {
+    for (const tt of b.journals[t.id]) journalLines.push(formatCitation(tt, style));
+  }
+  if (journalLines.length > 0) {
+    out.push("");
+    out.push("JOURNALS (program-wide -- applies to every course, not repeated per course)");
+    out.push("");
+    journalLines.sort((a, c) => a.localeCompare(c));
+    for (const l of journalLines) out.push("  • " + l);
   }
   return Buffer.from(out.join("\n"), "utf-8");
 }

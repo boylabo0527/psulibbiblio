@@ -71,19 +71,39 @@ export async function loadProgramBibliography(
 
   const bySubject = new Map<number, Buckets>();
   for (const s of subjects) bySubject.set(s.id!, emptyBuckets());
+
+  // Journals are a program-wide subscription, not a per-course resource --
+  // Match can reasonably assign the same journal to every subject in a
+  // program, which would otherwise repeat an identical entry under each
+  // one. Collected into one program-wide, deduplicated-by-title list
+  // instead of each subject's own buckets.
+  const journalsById = new Map<ResourceTypeId, Map<number, TitleRow>>(
+    RESOURCE_TYPES.filter((t) => t.kind === "journal").map((t) => [t.id, new Map<number, TitleRow>()]),
+  );
+
   for (const a of assignments) {
-    const bucket = bySubject.get(a.subject_id);
-    if (!bucket) continue;
     if (!includeTitle(a.titles)) continue;
     const fmt = a.titles.format;
+    const journalMap = journalsById.get(fmt);
+    if (journalMap) {
+      if (a.titles.id != null && !journalMap.has(a.titles.id)) journalMap.set(a.titles.id, a.titles);
+      continue;
+    }
+    const bucket = bySubject.get(a.subject_id);
+    if (!bucket) continue;
     if (!(fmt in bucket)) continue;
     bucket[fmt].push(a.titles);
   }
+
+  const journals = emptyBuckets();
+  for (const [fmt, map] of journalsById) journals[fmt] = Array.from(map.values());
+
+  const sortBooks = (xs: TitleRow[]) =>
+    xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
   for (const bucket of bySubject.values()) {
-    const sortBooks = (xs: TitleRow[]) =>
-      xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
     for (const t of RESOURCE_TYPES) sortBooks(bucket[t.id]);
   }
+  for (const t of RESOURCE_TYPES) sortBooks(journals[t.id]);
 
   // Sections were dropped from the curriculum schema; emit a single
   // unlabeled section that contains every subject in upload order.
@@ -99,5 +119,6 @@ export async function loadProgramBibliography(
     program: progRow as ProgramBibliography["program"],
     campus,
     bySection,
+    journals,
   };
 }
