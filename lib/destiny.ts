@@ -157,6 +157,39 @@ async function getPool(): Promise<sql.ConnectionPool> {
   return pool;
 }
 
+export type DestinyDiagnostics = {
+  current_db: string;
+  login_name: string;
+  can_select_copylibraryview: boolean;
+  can_select_biblibraryview: boolean;
+};
+
+/** Runs a handful of read-only metadata checks using the exact same
+ *  connection/login the sync itself uses. Exists because SQL Server
+ *  returns the same "Invalid object name" error for a table that
+ *  genuinely doesn't exist AND for one that exists but the connecting
+ *  login has no grant on (an anti-enumeration measure, not a bug) --
+ *  from the sync's error message alone there's no way to tell those
+ *  two cases apart. This pins it down without needing a separate SQL
+ *  Server client. */
+export async function diagnoseDestinyConnection(): Promise<DestinyDiagnostics> {
+  const p = await getPool();
+  const result = await p.request().query(`
+    select
+      DB_NAME()    as current_db,
+      SUSER_SNAME() as login_name,
+      has_perms_by_name('dbo.CopyLibraryView', 'OBJECT', 'SELECT') as can_select_copylibraryview,
+      has_perms_by_name('dbo.BibLibraryView', 'OBJECT', 'SELECT')  as can_select_biblibraryview
+  `);
+  const row = result.recordset[0] as Record<string, unknown>;
+  return {
+    current_db: String(row.current_db ?? ""),
+    login_name: String(row.login_name ?? ""),
+    can_select_copylibraryview: !!row.can_select_copylibraryview,
+    can_select_biblibraryview: !!row.can_select_biblibraryview,
+  };
+}
+
 export type DestinyCatalogRow = {
   barcode?: string;
   call_no?: string;
