@@ -251,7 +251,7 @@ export default function ProgramsTab() {
                   showIdent
                   hideRemove
                   hideAuthor
-                  showProvider={t.id === "journal_online_paid"}
+                  showProvider={t.id === "journal_online_paid" || t.id === "journal_complementary"}
                 />
               ))}
             </div>
@@ -300,7 +300,7 @@ function SubjectBlock({
           onRemove={onRemove}
           onReload={onReload}
           showIdent={t.medium === "print" || t.kind === "journal"}
-          showProvider={t.id === "ebook_paid"}
+          showProvider={t.id === "ebook_paid" || t.id === "ebook_complementary"}
         />
       ))}
       <p className="text-xs text-slate-700 mt-1">
@@ -439,7 +439,7 @@ function BookSection({
             {!hideAuthor && <th className="text-left p-1 w-44">Author</th>}
             <th className="text-left p-1">Title</th>
             <th className="text-left p-1 w-32">Publisher</th>
-            {showProvider && <th className="text-left p-1 w-32">Provider</th>}
+            {showProvider && <th className="text-left p-1 w-32">Provider / Source</th>}
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
             <th className="p-1 w-20"></th>

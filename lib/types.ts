@@ -19,8 +19,13 @@ export type TitleRow = {
   /** Per-copy accession/barcode number, if the source file has one — used to
    *  avoid double-counting the same physical copy across repeat uploads. */
   barcode?: string;
-  /** Subscription platform/vendor (e.g. "Perlego") -- only meaningful for
-   *  paid eBooks/journals (ebook_paid, journal_online_paid). */
+  /** Where a digital title actually comes from -- a subscription platform/
+   *  vendor for paid eBooks/journals (e.g. "Perlego"), or the donor/partner
+   *  institution for complementary ones (donated, or provided free under a
+   *  MOA/MOU). Meaningful for ebook_paid, ebook_complementary,
+   *  journal_online_paid, and journal_complementary -- lets every title
+   *  from one source be found and removed together if that subscription
+   *  ends or that agreement lapses. */
   provider?: string;
 };
 
