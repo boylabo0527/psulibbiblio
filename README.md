@@ -39,6 +39,9 @@ TypeScript TF-IDF matcher · no external AI keys.
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon public` → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `service_role` → `SUPABASE_SERVICE_ROLE_KEY`
+4. Pick an admin password and set `ADMIN_RESET_PASSWORD` (any string you
+   choose). The Admin → *Wipe all data* button prompts for this. If it
+   is unset the wipe endpoint returns 503 and refuses to delete anything.
 
 ### 2. Run locally
 

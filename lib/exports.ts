@@ -34,13 +34,44 @@ function bucketTotals(books: TitleRow[]) {
 }
 
 function subjectTotals(buckets: Buckets) {
+  // Volumes are a printed-material concept: only printed books / journals
+  // contribute. Digital titles (eBooks, online journals) count toward titles
+  // but not toward volumes.
   let titles = 0, volumes = 0;
   for (const t of RESOURCE_TYPES) {
     const sub = bucketTotals(buckets[t.id]);
     titles += sub.titles;
-    volumes += t.medium === "print" ? sub.volumes : sub.titles;
+    if (t.medium === "print") volumes += sub.volumes;
   }
   return { titles, volumes };
+}
+
+/** Parse a year string like "2018", "c2018", "[2018]" → 2018. Unknown → null. */
+function parseYear(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const m = String(raw).match(/(\d{4})/);
+  if (!m) return null;
+  const y = parseInt(m[1], 10);
+  if (y < 1000 || y > 9999) return null;
+  return y;
+}
+
+/** Split subject totals into recent (<= 10 years from now) vs. older. Unknown year counts as old. */
+function subjectTotalsByAge(buckets: Buckets, currentYear: number) {
+  const cutoff = currentYear - 10;
+  const recent = { titles: 0, volumes: 0 };
+  const old = { titles: 0, volumes: 0 };
+  for (const t of RESOURCE_TYPES) {
+    for (const b of buckets[t.id]) {
+      const y = parseYear(b.year);
+      const isRecent = y !== null && y >= cutoff;
+      const volumes = t.medium === "print" ? Math.max(1, b.copies ?? 1) : 0;
+      const bucket = isRecent ? recent : old;
+      bucket.titles += 1;
+      bucket.volumes += volumes;
+    }
+  }
+  return { recent, old };
 }
 
 const NON_EMPTY_TYPES = (buckets: Buckets) =>
@@ -60,15 +91,17 @@ export async function programBibliographyXlsx(b: ProgramBibliography): Promise<B
 
 function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
   const ws = wb.addWorksheet("sum");
-  // First two cols are course code + title; then for each resource type:
-  // - one column for titles
-  // - if print medium, also one column for volumes
-  const typeCols = RESOURCE_TYPES.flatMap((t) =>
-    t.medium === "print" ? [`${t.sectionLabel} Titles`, `${t.sectionLabel} Volumes`] : [`${t.sectionLabel} Titles`],
-  );
+  const currentYear = new Date().getFullYear();
+  const cutoff = currentYear - 10;
+
+  // Layout: Course Code | Course Title | Recent Titles | Recent Volumes |
+  // Old Titles | Old Volumes | Total Titles | Total Volumes.
+  // Recent / Old combine eBooks + printed books + journals (printed and
+  // online). Volumes follow the existing rule: print = copies, digital = 1.
   ws.columns = [
     { width: 14 }, { width: 50 },
-    ...typeCols.map(() => ({ width: 16 })),
+    { width: 16 }, { width: 16 },
+    { width: 16 }, { width: 16 },
     { width: 14 }, { width: 14 },
   ];
 
@@ -82,14 +115,24 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   ws.getRow(r - 1).font = { bold: true };
   ws.getCell(r++, 1).value = "Summary of Professional Resources";
   ws.getRow(r - 1).font = { italic: true };
+  ws.getCell(r++, 1).value =
+    `Combined totals across eBooks, printed books, and journals. ` +
+    `Recent = published ${cutoff}-${currentYear}; Older = before ${cutoff} or unknown year.`;
+  ws.getRow(r - 1).font = { italic: true, size: 10 };
   r++;
 
-  const header = ["Course Code", "Course Title", ...typeCols, "Total Titles", "Total Volumes"];
+  const header = [
+    "Course Code", "Course Title",
+    `Recent Titles (${cutoff}-${currentYear})`,
+    "Recent Volumes",
+    `Older Titles (< ${cutoff})`,
+    "Older Volumes",
+    "Total Titles", "Total Volumes",
+  ];
   ws.getRow(r).values = header;
   ws.getRow(r).font = { bold: true };
   r++;
 
-  // Running totals per column for the Program Totals row.
   const colTotals: number[] = Array(header.length - 2).fill(0);
 
   for (const sec of b.bySection) {
@@ -99,22 +142,22 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
       r++;
     }
     for (const sub of sec.subjects) {
-      const cells: (string | number)[] = [sub.subject.course_code || "", sub.subject.course_title || ""];
-      let typeIdx = 0;
-      for (const t of RESOURCE_TYPES) {
-        const tot = bucketTotals(sub.buckets[t.id]);
-        cells.push(tot.titles);
-        colTotals[typeIdx] += tot.titles; typeIdx++;
-        if (t.medium === "print") {
-          cells.push(tot.volumes);
-          colTotals[typeIdx] += tot.volumes; typeIdx++;
-        }
-      }
+      const split = subjectTotalsByAge(sub.buckets, currentYear);
       const all = subjectTotals(sub.buckets);
-      cells.push(all.titles, all.volumes);
-      colTotals[typeIdx] += all.titles; typeIdx++;
-      colTotals[typeIdx] += all.volumes;
+      const cells: (string | number)[] = [
+        sub.subject.course_code || "",
+        sub.subject.course_title || "",
+        split.recent.titles,
+        split.recent.volumes,
+        split.old.titles,
+        split.old.volumes,
+        all.titles,
+        all.volumes,
+      ];
       ws.getRow(r).values = cells;
+      for (let i = 0; i < colTotals.length; i++) {
+        colTotals[i] += Number(cells[i + 2]) || 0;
+      }
       r++;
     }
   }
@@ -225,13 +268,31 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
 // DOCX
 // ---------------------------------------------------------------------------
 export async function programBibliographyDocx(b: ProgramBibliography): Promise<Buffer> {
-  const { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, WidthType, TextRun, ExternalHyperlink } = await import("docx");
+  const {
+    Document, Packer, Paragraph, Table, TableCell, TableRow,
+    HeadingLevel, WidthType, TextRun, ExternalHyperlink,
+  } = await import("docx");
 
-  const cell = (text: string, bold = false) =>
-    new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: text || "", bold })] })] });
+  // Column widths in DXA (twips). Sum = 9000 = full page width inside margins.
+  const COL_DXA = [1400, 1500, 3200, 700, 600, 1600];
+  const TOTAL_DXA = COL_DXA.reduce((a, c) => a + c, 0);
 
-  const linkCell = (url: string | undefined) =>
+  const cell = (
+    text: string,
+    opts: { bold?: boolean; italic?: boolean; colSpan?: number; widthDxa?: number } = {},
+  ) => new TableCell({
+    width: opts.widthDxa
+      ? { size: opts.widthDxa, type: WidthType.DXA }
+      : undefined,
+    columnSpan: opts.colSpan,
+    children: [new Paragraph({
+      children: [new TextRun({ text: text || "", bold: opts.bold, italics: opts.italic })],
+    })],
+  });
+
+  const linkCell = (url: string | undefined, widthDxa: number) =>
     new TableCell({
+      width: { size: widthDxa, type: WidthType.DXA },
       children: [new Paragraph({
         children: url
           ? [new ExternalHyperlink({ link: url, children: [new TextRun({ text: url, style: "Hyperlink" })] })]
@@ -239,8 +300,33 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
       })],
     });
 
-  const headerRow = () => new TableRow({
-    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"].map((c) => cell(c, true)),
+  const subjectHeaderRow = (code: string, title: string) => new TableRow({
+    children: [
+      cell(code, { bold: true, widthDxa: COL_DXA[0] }),
+      cell(title, { bold: true, colSpan: 5, widthDxa: TOTAL_DXA - COL_DXA[0] }),
+    ],
+  });
+
+  const descriptionRow = (desc: string) => new TableRow({
+    children: [cell(desc, { colSpan: 6, widthDxa: TOTAL_DXA })],
+  });
+
+  const columnHeaderRow = () => new TableRow({
+    tableHeader: true,
+    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"].map((c, i) =>
+      cell(c, { bold: true, widthDxa: COL_DXA[i] }),
+    ),
+  });
+
+  const typeLabelRow = (label: string) => new TableRow({
+    children: [cell(label, { italic: true, colSpan: 6, widthDxa: TOTAL_DXA })],
+  });
+
+  const dataRow = (vals: string[], url: string | undefined) => new TableRow({
+    children: [
+      ...vals.map((v, i) => cell(v, { widthDxa: COL_DXA[i] })),
+      linkCell(url, COL_DXA[5]),
+    ],
   });
 
   const children: import("docx").FileChild[] = [];
@@ -253,21 +339,22 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
   for (const sec of b.bySection) {
     if (sec.section) children.push(new Paragraph({ text: sec.section, heading: HeadingLevel.HEADING_2 }));
     for (const sub of sec.subjects) {
-      const heading = `${sub.subject.course_code ? sub.subject.course_code + " " : ""}${sub.subject.course_title}`;
-      children.push(new Paragraph({ text: heading, heading: HeadingLevel.HEADING_3 }));
-      if (sub.subject.description) children.push(new Paragraph({ text: sub.subject.description }));
-
-      const rows: import("docx").TableRow[] = [headerRow()];
+      const rows: import("docx").TableRow[] = [];
+      rows.push(subjectHeaderRow(sub.subject.course_code || "", sub.subject.course_title || ""));
+      if (sub.subject.description) rows.push(descriptionRow(sub.subject.description));
+      rows.push(columnHeaderRow());
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
-        rows.push(new TableRow({ children: [cell(t.sectionLabel, true), cell(""), cell(""), cell(""), cell(""), cell("")] }));
+        rows.push(typeLabelRow(t.sectionLabel));
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          rows.push(new TableRow({
-            children: [cell(ident), cell(tt.author || ""), cell(tt.title || ""), cell(tt.year || ""), cell(String(tt.copies ?? 1)), linkCell(tt.url)],
-          }));
+          rows.push(dataRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
         }
       }
-      children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
+      children.push(new Table({
+        width: { size: TOTAL_DXA, type: WidthType.DXA },
+        columnWidths: COL_DXA,
+        rows,
+      }));
 
       const all = subjectTotals(sub.buckets);
       children.push(new Paragraph({
@@ -428,6 +515,28 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     return h + padding * 2;
   }
 
+  // Two-cell row used for the subject heading: course code (col 0 width) +
+  // course title spanning the remaining columns. Mirrors the XLSX layout.
+  function drawSubjectHeaderRow(code: string, title: string) {
+    const padding = 4;
+    doc.font("Helvetica-Bold").fontSize(9);
+    const leftW = cols[0].width;
+    const rightW = WIDTH - leftW;
+    const hLeft = doc.heightOfString(code || "", { width: leftW - padding * 2 });
+    const hRight = doc.heightOfString(title || "", { width: rightW - padding * 2 });
+    const h = Math.max(hLeft, hRight) + padding * 2;
+    ensureSpace(h);
+    const y = doc.y;
+    doc.rect(LEFT, y, WIDTH, h).fillColor("#f4f6fb").fill();
+    doc.fillColor("black");
+    doc.rect(LEFT, y, leftW, h).strokeColor("black").stroke();
+    doc.text(code || "", LEFT + padding, y + padding, { width: leftW - padding * 2 });
+    doc.rect(LEFT + leftW, y, rightW, h).stroke();
+    doc.text(title || "", LEFT + leftW + padding, y + padding, { width: rightW - padding * 2 });
+    doc.x = LEFT;
+    doc.y = y + h;
+  }
+
   function drawRow(cells: string[], opts: { bold?: boolean; italic?: boolean; fillHeader?: boolean; merged?: boolean } = {}) {
     const padding = 4;
     const font = opts.bold ? "Helvetica-Bold" : opts.italic ? "Helvetica-Oblique" : "Helvetica";
@@ -437,7 +546,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
       : rowHeight(cells, padding);
     ensureSpace(h);
     const y = doc.y;
-    if (opts.fillHeader) doc.save().rect(LEFT, y, WIDTH, h).fill("#e8f0fa").restore();
+    if (opts.fillHeader) {
+      doc.rect(LEFT, y, WIDTH, h).fillColor("#e8f0fa").fill();
+    }
+    // Always reset the text/stroke colors before drawing borders and text so
+    // a previous fill() doesn't leak into the next row.
+    doc.fillColor("black").strokeColor("black");
     if (opts.merged) {
       doc.rect(LEFT, y, WIDTH, h).stroke();
       doc.text(cells[0] || "", LEFT + padding, y + padding, { width: WIDTH - padding * 2 });
@@ -448,25 +562,31 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
         doc.text(cells[i] || "", x + padding, y + padding, { width: cols[i].width - padding * 2 });
       }
     }
+    doc.x = LEFT;
     doc.y = y + h;
   }
 
   for (const sec of b.bySection) {
     if (sec.section) {
       ensureSpace(24);
+      doc.x = LEFT;
       doc.moveDown(0.4);
-      doc.font("Helvetica-Bold").fontSize(11).text(sec.section);
+      doc.fillColor("black");
+      doc.font("Helvetica-Bold").fontSize(11).text(sec.section, LEFT, doc.y, { width: WIDTH });
       doc.font("Helvetica").fontSize(10);
     }
     for (const sub of sec.subjects) {
       ensureSpace(60);
       doc.moveDown(0.4);
-      doc.font("Helvetica-Bold").fontSize(10)
-        .text(`${sub.subject.course_code ? sub.subject.course_code + "  " : ""}${sub.subject.course_title || ""}`);
-      doc.font("Helvetica").fontSize(9);
-      if (sub.subject.description) doc.text(sub.subject.description, { width: WIDTH });
-      doc.moveDown(0.2);
+      // Subject heading row: course code in col 1, course title spanning the
+      // rest. This matches the XLSX detail sheet (course_code in col A,
+      // title in col B) instead of floating as plain text above the table.
+      drawSubjectHeaderRow(sub.subject.course_code || "", sub.subject.course_title || "");
+      if (sub.subject.description) {
+        drawRow([sub.subject.description, "", "", "", "", ""], { merged: true });
+      }
 
+      // Column header row + per-type label row + entries.
       drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
         drawRow([t.sectionLabel, "", "", "", "", ""], { italic: true, merged: true });
@@ -476,10 +596,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
         }
       }
       const all = subjectTotals(sub.buckets);
+      doc.x = LEFT;
       doc.moveDown(0.2);
-      doc.font("Helvetica-Bold").fontSize(9)
-        .text(`Titles: ${all.titles}    Volumes: ${all.volumes}`);
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("black")
+        .text(`Titles: ${all.titles}    Volumes: ${all.volumes}`, LEFT, doc.y, { width: WIDTH });
       doc.font("Helvetica");
+      doc.x = LEFT;
       doc.moveDown(0.3);
     }
   }

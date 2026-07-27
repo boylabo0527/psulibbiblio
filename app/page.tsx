@@ -4,6 +4,7 @@ import UploadTab from "@/components/UploadTab";
 import MatchTab from "@/components/MatchTab";
 import ProgramsTab from "@/components/ProgramsTab";
 import DashboardTab from "@/components/DashboardTab";
+import CleanupTab from "@/components/CleanupTab";
 import ProcurementTab from "@/components/ProcurementTab";
 import CanvassingTab from "@/components/CanvassingTab";
 import PurchaseRequestTab from "@/components/PurchaseRequestTab";
@@ -26,6 +27,7 @@ const tabs = [
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
   { id: "activity",         label: "Activity Log",        publicTab: false },
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
+  { id: "cleanup",          label: "Cleanup",             publicTab: false },
   { id: "user-management",  label: "User Management",     publicTab: false },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
@@ -39,12 +41,14 @@ export default function Home() {
   const needsAuth = currentTab && !currentTab.publicTab && !user;
 
   // A tab is visible if it's public, or the signed-in user's role can view
-  // it -- "user-management" is special-cased to admins only, since it's
-  // not a regular role permission (it's what configures those permissions).
+  // it -- "user-management" and "cleanup" are special-cased to admins only:
+  // user-management configures role permissions themselves, and cleanup
+  // (merging duplicate programs/titles catalog-wide) is a power tool that
+  // predates the per-tab permission system, not yet wired into it.
   const visibleTabs = tabs.filter((t) => {
     if (t.publicTab) return true;
     if (!user) return false;
-    if (t.id === "user-management") return perms.isAdmin;
+    if (t.id === "user-management" || t.id === "cleanup") return perms.isAdmin;
     return canView(perms, t.id);
   });
 
@@ -132,6 +136,8 @@ export default function Home() {
           <SupplierViewTab />
         ) : tab === "user-management" ? (
           <UserManagementTab />
+        ) : tab === "cleanup" ? (
+          <CleanupTab />
         ) : null}
       </section>
 
