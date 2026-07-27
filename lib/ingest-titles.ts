@@ -17,6 +17,7 @@
 import type { serviceClient } from "./supabase";
 import type { TitleRow } from "./types";
 import type { ResourceType } from "./resources";
+import { pageThroughParallel } from "./paging";
 
 export type IngestSend = (e:
   | { phase: "deduping"; existing: number }
@@ -97,35 +98,21 @@ export async function planIngestOps(
       else agg.unbarcoded += r.copies ?? 1;
     }
 
+    // Fetching every existing row of this format (paged, several pages at
+    // once via pageThroughParallel) beats narrowing down to just the
+    // call_no/title values this batch actually needs: narrowing means one
+    // network round trip per ~150 distinct values, and a sync that's
+    // re-covering most of an existing catalog can have thousands of those
+    // -- each round trip's fixed latency (not the bytes moved) is what
+    // was actually slow enough to hit a serverless function's time limit.
     type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number; barcodes: string[] | null };
-    const IN_CHUNK = 150;
-    async function fetchCandidates(column: string, values: Set<string>): Promise<Existing[]> {
-      const out: Existing[] = [];
-      const list = Array.from(values);
-      for (let i = 0; i < list.length; i += IN_CHUNK) {
-        const slice = list.slice(i, i + IN_CHUNK);
-        const { data, error } = await db.from("titles")
-          .select("id, call_no, title, author, campus, copies, barcodes")
-          .eq("format", rt.id).in(column, slice);
-        if (error) throw error;
-        out.push(...((data ?? []) as unknown as Existing[]));
-        send({ phase: "deduping", existing: out.length });
-      }
-      return out;
-    }
-    const callNos = new Set<string>();
-    const titles = new Set<string>();
-    for (const { row } of aggMap.values()) {
-      const cn = (row.call_no ?? "").trim();
-      if (cn) callNos.add(cn);
-      titles.add(row.title);
-    }
-    const existingByCallNo = callNos.size ? await fetchCandidates("call_no", callNos) : [];
-    const existingByTitle = titles.size ? await fetchCandidates("title", titles) : [];
-    const existingUnique = new Map<number, Existing>();
-    for (const e of [...existingByCallNo, ...existingByTitle]) existingUnique.set(e.id, e);
-    const existing = Array.from(existingUnique.values());
-    send({ phase: "deduping", existing: existing.length });
+    const existing = await pageThroughParallel<Existing>(
+      (from, to) => db.from("titles")
+        .select("id, call_no, title, author, campus, copies, barcodes", { count: "exact" })
+        .eq("format", rt.id).order("id", { ascending: true }).range(from, to) as unknown as
+        PromiseLike<{ data: Existing[] | null; count: number | null; error: { message: string } | null }>,
+      (done) => send({ phase: "deduping", existing: done }),
+    );
 
     const existingMap = new Map<string, Existing>();
     for (const e of existing) {
@@ -182,46 +169,17 @@ export async function planIngestOps(
     ? "isbn, issn, call_no, title, author, year, campus"
     : "isbn, issn, call_no, title, author, year";
 
-  const IN_CHUNK = 150;
-  async function fetchCandidates(column: string, values: Set<string>): Promise<Existing[]> {
-    const out: Existing[] = [];
-    const list = Array.from(values);
-    for (let i = 0; i < list.length; i += IN_CHUNK) {
-      const slice = list.slice(i, i + IN_CHUNK);
-      const { data, error } = await db.from("titles")
-        .select(selectCols).eq("format", rt.id).in(column, slice);
-      if (error) throw error;
-      out.push(...((data ?? []) as unknown as Existing[]));
-      send({ phase: "deduping", existing: out.length });
-    }
-    return out;
-  }
-
-  const idField: "isbn" | "issn" | "call_no" | null =
-    rt.dedupBy === "isbn-or-tuple" ? "isbn" :
-    rt.dedupBy === "issn-or-title" ? "issn" :
-    "call_no";
-
-  const idValues = new Set<string>();
-  const titleValues = new Set<string>();
-  for (const r of records) {
-    if (idField === "call_no") {
-      const v = (r.call_no ?? "").trim();
-      if (v) idValues.add(v);
-      titleValues.add(r.title);
-    } else {
-      const v = (idField === "isbn" ? r.isbn : r.issn)?.trim() ?? "";
-      if (v) idValues.add(v); else titleValues.add(r.title);
-    }
-  }
-
-  const existingById = idValues.size ? await fetchCandidates(idField, idValues) : [];
-  const existingByTitle = titleValues.size ? await fetchCandidates("title", titleValues) : [];
-  const existingKey = (e: Existing) => `${e.isbn}|${e.issn}|${e.call_no}|${e.title}|${e.author}|${e.year}|${e.campus ?? ""}`;
-  const existingUnique = new Map<string, Existing>();
-  for (const e of [...existingById, ...existingByTitle]) existingUnique.set(existingKey(e), e);
-  const existing = Array.from(existingUnique.values());
-  send({ phase: "deduping", existing: existing.length });
+  // See the accession-mode branch above for why this fetches the whole
+  // existing catalog for this format instead of narrowing down to just
+  // the values this batch needs -- fewer, larger round trips beat many
+  // small ones against a serverless function's time budget.
+  const existing = await pageThroughParallel<Existing>(
+    (from, to) => db.from("titles")
+      .select(selectCols, { count: "exact" })
+      .eq("format", rt.id).order("id", { ascending: true }).range(from, to) as unknown as
+      PromiseLike<{ data: Existing[] | null; count: number | null; error: { message: string } | null }>,
+    (done) => send({ phase: "deduping", existing: done }),
+  );
 
   const isbnSeen = new Set<string>();
   const issnSeen = new Set<string>();
