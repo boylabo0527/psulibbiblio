@@ -28,6 +28,7 @@ const PRINTED_ALIASES: Record<string, string[]> = {
   publisher: ["publisher", "publisher_name"],
   isbn: ["isbn", "isbn-13", "isbn13"],
   campus: ["campus", "branch", "library"],
+  barcode: ["barcode", "bar code", "accession no", "accession no.", "accession number", "acc no", "acc. no.", "acc no."],
 };
 
 const SUBJECT_ALIASES: Record<string, string[]> = {
@@ -218,6 +219,7 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
       isbn: map.isbn ? r[map.isbn] : "",
       copies,
       campus: map.campus ? (r[map.campus] || "").trim() : undefined,
+      barcode: map.barcode ? (r[map.barcode] || "").trim() : undefined,
     });
   }
   return out;
@@ -260,6 +262,7 @@ export function buildTitleRowsFromRaw(
       subjects: map.subjects ? r[map.subjects] : "",
       copies,
       campus: map.campus ? (r[map.campus] ?? "").trim() : undefined,
+      barcode: map.barcode ? (r[map.barcode] ?? "").trim() : undefined,
     });
   }
   return out;

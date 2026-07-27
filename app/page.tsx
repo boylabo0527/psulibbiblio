@@ -8,8 +8,12 @@ import ProcurementTab from "@/components/ProcurementTab";
 import CanvassingTab from "@/components/CanvassingTab";
 import PurchaseRequestTab from "@/components/PurchaseRequestTab";
 import CampusValidationTab from "@/components/CampusValidationTab";
+import ActivityLogTab from "@/components/ActivityLogTab";
+import UserManagementTab from "@/components/UserManagementTab";
+import SupplierViewTab from "@/components/SupplierViewTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
+import { usePermissions, canView } from "@/lib/use-permissions";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard",           publicTab: true  },
@@ -20,15 +24,29 @@ const tabs = [
   { id: "procurement",      label: "Procurement Analysis", publicTab: false },
   { id: "canvassing",       label: "Market Canvassing",   publicTab: false },
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
+  { id: "activity",         label: "Activity Log",        publicTab: false },
+  { id: "supplier-view",    label: "Supplier View",       publicTab: false },
+  { id: "user-management",  label: "User Management",     publicTab: false },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
 
 export default function Home() {
   const [tab, setTab] = useState<TabId>("dashboard");
   const { user, loading, signOut } = useAuth();
+  const { perms, loading: permsLoading } = usePermissions();
 
   const currentTab = tabs.find((t) => t.id === tab);
   const needsAuth = currentTab && !currentTab.publicTab && !user;
+
+  // A tab is visible if it's public, or the signed-in user's role can view
+  // it -- "user-management" is special-cased to admins only, since it's
+  // not a regular role permission (it's what configures those permissions).
+  const visibleTabs = tabs.filter((t) => {
+    if (t.publicTab) return true;
+    if (!user) return false;
+    if (t.id === "user-management") return perms.isAdmin;
+    return canView(perms, t.id);
+  });
 
   return (
     <main>
@@ -44,7 +62,9 @@ export default function Home() {
             <span className="opacity-70 text-xs">…</span>
           ) : user ? (
             <>
-              <span className="opacity-90 text-xs sm:text-sm">{user.email}</span>
+              <span className="opacity-90 text-xs sm:text-sm">
+                {user.email}{perms.role && <span className="opacity-70"> · {perms.role}</span>}
+              </span>
               <button
                 onClick={() => signOut()}
                 className="border border-white/40 rounded px-3 py-1 text-xs hover:bg-white/10"
@@ -64,7 +84,7 @@ export default function Home() {
       </header>
 
       <nav className="bg-white border-b border-slate-200 px-8 flex gap-2 overflow-x-auto">
-        {tabs.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -86,6 +106,10 @@ export default function Home() {
       <section className="px-8 py-6 max-w-7xl mx-auto">
         {needsAuth ? (
           <LoginScreen />
+        ) : user && !permsLoading && currentTab && !currentTab.publicTab && !visibleTabs.some((t) => t.id === tab) ? (
+          <p className="text-slate-500 text-sm">
+            Your account doesn&apos;t have access to this tab. Contact your administrator if you think this is wrong.
+          </p>
         ) : tab === "dashboard" ? (
           <DashboardTab />
         ) : tab === "upload" ? (
@@ -102,6 +126,12 @@ export default function Home() {
           <CanvassingTab />
         ) : tab === "purchase-request" ? (
           <PurchaseRequestTab />
+        ) : tab === "activity" ? (
+          <ActivityLogTab />
+        ) : tab === "supplier-view" ? (
+          <SupplierViewTab />
+        ) : tab === "user-management" ? (
+          <UserManagementTab />
         ) : null}
       </section>
 

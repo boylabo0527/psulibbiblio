@@ -236,6 +236,7 @@ export default function CampusValidationTab() {
           course_code: courseDraft.course_code,
           course_title: courseDraft.course_title,
           description: courseDraft.description,
+          _tab: "campus-validation",
         }),
       });
       const j = await res.json().catch(() => ({}));

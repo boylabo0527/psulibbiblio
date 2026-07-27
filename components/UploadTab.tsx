@@ -4,7 +4,77 @@ import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses } from "@/lib/use-campuses";
 import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
+import { usePermissions } from "@/lib/use-permissions";
+import type { DestinySyncEvent } from "@/app/api/sync/destiny/route";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
+
+function DestinySyncCard() {
+  const { perms } = usePermissions();
+  const [ev, setEv] = useState<DestinySyncEvent | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  if (!perms.isAdmin) return null;
+
+  async function run() {
+    setBusy(true);
+    setEv(null);
+    try {
+      const res = await apiFetch("/api/sync/destiny", { method: "POST" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setEv({ phase: "error", error: j.error || `HTTP ${res.status}` });
+        return;
+      }
+      await consumeNdjson<DestinySyncEvent>(res, (e) => setEv(e));
+    } catch (e) {
+      setEv({ phase: "error", error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label = !ev ? "" : ({
+    connecting: "Connecting to Destiny…",
+    parsed: `Fetched ${ev.phase === "parsed" ? ev.total.toLocaleString() : ""} rows — checking database…`,
+    deduping: "Checking against our catalog…",
+    inserting: ev.phase === "inserting" ? `Saving ${ev.inserted.toLocaleString()} / ${ev.total.toLocaleString()}` : "",
+    done: ev.phase === "done" ? `Done — ${ev.inserted.toLocaleString()} new, ${ev.skipped.toLocaleString()} updated` : "",
+    error: ev.phase === "error" ? `Error: ${ev.error}` : "",
+  } as Record<DestinySyncEvent["phase"], string>)[ev.phase];
+
+  return (
+    <div className="card border-2 border-psu-light">
+      <h2 className="text-psu font-semibold mb-1">Sync Printed Books from Destiny</h2>
+      <p className="text-sm text-slate-600 mb-2">
+        Pulls the printed-book catalog directly from your Destiny database instead of exporting and uploading a
+        file. Uses the same duplicate/copy-count logic as a manual Printed Books upload above. Admin-only, since it
+        uses org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab
+        permission.
+      </p>
+      <button className="btn text-xs" disabled={busy} onClick={run}>
+        {busy ? "Syncing…" : "Sync now"}
+      </button>
+      {ev && (
+        <div className="mt-3 text-xs">
+          <p className={ev.phase === "error" ? "text-red-700" : ev.phase === "done" ? "text-emerald-700" : "text-slate-600"}>
+            {label}
+          </p>
+          {ev.phase === "done" && ev.duplicates != null && ev.duplicates > 0 && (
+            <p className="text-slate-500 mt-0.5">{ev.duplicates.toLocaleString()} already-counted copies skipped.</p>
+          )}
+          {ev.phase === "done" && ev.unmapped_campuses.length > 0 && (
+            <p className="text-amber-700 mt-1">
+              {ev.unmapped_campuses.length} Destiny sublocation{ev.unmapped_campuses.length === 1 ? "" : "s"} didn&apos;t
+              resolve to a campus already set up here: {ev.unmapped_campuses.join(", ")}. Those rows were still
+              synced, but won&apos;t show up correctly in campus-scoped reports until it's mapped (add the campus in
+              Campus Validation, and/or add a line for it in lib/destiny.ts's sublocation mapping).
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type FilePhase = ProgressEvent["phase"] | "idle" | "uploading" | "queued";
 
@@ -15,6 +85,8 @@ type FileStatus = {
   skipped: number;
   total: number;
   programs?: number;
+  duplicates?: number;
+  existingChecked?: number;
   error?: string;
   elapsedMs: number;
 };
@@ -65,6 +137,7 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         const total = allRows.length;
         let inserted = 0;
         let skipped = 0;
+        let duplicates = 0;
         patchFile(index, { phase: "parsed", total });
 
         for (let i = 0; i < allRows.length; i += BATCH) {
@@ -83,19 +156,20 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
           }
           await consumeNdjson(res, (ev) => {
             if (ev.phase === "deduping") {
-              patchFile(index, { phase: "deduping" });
+              patchFile(index, { phase: "deduping", existingChecked: ev.existing });
             } else if (ev.phase === "inserting") {
               patchFile(index, { phase: "inserting", inserted: inserted + ev.inserted, skipped: skipped + ev.skipped, total });
             } else if (ev.phase === "done") {
               inserted += ev.inserted;
               skipped += ev.skipped;
-              patchFile(index, { phase: "inserting", inserted, skipped, total });
+              duplicates += ev.duplicates ?? 0;
+              patchFile(index, { phase: "inserting", inserted, skipped, duplicates, total });
             } else if (ev.phase === "error") {
               patchFile(index, { phase: "error", error: ev.error });
             }
           }, controller.signal);
         }
-        patchFile(index, { phase: "done", inserted, skipped, total, elapsedMs: Date.now() - startedAt });
+        patchFile(index, { phase: "done", inserted, skipped, duplicates, total, elapsedMs: Date.now() - startedAt });
       } else {
         const fd = new FormData();
         fd.append("file", file);
@@ -108,9 +182,9 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         }
         await consumeNdjson(res, (ev) => {
           if (ev.phase === "parsed") patchFile(index, { phase: ev.phase, total: ev.total });
-          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase });
+          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase, existingChecked: ev.existing });
           else if (ev.phase === "inserting") patchFile(index, { phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total });
-          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
+          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, duplicates: ev.duplicates, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
           else if (ev.phase === "error") patchFile(index, { phase: "error", error: ev.error });
         }, controller.signal);
       }
@@ -232,15 +306,20 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
             const updatedSuffix = fs.skipped > 0
               ? ` · ${fs.skipped.toLocaleString()} copy count${fs.skipped === 1 ? "" : "s"} updated`
               : "";
+            const duplicateSuffix = fs.duplicates && fs.duplicates > 0
+              ? ` · ${fs.duplicates.toLocaleString()} already-counted ${fs.duplicates === 1 ? "copy" : "copies"} skipped`
+              : "";
             const label = ({
               idle: "Waiting…",
               queued: "Queued",
               uploading: "Reading file…",
               parsing: "Parsing rows…",
               parsed: `Parsed ${fs.total.toLocaleString()} rows — checking database…`,
-              deduping: `Checking ${fs.total.toLocaleString()} rows against database…`,
+              deduping: fs.existingChecked
+                ? `Checking against database… ${fs.existingChecked.toLocaleString()} existing titles scanned so far`
+                : `Checking ${fs.total.toLocaleString()} rows against database…`,
               inserting: `Saving ${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${updatedSuffix}`,
-              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}`,
+              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}${duplicateSuffix}`,
               error: `Error: ${fs.error}`,
             } as Record<FilePhase, string>)[fs.phase];
 
@@ -314,7 +393,16 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="4. Printed Books"
+        title="4. Institutional Repository"
+        hint="Theses, capstones, and faculty research hosted in the university's own repository. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
+        endpoint="/api/upload/institutional_repository"
+        templates={[
+          { label: "institutional_repository_template.xlsx", href: "/templates/institutional_repository_template.xlsx" },
+          { label: "institutional_repository_template.csv",  href: "/templates/institutional_repository_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="5. Printed Books"
         hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/book_printed"
         templates={[
@@ -325,8 +413,9 @@ export default function UploadTab() {
           { name: "campus", label: "Campus (applied if no Campus column)", type: "campus" },
         ]}
       />
+      <DestinySyncCard />
       <FileCard
-        title="5. Printed Journals"
+        title="6. Printed Journals"
         hint="Print journal subscriptions. Campus-specific. Per-row Campus column wins over the dropdown. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/journal_printed"
         templates={[
@@ -338,7 +427,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="6. Subscribed Online Journals"
+        title="7. Subscribed Online Journals"
         hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
         endpoint="/api/upload/journal_online_paid"
         templates={[
@@ -347,7 +436,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="7. Open Source Online Journals"
+        title="8. Open Source Online Journals"
         hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
         endpoint="/api/upload/journal_online_open"
         templates={[

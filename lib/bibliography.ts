@@ -35,7 +35,7 @@ export async function loadProgramBibliography(
 
   const subjects = await paged<SubjectRow>((from, to) => {
     let q = db.from("subjects")
-      .select("id, program_id, course_code, course_title, description, sort_order")
+      .select("id, program_id, course_code, course_title, description, sort_order, locked")
       .eq("program_id", programId)
       .order("sort_order", { ascending: true })
       .range(from, to);

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +15,11 @@ const normField = (s: string | null | undefined) => (s ?? "").trim().replace(/\s
  *  left as a duplicate course. source_id is deleted once empty. */
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to merge programs." }, { status: 403 });
+    }
     const body = await req.json() as { source_id?: number; target_id?: number };
     const sourceId = body.source_id;
     const targetId = body.target_id;
@@ -22,7 +29,9 @@ export async function POST(req: Request) {
     if (sourceId === targetId) {
       return NextResponse.json({ error: "source_id and target_id must differ" }, { status: 400 });
     }
-    const db = serviceClient();
+
+    const { data: srcProg } = await db.from("programs").select("name").eq("id", sourceId as number).maybeSingle();
+    const { data: tgtProg } = await db.from("programs").select("name").eq("id", targetId as number).maybeSingle();
 
     type Subj = { id: number; course_code: string; course_title: string };
     const { data: sourceSubjects, error: srcErr } = await db.from("subjects")
@@ -69,6 +78,11 @@ export async function POST(req: Request) {
     const { error: delProgErr } = await db.from("programs").delete().eq("id", sourceId as number);
     if (delProgErr) throw delProgErr;
 
+    await logActivity(db, {
+      userEmail: userEmailFromRequest(req), action: "program_merge",
+      summary: `Merged program "${srcProg?.name ?? "?"}" into "${tgtProg?.name ?? "?"}" (${moved} subject${moved === 1 ? "" : "s"} moved, ${merged} combined)`,
+      detail: { source_id: sourceId, target_id: targetId, moved, merged },
+    });
     return NextResponse.json({ ok: true, moved, merged });
   } catch (err) {
     return NextResponse.json(

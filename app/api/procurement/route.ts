@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
-
-const ACCREDITATION_MIN = 5;          // minimum unique titles per subject for full compliance
-const PARTIAL_MIN = 3;                // minimum recent titles to count as partial compliance
-const RECENCY_YEARS = 5;              // titles must be published within last N years
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +25,8 @@ export type ProcurementRow = {
   gap: number;                // shortfall based on recent titles (0 = compliant)
   compliant: boolean;         // recent_titles >= ACCREDITATION_MIN
   partial: boolean;           // recent_titles >= PARTIAL_MIN but < ACCREDITATION_MIN
+  cost_per_title: number | null;  // subject's own estimate, else its program's, else null
+  estimated_cost: number | null;  // gap * cost_per_title, or null if no estimate set
 };
 
 export async function GET(req: Request) {
@@ -34,24 +36,38 @@ export async function GET(req: Request) {
     const campus = (u.searchParams.get("campus") ?? "").trim();
     const db = serviceClient();
 
+    const email = userEmailFromRequest(req);
+    let allowedProgramIds: Set<number> | null = null;
+    if (email) {
+      const perms = await getUserPermissions(db, email);
+      if (perms.campusIds !== null) {
+        allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
+        if (programId && !allowedProgramIds.has(Number(programId))) {
+          return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
+        }
+      }
+    }
+
     const currentYear = new Date().getFullYear();
     const yearCutoff = currentYear - RECENCY_YEARS; // e.g. 2026 - 5 = 2021
 
-    type SubjectRec = { id: number; program_id: number; course_code: string; course_title: string; sort_order: number };
+    type SubjectRec = { id: number; program_id: number; course_code: string; course_title: string; sort_order: number; cost_per_title: number | null };
     const subjects = await pageThrough<SubjectRec>(
       (from, to) => {
         let q = db.from("subjects")
-          .select("id, program_id, course_code, course_title, sort_order")
+          .select("id, program_id, course_code, course_title, sort_order, cost_per_title")
           .order("program_id").order("sort_order").range(from, to);
         if (programId) q = q.eq("program_id", Number(programId));
+        else if (allowedProgramIds) q = q.in("program_id", allowedProgramIds.size ? Array.from(allowedProgramIds) : [-1]);
         return q as unknown as PromiseLike<{ data: SubjectRec[] | null; error: { message: string } | null }>;
       },
     );
 
     if (!subjects.length) return NextResponse.json({ rows: [] });
 
-    const { data: programRows } = await db.from("programs").select("id, name");
+    const { data: programRows } = await db.from("programs").select("id, name, cost_per_title");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
+    const programCostMap = new Map((programRows ?? []).map((p: { id: number; cost_per_title: number | null }) => [p.id, p.cost_per_title]));
 
     // Include year in title fetch so we can apply recency filter
     type AssignRow = { subject_id: number; titles: { format: string; campus: string; copies: number; year: string | null } | null };
@@ -101,6 +117,7 @@ export async function GET(req: Request) {
       // Gap is based on recent titles only — must have 5 recent titles
       const gap = Math.max(0, ACCREDITATION_MIN - recent_titles);
       const compliant = recent_titles >= ACCREDITATION_MIN;
+      const cost_per_title = s.cost_per_title ?? programCostMap.get(s.program_id) ?? null;
       return {
         subject_id: s.id,
         program_id: s.program_id,
@@ -116,6 +133,8 @@ export async function GET(req: Request) {
         gap,
         compliant,
         partial: !compliant && recent_titles >= PARTIAL_MIN,
+        cost_per_title,
+        estimated_cost: cost_per_title != null ? gap * cost_per_title : null,
       };
     });
 

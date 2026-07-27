@@ -3,6 +3,8 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import { parseYear } from "@/lib/years";
 import { isResourceTypeId } from "@/lib/resources";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,6 +96,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `Unknown format: ${body.format}` }, { status: 400 });
     }
     const db = serviceClient();
+    const userEmail = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, userEmail);
+    if (!perms.isAdmin && !perms.tabs["upload"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to bulk-delete." }, { status: 403 });
+    }
 
     if (body.table === "titles") {
       const rows = await matchingTitles(db, body);
@@ -113,6 +120,13 @@ export async function POST(req: Request) {
           if (error) throw error;
         }
         await deleteByIds(db, "titles", ids);
+      }
+      if (ids.length > 0) {
+        await logActivity(db, {
+          userEmail, action: "bulk_delete",
+          summary: `Bulk-deleted ${ids.length} title${ids.length === 1 ? "" : "s"}${body.format ? ` (${body.format})` : ""}`,
+          detail: { table: "titles", count: ids.length, filters: body },
+        });
       }
       return NextResponse.json({ ok: true, count: ids.length });
     }
@@ -138,6 +152,13 @@ export async function POST(req: Request) {
         }
         await deleteByIds(db, "subjects", ids);
       }
+      if (ids.length > 0) {
+        await logActivity(db, {
+          userEmail, action: "bulk_delete",
+          summary: `Bulk-deleted ${ids.length} subject${ids.length === 1 ? "" : "s"}`,
+          detail: { table: "subjects", count: ids.length, filters: body },
+        });
+      }
       return NextResponse.json({ ok: true, count: ids.length });
     }
 
@@ -152,7 +173,14 @@ export async function POST(req: Request) {
       });
     }
     const ids = rows.map((r) => r.id);
-    if (ids.length > 0) await deleteByIds(db, "canvassing", ids);
+    if (ids.length > 0) {
+      await deleteByIds(db, "canvassing", ids);
+      await logActivity(db, {
+        userEmail, action: "bulk_delete",
+        summary: `Bulk-deleted ${ids.length} canvassing record${ids.length === 1 ? "" : "s"}`,
+        detail: { table: "canvassing", count: ids.length, filters: body },
+      });
+    }
     return NextResponse.json({ ok: true, count: ids.length });
   } catch (err) {
     return NextResponse.json(

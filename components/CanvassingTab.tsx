@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/api-client";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
@@ -262,6 +263,8 @@ export default function CanvassingTab() {
 
   return (
     <div className="space-y-4">
+      <SupplierOffersReview />
+
       {/* Upload */}
       <div className="card">
         <h2 className="text-psu font-semibold mb-1">Upload Canvassing File</h2>
@@ -432,6 +435,108 @@ export default function CanvassingTab() {
         <div className="card">
           <p className="text-slate-500 text-sm">No canvassing entries yet. Upload a file above.</p>
         </div>
+      )}
+    </div>
+  );
+}
+
+const OFFER_STATUS_COLOR: Record<string, string> = {
+  pending: "bg-slate-100 text-slate-600",
+  accepted: "bg-green-100 text-green-700",
+  declined: "bg-red-100 text-red-700",
+};
+
+/** Pending offers suppliers have submitted against a need -- review and
+ *  accept/decline. Shown to whoever can view/edit Market Canvassing. */
+function SupplierOffersReview() {
+  const [offers, setOffers] = useState<SupplierOfferRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  function load() {
+    setLoading(true);
+    apiFetch("/api/supplier/offers")
+      .then((r) => r.json())
+      .then((j) => { if (j.error) setErr(j.error); else setOffers(j.rows ?? []); })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(load, []);
+
+  async function decide(id: number, status: "accepted" | "declined") {
+    setBusyId(id);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/supplier/offers/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const displayed = showAll ? offers : offers.filter((o) => o.status === "pending");
+  if (loading || (offers.length === 0 && !err)) return null;
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-psu font-semibold">Supplier Offers</h2>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          Show accepted/declined too
+        </label>
+      </div>
+      {err && <p className="text-red-700 text-sm mb-2">{err}</p>}
+      {displayed.length === 0 && <p className="text-slate-500 text-sm">No pending offers.</p>}
+      {displayed.length > 0 && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-slate-200 text-slate-500 text-left">
+              <th className="py-1 pr-2">Supplier</th>
+              <th className="py-1 pr-2">Subject</th>
+              <th className="py-1 pr-2">Title</th>
+              <th className="py-1 px-2">Format</th>
+              <th className="py-1 px-2 text-right">Price</th>
+              <th className="py-1 px-2">Notes</th>
+              <th className="py-1 pl-2 text-right">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {displayed.map((o) => (
+              <tr key={o.id} className="border-b border-slate-100">
+                <td className="py-1.5 pr-2 text-slate-500">{o.supplier_email}</td>
+                <td className="py-1.5 pr-2 text-slate-500">{o.subject_label || "—"}</td>
+                <td className="py-1.5 pr-2">{o.title}{o.author && <span className="text-slate-400"> — {o.author}</span>}</td>
+                <td className="py-1.5 px-2 text-slate-500">{o.format || "—"}</td>
+                <td className="py-1.5 px-2 text-right tabular-nums">{o.price != null ? o.price.toLocaleString() : "—"}</td>
+                <td className="py-1.5 px-2 text-slate-500">{o.notes || "—"}</td>
+                <td className="py-1.5 pl-2 text-right">
+                  {o.status === "pending" ? (
+                    <div className="flex gap-1 justify-end">
+                      <button className="text-green-700 text-[11px] underline" disabled={busyId === o.id} onClick={() => decide(o.id, "accepted")}>Accept</button>
+                      <button className="text-red-600 text-[11px] underline" disabled={busyId === o.id} onClick={() => decide(o.id, "declined")}>Decline</button>
+                    </div>
+                  ) : (
+                    <span className={"inline-block rounded px-1.5 py-0.5 text-[10px] font-medium " + OFFER_STATUS_COLOR[o.status]}>
+                      {o.status === "accepted" ? "Accepted" : "Declined"}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );

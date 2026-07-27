@@ -47,7 +47,11 @@ export async function middleware(req: NextRequest) {
       { status: 401 },
     );
   }
-  return NextResponse.next();
+  // Forwarded so route handlers can attribute activity-log entries to the
+  // signed-in user without re-verifying the token themselves.
+  const headers = new Headers(req.headers);
+  headers.set("x-user-email", data.user.email ?? "");
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {

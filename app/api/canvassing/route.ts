@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,10 +77,14 @@ export async function GET(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["canvassing"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to delete canvassing records." }, { status: 403 });
+    }
     const u = new URL(req.url);
     const id = Number(u.searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-    const db = serviceClient();
     const { error } = await db.from("canvassing").delete().eq("id", id);
     if (error) throw error;
     return NextResponse.json({ ok: true });

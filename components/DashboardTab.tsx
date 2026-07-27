@@ -84,6 +84,19 @@ export default function DashboardTab() {
     acc[rt.id] = displaySubjects.reduce((a, s) => a + (s.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
+  const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
+  const totalDigital = RESOURCE_TYPES.filter((rt) => rt.medium === "digital").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
+
+  /** Splits one subject's per-format counts into printed vs. digital/eBook. */
+  function mediumBreakdown(counts: Record<ResourceTypeId, number>): { printed: number; digital: number } {
+    let printed = 0, digital = 0;
+    for (const rt of RESOURCE_TYPES) {
+      const c = counts[rt.id] ?? 0;
+      if (rt.medium === "print") printed += c;
+      else digital += c;
+    }
+    return { printed, digital };
+  }
 
   async function exportCitations(
     fmt: "citations-docx" | "citations-txt",
@@ -151,6 +164,16 @@ export default function DashboardTab() {
               <div className="text-2xl font-semibold text-psu">{s.value.toLocaleString()}</div>
             </div>
           ))}
+        </div>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div className="bg-slate-50 border border-slate-200 rounded p-3">
+            <div className="text-xs text-slate-600">Printed (books + journals)</div>
+            <div className="text-xl font-semibold text-psu">{totalPrinted.toLocaleString()}</div>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded p-3">
+            <div className="text-xs text-slate-600">Digital/eBook (eBooks, online journals, repository)</div>
+            <div className="text-xl font-semibold text-psu">{totalDigital.toLocaleString()}</div>
+          </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {RESOURCE_TYPES.map((rt) => (
@@ -247,6 +270,8 @@ export default function DashboardTab() {
                         <th className="py-1 pr-2 w-24">Code</th>
                         <th className="py-1 pr-2">Subject</th>
                         <th className="py-1 px-2 text-right">Titles</th>
+                        <th className="py-1 px-2 text-right" title="Printed books and journals">Printed</th>
+                        <th className="py-1 px-2 text-right" title="eBooks, online journals, and institutional repository items">Digital/eBook</th>
                         <th className="py-1 px-2 text-right">Volumes</th>
                         <th className="py-1 pl-2 w-24 text-right">Citation</th>
                       </tr>
@@ -254,11 +279,14 @@ export default function DashboardTab() {
                     <tbody>
                       {grp.rows.map((s) => {
                         const label = [s.course_code, s.course_title].filter(Boolean).join("_");
+                        const { printed, digital } = mediumBreakdown(s.counts);
                         return (
                           <tr key={s.subject_id} className="border-b border-slate-100 hover:bg-slate-50">
                             <td className="py-1.5 pr-2 text-slate-500">{s.course_code}</td>
                             <td className="py-1.5 pr-2">{s.course_title}</td>
                             <td className="py-1.5 px-2 text-right font-semibold tabular-nums">{s.total_titles}</td>
+                            <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{printed}</td>
+                            <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{digital}</td>
                             <td className="py-1.5 px-2 text-right tabular-nums text-slate-600">{s.total_volumes}</td>
                             <td className="py-1.5 pl-2 text-right">
                               <button

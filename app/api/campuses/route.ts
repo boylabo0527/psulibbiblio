@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const db = serviceClient();
-    const { data, error } = await db.from("campuses").select("id, name").order("name");
+    const email = userEmailFromRequest(req);
+    let q = db.from("campuses").select("id, name").order("name");
+    if (email) {
+      const perms = await getUserPermissions(db, email);
+      if (perms.campusIds !== null) q = q.in("id", perms.campusIds.length ? perms.campusIds : [-1]);
+    }
+    const { data, error } = await q;
     if (error) throw error;
     return NextResponse.json({ campuses: data ?? [] });
   } catch (err) {
@@ -17,12 +25,16 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to add campuses." }, { status: 403 });
+    }
     const body = await req.json() as { name?: string };
     const name = (body.name ?? "").trim();
     if (!name) {
       return NextResponse.json({ error: "Campus name is required." }, { status: 400 });
     }
-    const db = serviceClient();
     const { data, error } = await db.from("campuses").insert({ name }).select("id, name").single();
     if (error) {
       if (error.code === "23505") {

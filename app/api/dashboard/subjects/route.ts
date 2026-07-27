@@ -3,6 +3,9 @@ import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
 import { yearInRange } from "@/lib/years";
+import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds } from "@/lib/campus-scope";
+import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +33,21 @@ export async function GET(req: Request) {
     const maxYear = Number.isFinite(maxYearParam) ? maxYearParam : undefined;
     const db = serviceClient();
 
+    // The Dashboard is intentionally public -- an anonymous visitor is
+    // always unrestricted. A signed-in user restricted to specific
+    // campuses only sees programs offered there.
+    const email = userEmailFromRequest(req);
+    let allowedProgramIds: Set<number> | null = null;
+    if (email) {
+      const perms = await getUserPermissions(db, email);
+      if (perms.campusIds !== null) {
+        allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
+        if (programId && !allowedProgramIds.has(Number(programId))) {
+          return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
+        }
+      }
+    }
+
     // Subjects (optionally filtered by program).
     type SubjectRec = { id: number; program_id: number; course_code: string; course_title: string; sort_order: number };
     const subjects = await pageThrough<SubjectRec>(
@@ -40,6 +58,7 @@ export async function GET(req: Request) {
           .order("sort_order")
           .range(from, to);
         if (programId) q = q.eq("program_id", Number(programId));
+        else if (allowedProgramIds) q = q.in("program_id", allowedProgramIds.size ? Array.from(allowedProgramIds) : [-1]);
         return q as unknown as PromiseLike<{ data: SubjectRec[] | null; error: { message: string } | null }>;
       },
     );
