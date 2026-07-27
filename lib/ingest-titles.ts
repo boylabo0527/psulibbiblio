@@ -270,6 +270,7 @@ export async function planIngestOps(
       copies: r.copies ?? 1,
       url: r.url ?? "",
       subjects: r.subjects ?? "",
+      provider: r.provider ?? "",
       batch_id: batchId,
     };
     if (rt.campusScoped) row.campus = c;

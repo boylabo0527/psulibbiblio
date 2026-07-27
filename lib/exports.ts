@@ -259,7 +259,7 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
     ws.getCell(r, 2).value = "Journals (program-wide -- applies to every course, not repeated per course)";
     ws.getRow(r).font = { bold: true };
     r++;
-    ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"];
+    ws.getRow(r).values = ["Call No. / ISSN", "Title", "Publisher", "Year", "Copy", "Link"];
     ws.getRow(r).font = { bold: true };
     r++;
     for (const t of NON_EMPTY_TYPES(b.journals)) {
@@ -268,8 +268,8 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
       r++;
       for (const tt of b.journals[t.id]) {
         const ident = tt.call_no || tt.issn || "";
-        ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
-        if (tt.url) ws.getCell(r, 7).value = { text: tt.url, hyperlink: tt.url };
+        ws.getRow(r).values = [ident, tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
+        if (tt.url) ws.getCell(r, 6).value = { text: tt.url, hyperlink: tt.url };
         r++;
       }
     }
@@ -314,12 +314,15 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   }
   // Journals apply to the whole program, not one course -- listed once
   // here (blank course code/title) instead of repeated per subject.
+  // Author is left blank -- a journal doesn't have one the way a book
+  // does -- rather than dropping the shared Author column outright and
+  // making book vs. journal rows a different shape.
   for (const t of RESOURCE_TYPES) {
     for (const tt of b.journals[t.id]) {
       lines.push([
         "", "", "(Program-wide)",
         "", t.sectionLabel,
-        tt.call_no, tt.issn, tt.author, tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
+        tt.call_no, tt.issn, "", tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
       ].map(escape).join(","));
     }
   }
@@ -392,6 +395,30 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
     ],
   });
 
+  // Journals get their own (Author-less -- a periodical doesn't have one
+  // the way a book does) column layout, reusing the same cell/linkCell
+  // primitives above.
+  const JOURNAL_COL_DXA = [1400, 3400, 1700, 700, 600, 1200];
+  const JOURNAL_TOTAL_DXA = JOURNAL_COL_DXA.reduce((a, c) => a + c, 0);
+
+  const journalColumnHeaderRow = () => new TableRow({
+    tableHeader: true,
+    children: ["Call No. / ISSN", "Title", "Publisher", "Year", "Copy", "Link"].map((c, i) =>
+      cell(c, { bold: true, widthDxa: JOURNAL_COL_DXA[i] }),
+    ),
+  });
+
+  const journalTypeLabelRow = (label: string) => new TableRow({
+    children: [cell(label, { italic: true, colSpan: JOURNAL_COL_DXA.length, widthDxa: JOURNAL_TOTAL_DXA })],
+  });
+
+  const journalDataRow = (vals: string[], url: string | undefined) => new TableRow({
+    children: [
+      ...vals.map((v, i) => cell(v, { widthDxa: JOURNAL_COL_DXA[i] })),
+      linkCell(url, JOURNAL_COL_DXA[JOURNAL_COL_DXA.length - 1]),
+    ],
+  });
+
   const children: import("docx").FileChild[] = [];
   children.push(new Paragraph({ text: "PALAWAN STATE UNIVERSITY", heading: HeadingLevel.TITLE }));
   children.push(new Paragraph({ text: b.campus || "All Campuses" }));
@@ -434,17 +461,17 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
 
   if (NON_EMPTY_TYPES(b.journals).length > 0) {
     children.push(new Paragraph({ text: "Journals (program-wide -- applies to every course, not repeated per course)", heading: HeadingLevel.HEADING_2 }));
-    const journalRows: import("docx").TableRow[] = [columnHeaderRow()];
+    const journalRows: import("docx").TableRow[] = [journalColumnHeaderRow()];
     for (const t of NON_EMPTY_TYPES(b.journals)) {
-      journalRows.push(typeLabelRow(t.sectionLabel));
+      journalRows.push(journalTypeLabelRow(t.sectionLabel));
       for (const tt of b.journals[t.id]) {
         const ident = tt.call_no || tt.issn || "";
-        journalRows.push(dataRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
+        journalRows.push(journalDataRow([ident, tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
       }
     }
     children.push(new Table({
-      width: { size: TOTAL_DXA, type: WidthType.DXA },
-      columnWidths: COL_DXA,
+      width: { size: JOURNAL_TOTAL_DXA, type: WidthType.DXA },
+      columnWidths: JOURNAL_COL_DXA,
       rows: journalRows,
     }));
     const journalTotals = subjectTotals(b.journals);
@@ -594,13 +621,27 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
   ];
   const driftSum = cols.reduce((a, c) => a + c.width, 0);
   cols[2].width += WIDTH - driftSum;
-  const colX = (idx: number) => LEFT + cols.slice(0, idx).reduce((a, c) => a + c.width, 0);
+  const colX = (colsArr: { width: number }[], idx: number) =>
+    LEFT + colsArr.slice(0, idx).reduce((a, c) => a + c.width, 0);
 
-  function rowHeight(cells: string[], padding = 4): number {
+  // Journals get a different (Author-less) column layout -- same rationale
+  // as the DOCX export's JOURNAL_COL_DXA.
+  const journalCols = [
+    { width: 0.16 * WIDTH },
+    { width: 0.38 * WIDTH },
+    { width: 0.19 * WIDTH },
+    { width: 0.06 * WIDTH },
+    { width: 0.05 * WIDTH },
+    { width: 0.16 * WIDTH },
+  ];
+  const journalDriftSum = journalCols.reduce((a, c) => a + c.width, 0);
+  journalCols[1].width += WIDTH - journalDriftSum;
+
+  function rowHeight(cells: string[], padding = 4, colsArr: { width: number }[] = cols): number {
     let h = 0;
     doc.fontSize(8);
     for (let i = 0; i < cells.length; i++) {
-      const w = cols[i].width - padding * 2;
+      const w = colsArr[i].width - padding * 2;
       const hi = doc.heightOfString(cells[i] || "", { width: w });
       if (hi > h) h = hi;
     }
@@ -629,13 +670,17 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     doc.y = y + h;
   }
 
-  function drawRow(cells: string[], opts: { bold?: boolean; italic?: boolean; fillHeader?: boolean; merged?: boolean } = {}) {
+  function drawRow(
+    cells: string[],
+    opts: { bold?: boolean; italic?: boolean; fillHeader?: boolean; merged?: boolean } = {},
+    colsArr: { width: number }[] = cols,
+  ) {
     const padding = 4;
     const font = opts.bold ? "Helvetica-Bold" : opts.italic ? "Helvetica-Oblique" : "Helvetica";
     doc.font(font).fontSize(8);
     const h = opts.merged
       ? doc.heightOfString(cells[0] || "", { width: WIDTH - padding * 2 }) + padding * 2
-      : rowHeight(cells, padding);
+      : rowHeight(cells, padding, colsArr);
     ensureSpace(h);
     const y = doc.y;
     if (opts.fillHeader) {
@@ -649,9 +694,9 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
       doc.text(cells[0] || "", LEFT + padding, y + padding, { width: WIDTH - padding * 2 });
     } else {
       for (let i = 0; i < cells.length; i++) {
-        const x = colX(i);
-        doc.rect(x, y, cols[i].width, h).stroke();
-        doc.text(cells[i] || "", x + padding, y + padding, { width: cols[i].width - padding * 2 });
+        const x = colX(colsArr, i);
+        doc.rect(x, y, colsArr[i].width, h).stroke();
+        doc.text(cells[i] || "", x + padding, y + padding, { width: colsArr[i].width - padding * 2 });
       }
     }
     doc.x = LEFT;
@@ -708,12 +753,12 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
     doc.font("Helvetica").fontSize(10);
     doc.moveDown(0.2);
 
-    drawRow(["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
+    drawRow(["Call No. / ISSN", "Title", "Publisher", "Year", "Copy", "Link"], { bold: true, fillHeader: true }, journalCols);
     for (const t of NON_EMPTY_TYPES(b.journals)) {
-      drawRow([t.sectionLabel, "", "", "", "", "", ""], { italic: true, merged: true });
+      drawRow([t.sectionLabel, "", "", "", "", ""], { italic: true, merged: true }, journalCols);
       for (const tt of b.journals[t.id]) {
         const ident = tt.call_no || tt.issn || "";
-        drawRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""]);
+        drawRow([ident, tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""], {}, journalCols);
       }
     }
     const journalTotals = subjectTotals(b.journals);

@@ -11,7 +11,7 @@ const normField = (s: string | null | undefined) => (s ?? "").trim().replace(/\s
 
 /** PATCH /api/titles/:id — update editable title fields.
  *  Allowed: title, author, publisher, year, isbn, issn, call_no, copies,
- *  url, campus. format is intentionally NOT editable.
+ *  url, campus, provider. format is intentionally NOT editable.
  *
  *  For printed books, if the edit makes this row an exact match (call_no +
  *  title + author + campus, case/whitespace-insensitive) of another
@@ -28,7 +28,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Your account doesn't have permission to edit titles." }, { status: 403 });
     }
     const body = await req.json() as Record<string, unknown>;
-    const allowed = ["title", "author", "publisher", "year", "isbn", "issn", "call_no", "copies", "url", "campus"];
+    const allowed = ["title", "author", "publisher", "year", "isbn", "issn", "call_no", "copies", "url", "campus", "provider"];
     const patch: Record<string, unknown> = {};
     for (const k of allowed) if (k in body) patch[k] = body[k];
     if (Object.keys(patch).length === 0) {

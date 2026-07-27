@@ -9,6 +9,7 @@ type Title = {
   id: number; format: ResourceTypeId;
   title: string; author: string; publisher: string; year: string;
   isbn: string; issn: string; call_no: string; copies: number; url?: string;
+  provider?: string;
 };
 type Buckets = Record<ResourceTypeId, Title[]>;
 type SubjectDetail = {
@@ -249,6 +250,8 @@ export default function ProgramsTab() {
                   onReload={load}
                   showIdent
                   hideRemove
+                  hideAuthor
+                  showProvider={t.id === "journal_online_paid"}
                 />
               ))}
             </div>
@@ -297,6 +300,7 @@ function SubjectBlock({
           onRemove={onRemove}
           onReload={onReload}
           showIdent={t.medium === "print" || t.kind === "journal"}
+          showProvider={t.id === "ebook_paid"}
         />
       ))}
       <p className="text-xs text-slate-700 mt-1">
@@ -419,8 +423,11 @@ function SubjectDescription({
 }
 
 function BookSection({
-  label, books, onRemove, onReload, showIdent, hideRemove,
-}: { label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean; hideRemove?: boolean }) {
+  label, books, onRemove, onReload, showIdent, hideRemove, hideAuthor, showProvider,
+}: {
+  label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean;
+  hideRemove?: boolean; hideAuthor?: boolean; showProvider?: boolean;
+}) {
   if (!books.length) return null;
   return (
     <div className="mb-2">
@@ -429,9 +436,10 @@ function BookSection({
         <thead className="text-slate-500">
           <tr>
             {showIdent && <th className="text-left p-1 w-32">Call No. / ISSN</th>}
-            <th className="text-left p-1 w-44">Author</th>
+            {!hideAuthor && <th className="text-left p-1 w-44">Author</th>}
             <th className="text-left p-1">Title</th>
             <th className="text-left p-1 w-32">Publisher</th>
+            {showProvider && <th className="text-left p-1 w-32">Provider</th>}
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
             <th className="p-1 w-20"></th>
@@ -439,7 +447,10 @@ function BookSection({
         </thead>
         <tbody>
           {books.map((b) => (
-            <EditableTitleRow key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload} hideRemove={hideRemove} />
+            <EditableTitleRow
+              key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload}
+              hideRemove={hideRemove} hideAuthor={hideAuthor} showProvider={showProvider}
+            />
           ))}
         </tbody>
       </table>
@@ -448,8 +459,11 @@ function BookSection({
 }
 
 function EditableTitleRow({
-  book, siblings, showIdent, onRemove, onReload, hideRemove,
-}: { book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void; hideRemove?: boolean }) {
+  book, siblings, showIdent, onRemove, onReload, hideRemove, hideAuthor, showProvider,
+}: {
+  book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void;
+  hideRemove?: boolean; hideAuthor?: boolean; showProvider?: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<Title>(book);
@@ -490,7 +504,7 @@ function EditableTitleRow({
         body: JSON.stringify({
           call_no: draft.call_no, issn: draft.issn, author: draft.author,
           title: draft.title, publisher: draft.publisher, year: draft.year,
-          copies: Number(draft.copies) || 1,
+          copies: Number(draft.copies) || 1, provider: draft.provider ?? "",
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -519,9 +533,14 @@ function EditableTitleRow({
               onChange={(e) => setDraft({ ...draft, call_no: e.target.value, issn: draft.issn })} />
           </td>
         )}
-        <td className="p-1"><input className="input text-xs w-full" value={draft.author ?? ""} onChange={(e) => setDraft({ ...draft, author: e.target.value })} /></td>
+        {!hideAuthor && (
+          <td className="p-1"><input className="input text-xs w-full" value={draft.author ?? ""} onChange={(e) => setDraft({ ...draft, author: e.target.value })} /></td>
+        )}
         <td className="p-1"><input className="input text-xs w-full" value={draft.title ?? ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></td>
         <td className="p-1"><input className="input text-xs w-full" value={draft.publisher ?? ""} onChange={(e) => setDraft({ ...draft, publisher: e.target.value })} /></td>
+        {showProvider && (
+          <td className="p-1"><input className="input text-xs w-full" value={draft.provider ?? ""} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} /></td>
+        )}
         <td className="p-1"><input className="input text-xs w-full" value={draft.year ?? ""} onChange={(e) => setDraft({ ...draft, year: e.target.value })} /></td>
         <td className="p-1"><input type="number" min={1} className="input text-xs w-full" value={draft.copies ?? 1} onChange={(e) => setDraft({ ...draft, copies: Number(e.target.value) })} /></td>
         <td className="p-1">
@@ -541,7 +560,7 @@ function EditableTitleRow({
     <>
       <tr className="border-t border-slate-100">
         {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
-        <td className="p-1">{local.author}</td>
+        {!hideAuthor && <td className="p-1">{local.author}</td>}
         <td className="p-1">
           {local.title}
           {local.url && (
@@ -551,6 +570,7 @@ function EditableTitleRow({
           )}
         </td>
         <td className="p-1">{local.publisher}</td>
+        {showProvider && <td className="p-1">{local.provider}</td>}
         <td className="p-1">{local.year}</td>
         <td className="p-1">{local.copies ?? 1}</td>
         <td className="p-1">

@@ -17,6 +17,7 @@ const EBOOK_ALIASES: Record<string, string[]> = {
   isbn: ["isbn", "online_identifier", "online identifier", "isbn-13", "isbn13", "eisbn"],
   url: ["url", "title_url", "link"],
   subjects: ["subjects", "subject", "tags", "keywords"],
+  provider: ["provider", "vendor", "platform", "subscribed through", "subscription platform"],
 };
 
 const PRINTED_ALIASES: Record<string, string[]> = {
@@ -117,6 +118,7 @@ export async function parseEbookTitles(filename: string, buf: Buffer): Promise<T
       isbn: map.isbn ? r[map.isbn] : "",
       url: map.url ? r[map.url] : "",
       subjects: map.subjects ? r[map.subjects] : "",
+      provider: map.provider ? r[map.provider] : "",
       copies: 1,
     });
   }
@@ -157,6 +159,7 @@ const JOURNAL_ALIASES: Record<string, string[]> = {
   copies: ["copy", "copies", "subscriptions", "no. of copies", "volumes"],
   url: ["url", "title_url", "link", "homepage"],
   campus: ["campus", "branch", "library"],
+  provider: ["provider", "vendor", "platform", "subscribed through", "subscription platform"],
 };
 
 export async function parseJournals(filename: string, buf: Buffer): Promise<TitleRow[]> {
@@ -183,6 +186,7 @@ export async function parseJournals(filename: string, buf: Buffer): Promise<Titl
       issn: map.issn ? r[map.issn] : "",
       call_no: map.call_no ? r[map.call_no] : "",
       url: map.url ? r[map.url] : "",
+      provider: map.provider ? r[map.provider] : "",
       copies,
       // campus is optional; if absent the upload route fills it from the UI dropdown.
       campus: map.campus ? (r[map.campus] || "").trim() : undefined,
@@ -260,6 +264,7 @@ export function buildTitleRowsFromRaw(
       call_no: map.call_no ? r[map.call_no] : "",
       url: map.url ? r[map.url] : "",
       subjects: map.subjects ? r[map.subjects] : "",
+      provider: map.provider ? r[map.provider] : "",
       copies,
       campus: map.campus ? (r[map.campus] ?? "").trim() : undefined,
       barcode: map.barcode ? (r[map.barcode] ?? "").trim() : undefined,

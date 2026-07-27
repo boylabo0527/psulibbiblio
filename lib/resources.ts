@@ -5,7 +5,10 @@
  * - uiLabel: shown on upload cards and tabs
  * - sectionLabel: header shown in per-subject exports
  * - kind: book | journal — affects parser column aliases and field shown
- * - access: paid | open — used for nice grouping in summary outputs
+ * - access: paid | open | complementary — used for nice grouping in summary
+ *   outputs. "complementary" = bundled free with a paid subscription (a
+ *   platform's package deal), distinct from paid-for-directly or genuinely
+ *   open access.
  * - medium: print | digital
  * - dedupBy: keys used to detect duplicates on re-upload
  */
@@ -23,6 +26,17 @@ export const RESOURCE_TYPES = [
     uiLabel: "Open Source eBooks",
     sectionLabel: "Open Source eBooks",
     kind: "book",  access: "open", medium: "digital",
+    campusScoped: false,
+    dedupBy: "isbn-or-tuple",
+  },
+  {
+    id: "ebook_complementary",
+    uiLabel: "Complementary eBooks",
+    sectionLabel: "Complementary eBooks",
+    // Bundled in free alongside a paid subscription (a platform's package
+    // deal) -- distinct from a title the library pays for directly
+    // (ebook_paid) or a genuinely open-access one (ebook_open).
+    kind: "book",  access: "complementary", medium: "digital",
     campusScoped: false,
     dedupBy: "isbn-or-tuple",
   },
@@ -56,6 +70,16 @@ export const RESOURCE_TYPES = [
     uiLabel: "Open Source Online Journals",
     sectionLabel: "Open Source Online Journals",
     kind: "journal", access: "open", medium: "digital",
+    campusScoped: false,
+    dedupBy: "issn-or-title",
+  },
+  {
+    id: "journal_complementary",
+    uiLabel: "Complementary Online Journals",
+    sectionLabel: "Complementary Online Journals",
+    // Same rationale as ebook_complementary -- free with a bundled
+    // subscription, not paid for directly nor genuinely open access.
+    kind: "journal", access: "complementary", medium: "digital",
     campusScoped: false,
     dedupBy: "issn-or-title",
   },
