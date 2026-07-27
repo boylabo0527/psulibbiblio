@@ -37,7 +37,16 @@ const FALLBACK_CAMPUS = "Main Campus";
 
 export type IngestOp =
   | { kind: "insert"; row: Record<string, unknown> }
-  | { kind: "update"; id: number; copies: number; barcodes: string[] };
+  // format/title are titles' only NOT NULL columns without a default, so
+  // an update op has to carry them even though they never actually
+  // change: applyIngestOps/processSyncJobChunk do this update as an
+  // upsert() (one round trip for many rows instead of one per row --
+  // see there for why), and Postgres validates NOT NULL on the row
+  // INSERT ... ON CONFLICT attempts to build BEFORE it even gets to
+  // checking whether a conflict exists, so omitting them fails outright
+  // with "null value in column ... violates not-null constraint" rather
+  // than quietly updating just the listed columns.
+  | { kind: "update"; id: number; format: string; title: string; copies: number; barcodes: string[] };
 
 export type IngestPlan = {
   ops: IngestOp[];
@@ -134,7 +143,7 @@ export async function planIngestOps(
           duplicates++;
           continue;
         }
-        ops.push({ kind: "update", id: ex.id, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
+        ops.push({ kind: "update", id: ex.id, format: rt.id, title: ex.title, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
       } else {
         ops.push({
           kind: "insert",
@@ -300,11 +309,13 @@ export async function applyIngestOps(
       // upsert(), not one update() per row: a single round trip per batch
       // instead of one per row is the difference between this finishing
       // in seconds vs. running long enough to hit a serverless timeout.
-      // Only the listed columns are touched -- Postgres' ON CONFLICT ...
-      // DO UPDATE SET only overwrites columns present in the payload, so
-      // every other column on the existing row is left alone.
+      // format/title are included solely to satisfy titles' NOT NULL
+      // constraints on the row Postgres builds to test for a conflict
+      // (see the IngestOp comment above) -- they're set to their current,
+      // unchanged values, so only copies/barcodes actually end up
+      // different after the update.
       const { error } = await db.from("titles").upsert(
-        updates.map((u) => ({ id: u.id, copies: u.copies, barcodes: u.barcodes })),
+        updates.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
       );
       if (error) throw error;
       updated += updates.length;

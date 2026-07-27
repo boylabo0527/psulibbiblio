@@ -123,8 +123,13 @@ export async function processSyncJobChunk(
       insertedDelta += inserts.length;
     }
     if (updates.length) {
+      // format/title included only to satisfy titles' NOT NULL
+      // constraints on the row this upsert's INSERT ... ON CONFLICT
+      // builds to test for a conflict -- see the IngestOp comment in
+      // lib/ingest-titles.ts. They're the row's own current values, so
+      // only copies/barcodes actually change.
       const { error: updErr } = await db.from("titles").upsert(
-        updates.map((u) => ({ id: u.id, copies: u.copies, barcodes: u.barcodes })),
+        updates.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
       );
       if (updErr) throw updErr;
       updatedDelta += updates.length;
