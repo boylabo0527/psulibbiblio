@@ -19,6 +19,9 @@ export type TitleRow = {
   /** Per-copy accession/barcode number, if the source file has one — used to
    *  avoid double-counting the same physical copy across repeat uploads. */
   barcode?: string;
+  /** Subscription platform/vendor (e.g. "Perlego") -- only meaningful for
+   *  paid eBooks/journals (ebook_paid, journal_online_paid). */
+  provider?: string;
 };
 
 export type ProgramRow = {

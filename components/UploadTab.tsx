@@ -575,7 +575,16 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="3. Open Source eBooks"
+        title="3. Complementary eBooks"
+        hint="Free eBooks bundled in with a paid subscription package (e.g. extra titles included with a Perlego plan) -- not individually paid for, not open access. Same recognized columns as the Subscribed eBooks template."
+        endpoint="/api/upload/ebook_complementary"
+        templates={[
+          { label: "ebooks_paid_template.xlsx", href: "/templates/ebooks_paid_template.xlsx" },
+          { label: "ebooks_paid_template.csv",  href: "/templates/ebooks_paid_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="4. Open Source eBooks"
         hint="Open Access eBook lists (OAPEN, DOAB, etc.). Same recognized columns as the paid template."
         endpoint="/api/upload/ebook_open"
         templates={[
@@ -584,7 +593,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="4. Institutional Repository"
+        title="5. Institutional Repository"
         hint="Theses, capstones, and faculty research hosted in the university's own repository. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
         endpoint="/api/upload/institutional_repository"
         templates={[
@@ -593,7 +602,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="5. Printed Books"
+        title="6. Printed Books"
         hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/book_printed"
         templates={[
@@ -606,7 +615,7 @@ export default function UploadTab() {
       />
       <DestinySyncCard />
       <FileCard
-        title="6. Printed Journals"
+        title="7. Printed Journals"
         hint="Print journal subscriptions. Campus-specific. Per-row Campus column wins over the dropdown. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/journal_printed"
         templates={[
@@ -618,7 +627,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="7. Subscribed Online Journals"
+        title="8. Subscribed Online Journals"
         hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
         endpoint="/api/upload/journal_online_paid"
         templates={[
@@ -627,7 +636,16 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="8. Open Source Online Journals"
+        title="9. Complementary Online Journals"
+        hint="Free online journals bundled in with a paid subscription package -- not individually paid for, not open access. Same recognized columns as the Subscribed Online Journals template."
+        endpoint="/api/upload/journal_complementary"
+        templates={[
+          { label: "journals_online_paid_template.xlsx", href: "/templates/journals_online_paid_template.xlsx" },
+          { label: "journals_online_paid_template.csv",  href: "/templates/journals_online_paid_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="10. Open Source Online Journals"
         hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
         endpoint="/api/upload/journal_online_open"
         templates={[

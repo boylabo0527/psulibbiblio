@@ -8,8 +8,9 @@
 -- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
--- 16_user_campus_scope.sql + 17_sync_jobs.sql in order. If you've already
--- run some of those individually, running this on top is still safe.
+-- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql
+-- in order. If you've already run some of those individually, running this
+-- on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -335,3 +336,18 @@ create index if not exists sync_job_items_job_seq_idx on sync_job_items (job_id,
 
 alter table sync_jobs enable row level security;
 alter table sync_job_items enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 18: complementary eBook/journal formats + provider column
+-- ---------------------------------------------------------------------------
+alter table titles drop constraint if exists titles_format_check;
+
+alter table titles add constraint titles_format_check check (format in (
+  'ebook_paid', 'ebook_open', 'ebook_complementary',
+  'book_printed',
+  'journal_printed',
+  'journal_online_paid', 'journal_online_open', 'journal_complementary',
+  'institutional_repository'
+));
+
+alter table titles add column if not exists provider text default '';
