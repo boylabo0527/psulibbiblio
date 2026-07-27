@@ -75,11 +75,13 @@ export async function POST(req: Request, { params }: { params: { type: string } 
 
       const result = await ingestTitleRecords(db, rt, records, batchId, send, defaultCampus);
       send({ phase: "done", ...result });
+      const noCampusTitles = result.noCampusTitles ?? [];
       await logActivity(db, {
         userEmail, action: "upload_titles",
-        summary: result.duplicates != null
+        summary: (result.duplicates != null
           ? `Uploaded ${rt.uiLabel}: ${result.inserted} new, ${result.skipped} updated, ${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} skipped`
-          : `Uploaded ${rt.uiLabel}: ${result.inserted} new, ${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} skipped`,
+          : `Uploaded ${rt.uiLabel}: ${result.inserted} new, ${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} skipped`)
+          + (noCampusTitles.length ? ` -- ${noCampusTitles.length} title(s) had no campus at all and were filed under "Main Campus" pending correction` : ""),
         detail: { format: rt.id, ...result },
         batchId, revertible: result.inserted > 0,
       });

@@ -13,14 +13,23 @@ export type IngestSend = (e:
   | { phase: "inserting"; inserted: number; skipped: number; total: number }
 ) => void;
 
-export type IngestResult = { received: number; inserted: number; skipped: number; duplicates?: number };
+export type IngestResult = { received: number; inserted: number; skipped: number; duplicates?: number; noCampusTitles?: string[] };
 
 const BATCH = 500;
 
+// Rather than fail an entire batch over one row missing a campus (a single
+// bad Destiny sublocation, or a file with one blank cell, shouldn't block
+// hundreds of otherwise-good rows), a campus-scoped row with no resolvable
+// campus is filed under this fallback and flagged in the result/activity
+// log for someone to go back and correct later.
+const FALLBACK_CAMPUS = "Main Campus";
+
 /** Ingests already-parsed TitleRows for one resource type, applying the
  *  same accession-mode (printed books: dedupe by barcode, accumulate
- *  copies) or standard dedup-by-identifier logic as a manual upload.
- *  Throws if a campus-scoped row has no resolvable campus. */
+ *  copies) or standard dedup-by-identifier logic as a manual upload. A
+ *  campus-scoped row with no resolvable campus is filed under
+ *  FALLBACK_CAMPUS rather than dropped, and reported back via
+ *  IngestResult.noCampusTitles. */
 export async function ingestTitleRecords(
   db: ReturnType<typeof serviceClient>,
   rt: ResourceType,
@@ -37,12 +46,13 @@ export async function ingestTitleRecords(
     return fromRow || defaultCampus;
   };
 
-  for (const r of records) {
-    const c = rowCampus(r);
-    if (rt.campusScoped && !c) {
-      throw new Error(
-        `Row "${r.title}" has no campus — set a campus in the upload card (or sync config) or add a "Campus" column to the file.`,
-      );
+  const noCampusTitles: string[] = [];
+  if (rt.campusScoped) {
+    for (const r of records) {
+      if (!rowCampus(r)) {
+        r.campus = FALLBACK_CAMPUS;
+        noCampusTitles.push(r.title);
+      }
     }
   }
 
@@ -157,7 +167,7 @@ export async function ingestTitleRecords(
       send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
     }
 
-    return { received: records.length, inserted, skipped: updated, duplicates };
+    return { received: records.length, inserted, skipped: updated, duplicates, noCampusTitles };
   }
 
   // ---------------------------------------------------------------------
@@ -305,5 +315,5 @@ export async function ingestTitleRecords(
     send({ phase: "inserting", inserted, skipped, total: records.length });
   }
 
-  return { received: records.length, inserted, skipped };
+  return { received: records.length, inserted, skipped, noCampusTitles };
 }

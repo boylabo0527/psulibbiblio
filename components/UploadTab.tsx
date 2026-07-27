@@ -121,6 +121,14 @@ function DestinySyncCard() {
               Campus Validation, and/or add a line for it in lib/destiny.ts's sublocation mapping).
             </p>
           )}
+          {ev.phase === "done" && ev.no_campus_titles.length > 0 && (
+            <p className="text-amber-700 mt-1">
+              {ev.no_campus_titles.length} title{ev.no_campus_titles.length === 1 ? "" : "s"} had no campus at all
+              (blank Destiny sublocation) and {ev.no_campus_titles.length === 1 ? "was" : "were"} filed under
+              &quot;Main Campus&quot; for now: {ev.no_campus_titles.join(", ")}. Fix the sublocation in Destiny and
+              re-sync, or correct the campus directly in Campus Validation. This is also logged in the Activity Log.
+            </p>
+          )}
         </div>
       )}
     </div>
