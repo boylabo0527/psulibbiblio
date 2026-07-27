@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
 import { destinyEnabled, diagnoseDestinyConnection } from "@/lib/destiny";
+import { errorMessage } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +28,6 @@ export async function GET(req: Request) {
     const diagnostics = await diagnoseDestinyConnection();
     return NextResponse.json({ diagnostics });
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
 }

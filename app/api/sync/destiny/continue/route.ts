@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
 import { getSyncJob, markSyncJobError, processSyncJobChunk } from "@/lib/sync-jobs";
+import { errorMessage } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,7 +87,7 @@ export async function POST(req: Request) {
       no_campus_titles: noCampusTitles, unmapped_campuses: unmappedCampuses,
     } satisfies DestinyContinueResponse);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     await markSyncJobError(db, jobId, message);
     await logActivity(db, {
       userEmail, action: "sync_destiny",

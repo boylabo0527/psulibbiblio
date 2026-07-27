@@ -7,6 +7,7 @@ import { getUserPermissions } from "@/lib/permissions";
 import { planIngestOps } from "@/lib/ingest-titles";
 import { destinyEnabled, fetchDestinyPrintedCatalog, mapSublocationToCampus } from "@/lib/destiny";
 import { createSyncJob } from "@/lib/sync-jobs";
+import { errorMessage } from "@/lib/errors";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -116,7 +117,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ jobId, total: plan.ops.length } satisfies DestinyStartResponse);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     await logActivity(db, {
       userEmail, action: "sync_destiny",
       summary: `Destiny sync FAILED to start: ${message}`,
