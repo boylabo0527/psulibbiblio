@@ -34,7 +34,10 @@
  */
 import sql from "mssql";
 
-// Confirmed against this instance's actual CircCatAdmin schema.
+// Confirmed against this instance's actual CircCatAdmin schema -- note
+// that's a SQL Server *schema* (object owner) in this database, not just
+// a label, so CopyLibraryView/BibLibraryView must be schema-qualified;
+// they don't resolve under the connecting login's default schema (dbo).
 // CopyLibraryView carries per-copy details (barcode, call number, and
 // Sublocation -- Destiny's own name for the field, already text, no join
 // needed) and BibLibraryView carries the bibliographic (title-level) data.
@@ -66,8 +69,8 @@ const DEFAULT_QUERY = `
     bv.PublicationYear as year,
     cv.Sublocation     as sublocation,
     1                  as copies
-  from CopyLibraryView cv
-  join BibLibraryView bv on bv.BibID = cv.BibID
+  from CircCatAdmin.CopyLibraryView cv
+  join CircCatAdmin.BibLibraryView bv on bv.BibID = cv.BibID
   where cv.DateWithdrawn is null
 `;
 
@@ -178,8 +181,8 @@ export async function diagnoseDestinyConnection(): Promise<DestinyDiagnostics> {
     select
       DB_NAME()    as current_db,
       SUSER_SNAME() as login_name,
-      has_perms_by_name('dbo.CopyLibraryView', 'OBJECT', 'SELECT') as can_select_copylibraryview,
-      has_perms_by_name('dbo.BibLibraryView', 'OBJECT', 'SELECT')  as can_select_biblibraryview
+      has_perms_by_name('CircCatAdmin.CopyLibraryView', 'OBJECT', 'SELECT') as can_select_copylibraryview,
+      has_perms_by_name('CircCatAdmin.BibLibraryView', 'OBJECT', 'SELECT')  as can_select_biblibraryview
   `);
   const row = result.recordset[0] as Record<string, unknown>;
   return {
