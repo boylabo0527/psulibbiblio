@@ -6,6 +6,7 @@ import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
+import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
 import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
 
 type Program = { id: number; name: string; cost_per_title: number | null };
@@ -274,6 +275,8 @@ export default function ProcurementTab() {
           </>
         )}
       </div>
+
+      {programId && <ProgramJournalsPanel programId={programId} campus={campus} />}
 
       {/* Compliance heatmap across campuses */}
       <div className="card">

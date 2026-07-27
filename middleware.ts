@@ -16,15 +16,19 @@ function isPublic(pathname: string): boolean {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
-  // paths still require a signed-in user, even though anyone can read them.
-  if (!pathname.startsWith("/api/") || (isPublic(pathname) && req.method === "GET")) {
+  if (!pathname.startsWith("/api/")) {
     return NextResponse.next();
   }
+  // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
+  // paths still require a signed-in user, even though anyone can read them.
+  const isPublicGet = isPublic(pathname) && req.method === "GET";
 
   const auth = req.headers.get("authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m) {
+    // No token at all on a public route just means an anonymous visitor
+    // (e.g. the public Dashboard) -- let it through unauthenticated.
+    if (isPublicGet) return NextResponse.next();
     return NextResponse.json(
       { error: "Sign in required to use this endpoint." },
       { status: 401 },
@@ -42,13 +46,22 @@ export async function middleware(req: NextRequest) {
   const client = createClient(url, key);
   const { data, error } = await client.auth.getUser(m[1]);
   if (error || !data.user) {
+    // A stale/expired token on a public route shouldn't 401 a page that's
+    // supposed to work signed-out too -- just fall back to anonymous.
+    if (isPublicGet) return NextResponse.next();
     return NextResponse.json(
       { error: error?.message ?? "Invalid or expired session." },
       { status: 401 },
     );
   }
   // Forwarded so route handlers can attribute activity-log entries to the
-  // signed-in user without re-verifying the token themselves.
+  // signed-in user (and, on the public-but-personalized routes above,
+  // apply that user's campus scope) without re-verifying the token
+  // themselves. Previously this whole verify-and-forward step was skipped
+  // entirely for public GET routes, which meant a signed-in, campus-
+  // restricted user's requests to e.g. /api/campuses or /api/programs
+  // never carried x-user-email at all -- silently defeating campus
+  // scoping there and showing every campus/program regardless of access.
   const headers = new Headers(req.headers);
   headers.set("x-user-email", data.user.email ?? "");
   return NextResponse.next({ request: { headers } });

@@ -5,6 +5,7 @@ import type { ResourceTypeId } from "@/lib/resources";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
+import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
 
 type Program = { id: number; name: string };
 
@@ -192,6 +193,8 @@ export default function DashboardTab() {
           ))}
         </div>
       </div>
+
+      {programId && <ProgramJournalsPanel programId={programId} campus={campus} />}
 
       {/* Filters + per-subject table */}
       <div className="card">
