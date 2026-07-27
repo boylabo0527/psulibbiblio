@@ -7,7 +7,7 @@ import { RESOURCE_TYPES } from "@/lib/resources";
 type Table = "titles" | "subjects" | "canvassing";
 type Program = { id: number; name: string };
 
-type TitleSample = { title: string; author: string; format: string; campus: string; year: string; copies: number };
+type TitleSample = { title: string; author: string; format: string; campus: string; year: string; copies: number; provider: string };
 type SubjectSample = { course_code: string; course_title: string; program: string };
 type CanvassingSample = { title: string; supplier: string; canvass_date: string; unit_cost: number };
 
@@ -15,6 +15,7 @@ export default function BulkDeleteAdmin() {
   const [table, setTable] = useState<Table>("titles");
   const [format, setFormat] = useState("");
   const [campus, setCampus] = useState("");
+  const [provider, setProvider] = useState("");
   const [fromYear, setFromYear] = useState("");
   const [toYear, setToYear] = useState("");
   const [search, setSearch] = useState("");
@@ -46,6 +47,7 @@ export default function BulkDeleteAdmin() {
     if (table === "titles") {
       if (format) b.format = format;
       if (campus) b.campus = campus;
+      if (provider) b.provider = provider;
       if (fromYear) b.fromYear = Number(fromYear);
       if (toYear) b.toYear = Number(toYear);
       if (search) b.search = search;
@@ -140,6 +142,14 @@ export default function BulkDeleteAdmin() {
               </select>
             </label>
             <label className="label">
+              Provider
+              <input
+                className="input ml-1 w-32" placeholder="e.g. Perlego" value={provider}
+                onChange={(e) => { setProvider(e.target.value); invalidate(); }}
+                title="Useful for removing every title from a subscription that's ending, e.g. all Perlego eBooks"
+              />
+            </label>
+            <label className="label">
               Year from
               <input type="number" className="input ml-1 w-24" value={fromYear} onChange={(e) => { setFromYear(e.target.value); invalidate(); }} />
             </label>
@@ -214,6 +224,7 @@ export default function BulkDeleteAdmin() {
                 <tr className="border-b border-slate-200 text-left">
                   <th className="py-1 pr-2">Title</th><th className="py-1 pr-2">Author</th>
                   <th className="py-1 pr-2">Type</th><th className="py-1 pr-2">Campus</th>
+                  <th className="py-1 pr-2">Provider</th>
                   <th className="py-1 pr-2">Year</th><th className="py-1 pr-2 text-right">Copies</th>
                 </tr>
               )}
@@ -234,6 +245,7 @@ export default function BulkDeleteAdmin() {
                 <tr key={i} className="border-b border-slate-100">
                   <td className="py-1 pr-2">{r.title}</td><td className="py-1 pr-2">{r.author}</td>
                   <td className="py-1 pr-2">{r.format}</td><td className="py-1 pr-2">{r.campus}</td>
+                  <td className="py-1 pr-2">{r.provider}</td>
                   <td className="py-1 pr-2">{r.year}</td><td className="py-1 pr-2 text-right">{r.copies}</td>
                 </tr>
               ))}
