@@ -62,22 +62,54 @@ function DestinySyncCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perms.isAdmin]);
 
+  // A gateway timeout (504) or similar transient failure doesn't corrupt
+  // anything -- the job's progress lives in the database, not in this
+  // request -- so it's always safe to just call /continue again for the
+  // same jobId. Only a handful of *consecutive* failures gives up, so a
+  // genuinely broken sync doesn't retry forever.
+  const MAX_CONSECUTIVE_FAILURES = 5;
   async function pollUntilDone(jobId: string) {
     activeJobRef.current = jobId;
     setBusy(true);
+    let consecutiveFailures = 0;
     try {
       for (;;) {
         if (activeJobRef.current !== jobId) return; // superseded by a newer run
-        const res = await apiFetch("/api/sync/destiny/continue", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId }),
-        });
+        let res: Response;
+        try {
+          res = await apiFetch("/api/sync/destiny/continue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId }),
+          });
+        } catch (e) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+            setProgress((p) => (p && p.jobId === jobId ? { ...p, status: "error", error: e instanceof Error ? e.message : String(e) } : p));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 1000 * consecutiveFailures));
+          continue;
+        }
+        // Transient gateway errors (504/502/503) are worth retrying --
+        // the sync itself is still fine, only this one HTTP round trip
+        // got cut off. Anything else (403, a real 400/500 with a
+        // message) is a genuine failure and stops immediately.
+        if (res.status === 504 || res.status === 502 || res.status === 503) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+            setProgress((p) => (p && p.jobId === jobId ? { ...p, status: "error", error: `HTTP ${res.status} (gave up after ${MAX_CONSECUTIVE_FAILURES} retries)` } : p));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 1000 * consecutiveFailures));
+          continue;
+        }
         const j = await res.json().catch(() => ({}));
         if (!res.ok || j.error) {
           setProgress((p) => (p && p.jobId === jobId ? { ...p, status: "error", error: j.error || `HTTP ${res.status}` } : p));
           return;
         }
+        consecutiveFailures = 0;
         setProgress({
           jobId, status: j.done ? "done" : "running", total: j.total,
           remaining: j.remaining, inserted: j.inserted, updated: j.updated, duplicates: j.duplicates,
@@ -96,10 +128,22 @@ function DestinySyncCard() {
     setBusy(true);
     setProgress(null);
     try {
-      const res = await apiFetch("/api/sync/destiny", { method: "POST" });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) {
-        setProgress({ jobId: "", status: "error", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [], error: j.error || `HTTP ${res.status}` });
+      // The Destiny fetch + dedup-planning this does can itself take a
+      // while for a large catalog -- worth one quiet retry on a gateway
+      // timeout before surfacing an error, since nothing's been written
+      // yet at this point either way.
+      let res: Response | null = null;
+      let j: { jobId?: string | null; total?: number; error?: string } = {};
+      for (let attempt = 0; attempt < 2; attempt++) {
+        res = await apiFetch("/api/sync/destiny", { method: "POST" });
+        j = await res.json().catch(() => ({}));
+        if (res.status !== 504 && res.status !== 502 && res.status !== 503) break;
+      }
+      if (!res || !res.ok || j.error) {
+        setProgress({
+          jobId: "", status: "error", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [],
+          error: j.error || (res ? `HTTP ${res.status}${res.status === 504 ? " -- fetching/planning the sync took too long; try again, or if this keeps happening the Destiny catalog or existing library catalog may be too large for one request" : ""}` : "Network error"),
+        });
         setBusy(false);
         return;
       }
@@ -108,7 +152,7 @@ function DestinySyncCard() {
         setBusy(false);
         return;
       }
-      setProgress({ jobId: j.jobId, status: "running", total: j.total, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [] });
+      setProgress({ jobId: j.jobId, status: "running", total: j.total ?? 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [] });
       await pollUntilDone(j.jobId);
     } catch (e) {
       setProgress({ jobId: "", status: "error", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [], error: e instanceof Error ? e.message : String(e) });
