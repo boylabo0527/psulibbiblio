@@ -54,6 +54,32 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
+/** DELETE /api/titles/:id — remove a single title (assignments cascade). */
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+  try {
+    const id = parseInt(params.id, 10);
+    if (!Number.isFinite(id)) {
+      return NextResponse.json({ error: "Bad title id" }, { status: 400 });
+    }
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin && !perms.tabs["programs"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to delete titles." }, { status: 403 });
+    }
+    const { data, error } = await db.from("titles").delete().eq("id", id).select("id");
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data || data.length === 0) {
+      return NextResponse.json({ error: `Title ${id} not found.` }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}
+
 async function findDuplicate(
   db: ReturnType<typeof serviceClient>, edited: MergeableTitle,
 ): Promise<MergeableTitle | null> {
