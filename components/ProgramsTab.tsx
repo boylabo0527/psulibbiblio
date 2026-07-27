@@ -19,6 +19,9 @@ type Bibliography = {
   program: Program;
   campus: string;
   bySection: { section: string; subjects: SubjectDetail[] }[];
+  /** Journals matched anywhere in this program, deduplicated -- shown once
+   *  for the whole program instead of repeated under every course. */
+  journals: Buckets;
 };
 
 export default function ProgramsTab() {
@@ -34,6 +37,26 @@ export default function ProgramsTab() {
   const campuses = useCampuses();
   const { isProgramAtCampus } = useProgramCampusMap();
   const visiblePrograms = campus ? programs.filter((p) => isProgramAtCampus(p.id, campus)) : programs;
+
+  // Default to a real campus as soon as the list loads -- an "All campuses"
+  // option made the title counts/exports here look like one campus's
+  // holdings when they were actually blended across every campus.
+  useEffect(() => {
+    if (!campus && campuses.length > 0) setCampus(campuses[0].name);
+  }, [campus, campuses]);
+
+  // Whenever the campus changes (from the dropdown above, or the
+  // auto-default just above), make sure the selected program is actually
+  // offered there -- switch to the first one that is, if not.
+  useEffect(() => {
+    if (!campus || selected === null || programs.length === 0) return;
+    const cur = programs.find((p) => p.id === selected);
+    if (cur && !isProgramAtCampus(cur.id, campus)) {
+      const first = programs.find((p) => isProgramAtCampus(p.id, campus));
+      setSelected(first ? first.id : null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campus, programs]);
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -129,19 +152,8 @@ export default function ProgramsTab() {
             <select
               className="input ml-1 min-w-[180px]"
               value={campus}
-              onChange={(e) => {
-                const c = e.target.value;
-                setCampus(c);
-                if (c && selected !== null) {
-                  const cur = programs.find((p) => p.id === selected);
-                  if (cur && !isProgramAtCampus(cur.id, c)) {
-                    const first = programs.find((p) => isProgramAtCampus(p.id, c));
-                    setSelected(first ? first.id : null);
-                  }
-                }
-              }}
+              onChange={(e) => setCampus(e.target.value)}
             >
-              <option value="">All campuses</option>
               {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
@@ -220,6 +232,27 @@ export default function ProgramsTab() {
               ))}
             </div>
           ))}
+          {RESOURCE_TYPES.some((t) => t.kind === "journal" && (biblio.journals?.[t.id]?.length ?? 0) > 0) && (
+            <div className="mb-2 border-l-4 pl-3 border-slate-300">
+              <div className="flex items-baseline gap-2">
+                <span className="font-semibold">Journals</span>
+                <span className="text-xs text-slate-500">
+                  program-wide -- applies to every course, listed once instead of repeated per course
+                </span>
+              </div>
+              {RESOURCE_TYPES.filter((t) => t.kind === "journal").map((t) => (
+                <BookSection
+                  key={t.id}
+                  label={t.sectionLabel}
+                  books={biblio.journals?.[t.id] ?? []}
+                  onRemove={() => {}}
+                  onReload={load}
+                  showIdent
+                  hideRemove
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </>
@@ -386,8 +419,8 @@ function SubjectDescription({
 }
 
 function BookSection({
-  label, books, onRemove, onReload, showIdent,
-}: { label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean }) {
+  label, books, onRemove, onReload, showIdent, hideRemove,
+}: { label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean; hideRemove?: boolean }) {
   if (!books.length) return null;
   return (
     <div className="mb-2">
@@ -406,7 +439,7 @@ function BookSection({
         </thead>
         <tbody>
           {books.map((b) => (
-            <EditableTitleRow key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload} />
+            <EditableTitleRow key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload} hideRemove={hideRemove} />
           ))}
         </tbody>
       </table>
@@ -415,8 +448,8 @@ function BookSection({
 }
 
 function EditableTitleRow({
-  book, siblings, showIdent, onRemove, onReload,
-}: { book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void }) {
+  book, siblings, showIdent, onRemove, onReload, hideRemove,
+}: { book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void; hideRemove?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<Title>(book);
@@ -526,7 +559,9 @@ function EditableTitleRow({
             {others.length > 0 && (
               <button className="text-slate-500 text-xs" onClick={() => setCombining((v) => !v)}>combine</button>
             )}
-            <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+            {!hideRemove && (
+              <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
+            )}
           </div>
         </td>
       </tr>

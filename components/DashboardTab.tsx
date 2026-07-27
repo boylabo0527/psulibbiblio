@@ -42,6 +42,14 @@ export default function DashboardTab() {
       .catch(() => { setProgramId(""); });
   }, []);
 
+  // Default to a real campus as soon as the list loads -- an "All campuses"
+  // option made title counts here look like one campus's holdings when they
+  // were actually blended across every campus, which is confusing since
+  // titles are counted/exported for whichever campus is actually selected.
+  useEffect(() => {
+    if (!campus && campuses.length > 0) setCampus(campuses[0].name);
+  }, [campus, campuses]);
+
   // When campus changes, reset program to the first one offered at that campus.
   const visiblePrograms = campus
     ? programs.filter(p => isProgramAtCampus(p.id, campus))
@@ -212,7 +220,6 @@ export default function DashboardTab() {
                 }
               }
             }}>
-              <option value="">All campuses</option>
               {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
