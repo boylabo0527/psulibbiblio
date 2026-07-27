@@ -17,7 +17,7 @@ export type DestinySyncEvent =
   | { phase: "parsed"; total: number }
   | { phase: "deduping"; existing: number }
   | { phase: "inserting"; inserted: number; skipped: number; total: number }
-  | { phase: "done"; received: number; inserted: number; skipped: number; duplicates?: number; unmapped_campuses: string[] }
+  | { phase: "done"; received: number; inserted: number; skipped: number; duplicates?: number; unmapped_campuses: string[]; no_campus_titles: string[] }
   | { phase: "error"; error: string };
 
 /** POST /api/sync/destiny -- pulls the printed-book catalog directly from
@@ -79,17 +79,18 @@ export async function POST(req: Request) {
         });
       send({ phase: "parsed", total: records.length });
       if (!records.length) {
-        send({ phase: "done", received: 0, inserted: 0, skipped: 0, unmapped_campuses: [] });
+        send({ phase: "done", received: 0, inserted: 0, skipped: 0, unmapped_campuses: [], no_campus_titles: [] });
         return;
       }
 
       const rt = RESOURCE_BY_ID.book_printed;
       const result = await ingestTitleRecords(db, rt, records, batchId, send);
-      send({ phase: "done", ...result, unmapped_campuses: Array.from(unmapped) });
+      const noCampusTitles = result.noCampusTitles ?? [];
+      send({ phase: "done", ...result, unmapped_campuses: Array.from(unmapped), no_campus_titles: noCampusTitles });
       await logActivity(db, {
         userEmail, action: "sync_destiny",
-        summary: `Synced printed books from Destiny: ${result.inserted} new, ${result.skipped} updated${result.duplicates != null ? `, ${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} skipped` : ""}${unmapped.size ? ` -- ${unmapped.size} unrecognized campus name(s): ${Array.from(unmapped).join(", ")}` : ""}`,
-        detail: { ...result, unmapped_campuses: Array.from(unmapped) },
+        summary: `Synced printed books from Destiny: ${result.inserted} new, ${result.skipped} updated${result.duplicates != null ? `, ${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} skipped` : ""}${unmapped.size ? ` -- ${unmapped.size} unrecognized campus name(s): ${Array.from(unmapped).join(", ")}` : ""}${noCampusTitles.length ? ` -- ${noCampusTitles.length} title(s) had no campus at all and were filed under "Main Campus" pending correction` : ""}`,
+        detail: { ...result, unmapped_campuses: Array.from(unmapped), no_campus_titles: noCampusTitles },
         batchId, revertible: result.inserted > 0,
       });
     } catch (err) {
