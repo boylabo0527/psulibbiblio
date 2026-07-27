@@ -576,7 +576,7 @@ export default function UploadTab() {
       />
       <FileCard
         title="3. Complementary eBooks"
-        hint="Free eBooks bundled in with a paid subscription package (e.g. extra titles included with a Perlego plan) -- not individually paid for, not open access. Same recognized columns as the Subscribed eBooks template."
+        hint="Free eBooks -- bundled in with a paid subscription package, donated, or provided under a MOA/MOU -- not individually paid for, not open access. Same recognized columns as the Subscribed eBooks template, including an optional provider column for who it's actually from (a platform, donor, or partner institution)."
         endpoint="/api/upload/ebook_complementary"
         templates={[
           { label: "ebooks_paid_template.xlsx", href: "/templates/ebooks_paid_template.xlsx" },
@@ -637,7 +637,7 @@ export default function UploadTab() {
       />
       <FileCard
         title="9. Complementary Online Journals"
-        hint="Free online journals bundled in with a paid subscription package -- not individually paid for, not open access. Same recognized columns as the Subscribed Online Journals template."
+        hint="Free online journals -- bundled in with a paid subscription package, donated, or provided under a MOA/MOU -- not individually paid for, not open access. Same recognized columns as the Subscribed Online Journals template, including an optional provider column for who it's actually from (a platform, donor, or partner institution)."
         endpoint="/api/upload/journal_complementary"
         templates={[
           { label: "journals_online_paid_template.xlsx", href: "/templates/journals_online_paid_template.xlsx" },
