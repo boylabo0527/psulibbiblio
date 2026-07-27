@@ -567,7 +567,7 @@ export default function UploadTab() {
       />
       <FileCard
         title="2. Subscribed eBooks"
-        hint="Subscription-based eBook lists. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
+        hint="Subscription-based eBook lists. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier, and an optional provider column (e.g. 'Perlego') -- add one so titles from a subscription that later ends are easy to find and remove."
         endpoint="/api/upload/ebook_paid"
         templates={[
           { label: "ebooks_paid_template.xlsx", href: "/templates/ebooks_paid_template.xlsx" },
@@ -628,7 +628,7 @@ export default function UploadTab() {
       />
       <FileCard
         title="8. Subscribed Online Journals"
-        hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
+        hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL, and an optional Provider column (e.g. 'JSTOR') -- add one so titles from a subscription that later ends are easy to find and remove."
         endpoint="/api/upload/journal_online_paid"
         templates={[
           { label: "journals_online_paid_template.xlsx", href: "/templates/journals_online_paid_template.xlsx" },

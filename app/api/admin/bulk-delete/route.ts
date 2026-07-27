@@ -16,6 +16,7 @@ type Body = {
   dryRun?: boolean;
   format?: string;
   campus?: string;
+  provider?: string;
   fromYear?: number;
   toYear?: number;
   search?: string;
@@ -25,7 +26,7 @@ type Body = {
   supplier?: string;
 };
 
-type TitleRow = { id: number; title: string; author: string; format: string; campus: string; year: string; copies: number };
+type TitleRow = { id: number; title: string; author: string; format: string; campus: string; year: string; copies: number; provider: string };
 type SubjectRow = { id: number; course_code: string; course_title: string; program_id: number };
 type CanvassingRow = { id: number; title: string; supplier: string; canvass_date: string; unit_cost: number };
 
@@ -33,9 +34,10 @@ const esc = (s: string) => s.replace(/[%,()]/g, "");
 
 async function matchingTitles(db: ReturnType<typeof serviceClient>, body: Body): Promise<TitleRow[]> {
   const rows = await pageThrough<TitleRow>((from, to) => {
-    let q = db.from("titles").select("id, title, author, format, campus, year, copies").range(from, to);
+    let q = db.from("titles").select("id, title, author, format, campus, year, copies, provider").range(from, to);
     if (body.format) q = q.eq("format", body.format);
     if (body.campus) q = q.eq("campus", body.campus);
+    if (body.provider) q = q.ilike("provider", `%${esc(body.provider)}%`);
     if (body.search) {
       const s = esc(body.search);
       q = q.or(`title.ilike.%${s}%,author.ilike.%${s}%,call_no.ilike.%${s}%,isbn.ilike.%${s}%`);
@@ -108,7 +110,7 @@ export async function POST(req: Request) {
         return NextResponse.json({
           count: rows.length,
           sample: rows.slice(0, SAMPLE_SIZE).map((r) => ({
-            title: r.title, author: r.author, format: r.format, campus: r.campus, year: r.year, copies: r.copies,
+            title: r.title, author: r.author, format: r.format, campus: r.campus, year: r.year, copies: r.copies, provider: r.provider,
           })),
         });
       }
