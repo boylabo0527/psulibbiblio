@@ -13,14 +13,25 @@ function required(name: string, value: string | undefined): string {
   return value;
 }
 
+// Next.js patches the global `fetch` to add its own Data Cache layer, which
+// defaults to caching GET requests unless told otherwise. Supabase's REST
+// calls go through that same global fetch, so without this override,
+// repeated identical queries (e.g. a plain "select all programs") can get
+// served a stale cached response indefinitely instead of hitting the DB.
+const noStoreFetch: typeof fetch = (input, init) =>
+  fetch(input, { ...init, cache: "no-store" });
+
 /** Server-side client with elevated privileges. Never expose to the browser. */
 export function serviceClient(): SupabaseClient {
   return createClient(required("NEXT_PUBLIC_SUPABASE_URL", url), required("SUPABASE_SERVICE_ROLE_KEY", serviceKey), {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: noStoreFetch },
   });
 }
 
 /** Anonymous client (read-only via RLS policies). Safe in the browser. */
 export function anonClient(): SupabaseClient {
-  return createClient(required("NEXT_PUBLIC_SUPABASE_URL", url), required("NEXT_PUBLIC_SUPABASE_ANON_KEY", anonKey));
+  return createClient(required("NEXT_PUBLIC_SUPABASE_URL", url), required("NEXT_PUBLIC_SUPABASE_ANON_KEY", anonKey), {
+    global: { fetch: noStoreFetch },
+  });
 }

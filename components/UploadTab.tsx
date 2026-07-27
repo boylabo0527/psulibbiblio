@@ -1,14 +1,80 @@
 "use client";
 import { useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { apiFetch } from "@/lib/api-client";
+import { useCampuses } from "@/lib/use-campuses";
+import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
+import { usePermissions } from "@/lib/use-permissions";
+import type { DestinySyncEvent } from "@/app/api/sync/destiny/route";
+import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 
-type ProgressEvent =
-  | { phase: "parsing" }
-  | { phase: "parsed"; total: number }
-  | { phase: "deduping"; existing: number }
-  | { phase: "inserting"; inserted: number; skipped: number; total: number }
-  | { phase: "done"; received: number; inserted: number; skipped: number; programs?: number }
-  | { phase: "error"; error: string };
+function DestinySyncCard() {
+  const { perms } = usePermissions();
+  const [ev, setEv] = useState<DestinySyncEvent | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  if (!perms.isAdmin) return null;
+
+  async function run() {
+    setBusy(true);
+    setEv(null);
+    try {
+      const res = await apiFetch("/api/sync/destiny", { method: "POST" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setEv({ phase: "error", error: j.error || `HTTP ${res.status}` });
+        return;
+      }
+      await consumeNdjson<DestinySyncEvent>(res, (e) => setEv(e));
+    } catch (e) {
+      setEv({ phase: "error", error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label = !ev ? "" : ({
+    connecting: "Connecting to Destiny…",
+    parsed: `Fetched ${ev.phase === "parsed" ? ev.total.toLocaleString() : ""} rows — checking database…`,
+    deduping: "Checking against our catalog…",
+    inserting: ev.phase === "inserting" ? `Saving ${ev.inserted.toLocaleString()} / ${ev.total.toLocaleString()}` : "",
+    done: ev.phase === "done" ? `Done — ${ev.inserted.toLocaleString()} new, ${ev.skipped.toLocaleString()} updated` : "",
+    error: ev.phase === "error" ? `Error: ${ev.error}` : "",
+  } as Record<DestinySyncEvent["phase"], string>)[ev.phase];
+
+  return (
+    <div className="card border-2 border-psu-light">
+      <h2 className="text-psu font-semibold mb-1">Sync Printed Books from Destiny</h2>
+      <p className="text-sm text-slate-600 mb-2">
+        Pulls the printed-book catalog directly from your Destiny database instead of exporting and uploading a
+        file. Uses the same duplicate/copy-count logic as a manual Printed Books upload above. Admin-only, since it
+        uses org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab
+        permission.
+      </p>
+      <button className="btn text-xs" disabled={busy} onClick={run}>
+        {busy ? "Syncing…" : "Sync now"}
+      </button>
+      {ev && (
+        <div className="mt-3 text-xs">
+          <p className={ev.phase === "error" ? "text-red-700" : ev.phase === "done" ? "text-emerald-700" : "text-slate-600"}>
+            {label}
+          </p>
+          {ev.phase === "done" && ev.duplicates != null && ev.duplicates > 0 && (
+            <p className="text-slate-500 mt-0.5">{ev.duplicates.toLocaleString()} already-counted copies skipped.</p>
+          )}
+          {ev.phase === "done" && ev.unmapped_campuses.length > 0 && (
+            <p className="text-amber-700 mt-1">
+              {ev.unmapped_campuses.length} Destiny sublocation{ev.unmapped_campuses.length === 1 ? "" : "s"} didn&apos;t
+              resolve to a campus already set up here: {ev.unmapped_campuses.join(", ")}. Those rows were still
+              synced, but won&apos;t show up correctly in campus-scoped reports until it's mapped (add the campus in
+              Campus Validation, and/or add a line for it in lib/destiny.ts's sublocation mapping).
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type FilePhase = ProgressEvent["phase"] | "idle" | "uploading" | "queued";
 
@@ -19,52 +85,38 @@ type FileStatus = {
   skipped: number;
   total: number;
   programs?: number;
+  duplicates?: number;
+  existingChecked?: number;
   error?: string;
   elapsedMs: number;
 };
 
 const STALL_MS = 10_000;
 
+
 type Props = {
   title: string;
   hint: string;
   endpoint: string;
   templates?: { label: string; href: string }[];
-  extraFields?: { name: string; label: string; placeholder?: string }[];
+  extraFields?: { name: string; label: string; type?: "text" | "campus"; placeholder?: string }[];
 };
-
-async function consumeNdjson(
-  res: Response,
-  onEvent: (ev: ProgressEvent) => void,
-  signal: AbortSignal,
-) {
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    if (signal.aborted) { reader.cancel(); break; }
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try { onEvent(JSON.parse(line) as ProgressEvent); } catch { /* skip */ }
-    }
-  }
-}
 
 function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
   const [queue, setQueue] = useState<FileStatus[]>([]);
+  // Mirrors `queue` for the worker loop below, which needs to see files
+  // appended mid-run (React state updates aren't visible inside an
+  // already-running async loop closure).
+  const queueRef = useRef<FileStatus[]>([]);
+  const cursorRef = useRef(0);
   const [extras, setExtras] = useState<Record<string, string>>({});
   const abortRef = useRef<AbortController | null>(null);
   const runningRef = useRef(false);
+  const campuses = useCampuses();
 
   function patchFile(index: number, patch: Partial<FileStatus>) {
-    setQueue((prev) => prev.map((f, i) => i === index ? { ...f, ...patch } : f));
+    queueRef.current = queueRef.current.map((f, i) => i === index ? { ...f, ...patch } : f);
+    setQueue(queueRef.current);
   }
 
   async function uploadOne(fs: FileStatus, index: number, controller: AbortController) {
@@ -85,12 +137,13 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         const total = allRows.length;
         let inserted = 0;
         let skipped = 0;
+        let duplicates = 0;
         patchFile(index, { phase: "parsed", total });
 
         for (let i = 0; i < allRows.length; i += BATCH) {
           if (controller.signal.aborted) break;
           const rows = allRows.slice(i, i + BATCH);
-          const res = await fetch(endpoint, {
+          const res = await apiFetch(endpoint, {
             method: "POST",
             body: JSON.stringify({ rows, filename: file.name, ...extras }),
             headers: { "Content-Type": "application/json" },
@@ -102,21 +155,26 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
             return;
           }
           await consumeNdjson(res, (ev) => {
-            if (ev.phase === "done") {
+            if (ev.phase === "deduping") {
+              patchFile(index, { phase: "deduping", existingChecked: ev.existing });
+            } else if (ev.phase === "inserting") {
+              patchFile(index, { phase: "inserting", inserted: inserted + ev.inserted, skipped: skipped + ev.skipped, total });
+            } else if (ev.phase === "done") {
               inserted += ev.inserted;
               skipped += ev.skipped;
-              patchFile(index, { phase: "inserting", inserted, skipped, total });
+              duplicates += ev.duplicates ?? 0;
+              patchFile(index, { phase: "inserting", inserted, skipped, duplicates, total });
             } else if (ev.phase === "error") {
               patchFile(index, { phase: "error", error: ev.error });
             }
           }, controller.signal);
         }
-        patchFile(index, { phase: "done", inserted, skipped, total, elapsedMs: Date.now() - startedAt });
+        patchFile(index, { phase: "done", inserted, skipped, duplicates, total, elapsedMs: Date.now() - startedAt });
       } else {
         const fd = new FormData();
         fd.append("file", file);
         for (const [k, v] of Object.entries(extras)) if (v) fd.append(k, v);
-        const res = await fetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
+        const res = await apiFetch(endpoint, { method: "POST", body: fd, signal: controller.signal });
         if (!res.ok) {
           const text = await res.text();
           patchFile(index, { phase: "error", error: text || `HTTP ${res.status}` });
@@ -124,9 +182,9 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
         }
         await consumeNdjson(res, (ev) => {
           if (ev.phase === "parsed") patchFile(index, { phase: ev.phase, total: ev.total });
-          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase });
+          else if (ev.phase === "deduping") patchFile(index, { phase: ev.phase, existingChecked: ev.existing });
           else if (ev.phase === "inserting") patchFile(index, { phase: ev.phase, inserted: ev.inserted, skipped: ev.skipped, total: ev.total });
-          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
+          else if (ev.phase === "done") patchFile(index, { phase: "done", inserted: ev.inserted, skipped: ev.skipped, duplicates: ev.duplicates, total: ev.received, programs: ev.programs, elapsedMs: Date.now() - startedAt });
           else if (ev.phase === "error") patchFile(index, { phase: "error", error: ev.error });
         }, controller.signal);
       }
@@ -140,20 +198,26 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     }
   }
 
-  async function runQueue(items: FileStatus[]) {
+  // Processes queueRef from wherever the cursor left off, re-checking
+  // queueRef.current.length on every iteration — so files appended to the
+  // queue while this loop is already running (via onFilesSelected below)
+  // get picked up instead of requiring a fresh, separate run that would
+  // otherwise abort whatever was already uploading.
+  async function runQueue(controller: AbortController) {
     if (runningRef.current) return;
     runningRef.current = true;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    for (let i = 0; i < items.length; i++) {
-      if (controller.signal.aborted) break;
-      const current = items[i];
-      if (current.phase !== "queued") continue;
-      await uploadOne(current, i, controller);
+    try {
+      while (cursorRef.current < queueRef.current.length) {
+        if (controller.signal.aborted) break;
+        const i = cursorRef.current;
+        cursorRef.current++;
+        const current = queueRef.current[i];
+        if (current.phase !== "queued") continue;
+        await uploadOne(current, i, controller);
+      }
+    } finally {
+      runningRef.current = false;
     }
-    runningRef.current = false;
   }
 
   function onFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
@@ -162,22 +226,24 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
     const newItems: FileStatus[] = files.map((f) => ({
       file: f, phase: "queued", inserted: 0, skipped: 0, total: 0, elapsedMs: 0,
     }));
-    setQueue(newItems);
-    // Start after state update.
-    setTimeout(() => runQueue(newItems), 0);
+    queueRef.current = [...queueRef.current, ...newItems];
+    setQueue(queueRef.current);
+    if (!abortRef.current) abortRef.current = new AbortController();
+    runQueue(abortRef.current);
     e.target.value = "";
   }
 
   function cancel() {
     abortRef.current?.abort();
+    abortRef.current = null;
     runningRef.current = false;
-    setQueue((prev) =>
-      prev.map((f) =>
-        f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
-          ? { ...f, phase: "error", error: "Cancelled" }
-          : f,
-      ),
+    cursorRef.current = queueRef.current.length;
+    queueRef.current = queueRef.current.map((f) =>
+      f.phase === "queued" || f.phase === "uploading" || f.phase === "parsing" || f.phase === "parsed" || f.phase === "deduping" || f.phase === "inserting"
+        ? { ...f, phase: "error", error: "Cancelled" }
+        : f,
     );
+    setQueue(queueRef.current);
   }
 
   const busy = queue.some((f) =>
@@ -204,12 +270,24 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
       {extraFields?.map((f) => (
         <div key={f.name} className="mb-2">
           <label className="label">{f.label}</label>
-          <input
-            className="input w-72"
-            placeholder={f.placeholder}
-            value={extras[f.name] ?? ""}
-            onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
-          />
+          {f.type === "campus" ? (
+            <select
+              className="input w-72"
+              value={extras[f.name] ?? ""}
+              onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
+            >
+              <option value="">— select campus —</option>
+              {campuses.map((c) => (
+                <option key={c.id} value={c.name}>{c.name}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input w-72"
+              value={extras[f.name] ?? ""}
+              onChange={(e) => setExtras((p) => ({ ...p, [f.name]: e.target.value }))}
+            />
+          )}
         </div>
       ))}
       <div className="flex items-center gap-2 flex-wrap">
@@ -225,18 +303,23 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
       {queue.length > 0 && (
         <ul className="mt-3 space-y-2">
           {queue.map((fs, i) => {
-            const skippedSuffix = fs.skipped > 0
-              ? `, skipped ${fs.skipped.toLocaleString()} dup${fs.skipped === 1 ? "" : "s"}`
+            const updatedSuffix = fs.skipped > 0
+              ? ` · ${fs.skipped.toLocaleString()} copy count${fs.skipped === 1 ? "" : "s"} updated`
+              : "";
+            const duplicateSuffix = fs.duplicates && fs.duplicates > 0
+              ? ` · ${fs.duplicates.toLocaleString()} already-counted ${fs.duplicates === 1 ? "copy" : "copies"} skipped`
               : "";
             const label = ({
               idle: "Waiting…",
               queued: "Queued",
-              uploading: "Uploading…",
-              parsing: "Parsing…",
-              parsed: `Parsed ${fs.total.toLocaleString()} rows`,
-              deduping: "Deduplicating…",
-              inserting: `${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${skippedSuffix}`,
-              done: `Done — ${fs.inserted.toLocaleString()} inserted${skippedSuffix}`,
+              uploading: "Reading file…",
+              parsing: "Parsing rows…",
+              parsed: `Parsed ${fs.total.toLocaleString()} rows — checking database…`,
+              deduping: fs.existingChecked
+                ? `Checking against database… ${fs.existingChecked.toLocaleString()} existing titles scanned so far`
+                : `Checking ${fs.total.toLocaleString()} rows against database…`,
+              inserting: `Saving ${fs.inserted.toLocaleString()} / ${fs.total.toLocaleString()}${updatedSuffix}`,
+              done: `Done — ${fs.inserted.toLocaleString()} new titles inserted${updatedSuffix}${duplicateSuffix}`,
               error: `Error: ${fs.error}`,
             } as Record<FilePhase, string>)[fs.phase];
 
@@ -277,21 +360,6 @@ function FileCard({ title, hint, endpoint, templates, extraFields }: Props) {
 }
 
 export default function UploadTab() {
-  const [resetResult, setResetResult] = useState("");
-  async function reset() {
-    if (!confirm("Wipe all programs, subjects, titles, and assignments?")) return;
-    const password = prompt("Enter admin password to confirm wipe:");
-    if (password === null) return;
-    if (!password.trim()) { setResetResult("Cancelled: password required."); return; }
-    setResetResult("Resetting...");
-    const r = await fetch("/api/admin/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    setResetResult(JSON.stringify(await r.json(), null, 2));
-  }
-
   return (
     <>
       <FileCard
@@ -325,7 +393,16 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="4. Printed Books"
+        title="4. Institutional Repository"
+        hint="Theses, capstones, and faculty research hosted in the university's own repository. Accepts .xlsx, .xls, .csv, .pdf, .docx. Auto-detects publication_title, first_author, publisher_name, year, online_identifier."
+        endpoint="/api/upload/institutional_repository"
+        templates={[
+          { label: "institutional_repository_template.xlsx", href: "/templates/institutional_repository_template.xlsx" },
+          { label: "institutional_repository_template.csv",  href: "/templates/institutional_repository_template.csv" },
+        ]}
+      />
+      <FileCard
+        title="5. Printed Books"
         hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/book_printed"
         templates={[
@@ -333,11 +410,12 @@ export default function UploadTab() {
           { label: "printed_books_template.csv",  href: "/templates/printed_books_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", type: "campus" },
         ]}
       />
+      <DestinySyncCard />
       <FileCard
-        title="5. Printed Journals"
+        title="6. Printed Journals"
         hint="Print journal subscriptions. Campus-specific. Per-row Campus column wins over the dropdown. Recognized columns: Call No., Title, ISSN, Author/Editor, Year, Copies, Publisher, optional Campus."
         endpoint="/api/upload/journal_printed"
         templates={[
@@ -345,11 +423,11 @@ export default function UploadTab() {
           { label: "journals_printed_template.csv",  href: "/templates/journals_printed_template.csv" },
         ]}
         extraFields={[
-          { name: "campus", label: "Campus (applied if no Campus column)", placeholder: "e.g. Main Campus, PSU-Coron" },
+          { name: "campus", label: "Campus (applied if no Campus column)", type: "campus" },
         ]}
       />
       <FileCard
-        title="6. Subscribed Online Journals"
+        title="7. Subscribed Online Journals"
         hint="Subscription-based online journals / databases. Recognized columns: Title, ISSN, Publisher, Year, URL."
         endpoint="/api/upload/journal_online_paid"
         templates={[
@@ -358,7 +436,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="7. Open Source Online Journals"
+        title="8. Open Source Online Journals"
         hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
         endpoint="/api/upload/journal_online_open"
         templates={[
@@ -366,14 +444,7 @@ export default function UploadTab() {
           { label: "journals_online_open_template.csv",  href: "/templates/journals_online_open_template.csv" },
         ]}
       />
-      <div className="card border-red-300">
-        <h2 className="text-red-700 font-semibold mb-2">Admin</h2>
-        <button className="btn bg-red-600 hover:bg-red-700" onClick={reset}>Wipe all data</button>
-        <p className="text-xs text-slate-500 mt-2">
-          Requires the admin password configured in <code>ADMIN_RESET_PASSWORD</code>.
-        </p>
-        {resetResult && <pre className="mt-3 bg-slate-100 rounded p-2 text-xs">{resetResult}</pre>}
-      </div>
+      <BulkDeleteAdmin />
     </>
   );
 }

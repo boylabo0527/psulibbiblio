@@ -10,8 +10,15 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     if (!Number.isFinite(id)) {
       return NextResponse.json({ error: "Bad program id" }, { status: 400 });
     }
-    const campus = (new URL(req.url).searchParams.get("campus") ?? "").trim();
-    const data = await loadProgramBibliography(id, campus);
+    const u = new URL(req.url);
+    const campus = (u.searchParams.get("campus") ?? "").trim();
+    const minYear = parseInt(u.searchParams.get("from_year") ?? "", 10);
+    const maxYear = parseInt(u.searchParams.get("to_year") ?? "", 10);
+    const data = await loadProgramBibliography(
+      id, campus, undefined,
+      Number.isFinite(minYear) ? minYear : undefined,
+      Number.isFinite(maxYear) ? maxYear : undefined,
+    );
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json(

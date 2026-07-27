@@ -2,6 +2,7 @@ import { serviceClient } from "./supabase";
 import type { ProgramBibliography } from "./exports";
 import { RESOURCE_BY_ID, RESOURCE_TYPES, type ResourceTypeId } from "./resources";
 import type { SubjectRow, TitleRow } from "./types";
+import { yearInRange } from "./years";
 
 const PAGE = 1000;
 
@@ -23,19 +24,24 @@ async function paged<T>(
 export async function loadProgramBibliography(
   programId: number,
   campus = "",
+  subjectId?: number,
+  minYear?: number,
+  maxYear?: number,
 ): Promise<ProgramBibliography> {
   const db = serviceClient();
   const { data: progRow, error: progErr } = await db
     .from("programs").select("id, name").eq("id", programId).single();
   if (progErr) throw progErr;
 
-  const subjects = await paged<SubjectRow>((from, to) =>
-    db.from("subjects")
-      .select("id, program_id, course_code, course_title, description, sort_order")
+  const subjects = await paged<SubjectRow>((from, to) => {
+    let q = db.from("subjects")
+      .select("id, program_id, course_code, course_title, description, sort_order, locked")
       .eq("program_id", programId)
       .order("sort_order", { ascending: true })
-      .range(from, to),
-  );
+      .range(from, to);
+    if (subjectId) q = q.eq("id", subjectId);
+    return q;
+  });
 
   type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
   const assignments = await paged<Joined>((from, to) =>
@@ -47,13 +53,16 @@ export async function loadProgramBibliography(
 
   // Printed titles are included only when their campus matches the report's
   // campus (or is blank, for legacy / cross-campus rows). Digital titles
-  // (eBooks, online journals) are always included.
-  const includeTitle = (t: { format: ResourceTypeId; campus?: string }) => {
+  // (eBooks, online journals) are always included. A year-coverage window
+  // (if set) additionally excludes titles published outside that range,
+  // so outdated titles drop out of the report without deleting the data.
+  const includeTitle = (t: { format: ResourceTypeId; campus?: string; year?: string }) => {
     const rt = RESOURCE_BY_ID[t.format];
-    if (!rt?.campusScoped) return true;
-    if (!campus) return true; // no campus picked => show everything
-    const tc = (t.campus ?? "").trim();
-    return tc === "" || tc === campus;
+    if (rt?.campusScoped && campus) {
+      const tc = (t.campus ?? "").trim();
+      if (tc !== "" && tc !== campus) return false;
+    }
+    return yearInRange(t.year, minYear, maxYear);
   };
 
   type Buckets = Record<ResourceTypeId, TitleRow[]>;

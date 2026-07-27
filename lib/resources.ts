@@ -33,6 +33,7 @@ export const RESOURCE_TYPES = [
     kind: "book",  access: "paid", medium: "print",
     campusScoped: true,
     dedupBy: "callno-title-author",
+    accessionMode: true as boolean,  // each row = 1 accession; duplicates accumulate copies
   },
   {
     id: "journal_printed",
@@ -58,10 +59,18 @@ export const RESOURCE_TYPES = [
     campusScoped: false,
     dedupBy: "issn-or-title",
   },
+  {
+    id: "institutional_repository",
+    uiLabel: "Institutional Repository",
+    sectionLabel: "Institutional Repository",
+    kind: "book",  access: "open", medium: "digital",
+    campusScoped: false,
+    dedupBy: "isbn-or-tuple",
+  },
 ] as const;
 
 export type ResourceTypeId = (typeof RESOURCE_TYPES)[number]["id"];
-export type ResourceType = (typeof RESOURCE_TYPES)[number];
+export type ResourceType = (typeof RESOURCE_TYPES)[number] & { accessionMode?: boolean };
 
 export const RESOURCE_BY_ID: Record<ResourceTypeId, ResourceType> =
   Object.fromEntries(RESOURCE_TYPES.map((t) => [t.id, t])) as Record<ResourceTypeId, ResourceType>;

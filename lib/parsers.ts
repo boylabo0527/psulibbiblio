@@ -28,6 +28,7 @@ const PRINTED_ALIASES: Record<string, string[]> = {
   publisher: ["publisher", "publisher_name"],
   isbn: ["isbn", "isbn-13", "isbn13"],
   campus: ["campus", "branch", "library"],
+  barcode: ["barcode", "bar code", "accession no", "accession no.", "accession number", "acc no", "acc. no.", "acc no."],
 };
 
 const SUBJECT_ALIASES: Record<string, string[]> = {
@@ -218,6 +219,7 @@ export async function parsePrintedBooks(filename: string, buf: Buffer): Promise<
       isbn: map.isbn ? r[map.isbn] : "",
       copies,
       campus: map.campus ? (r[map.campus] || "").trim() : undefined,
+      barcode: map.barcode ? (r[map.barcode] || "").trim() : undefined,
     });
   }
   return out;
@@ -260,6 +262,7 @@ export function buildTitleRowsFromRaw(
       subjects: map.subjects ? r[map.subjects] : "",
       copies,
       campus: map.campus ? (r[map.campus] ?? "").trim() : undefined,
+      barcode: map.barcode ? (r[map.barcode] ?? "").trim() : undefined,
     });
   }
   return out;
@@ -270,12 +273,7 @@ export function buildTitleRowsFromRaw(
 // ---------------------------------------------------------------------------
 export type ParsedSubject = SubjectRow & { program?: string };
 
-export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
-  const rows = rowsFromWorkbook(readSheet(filename, buf));
-  return buildSubjectsFromRaw(rows);
-}
-
-export function buildSubjectsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
+function subjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
   if (rows.length === 0) return [];
   const map = buildHeaderMap(Object.keys(rows[0]), SUBJECT_ALIASES);
   if (!map.course_title && !map.course_code) {
@@ -296,4 +294,14 @@ export function buildSubjectsFromRaw(rows: Record<string, string>[]): ParsedSubj
     });
   }
   return out;
+}
+
+export async function parseSubjects(filename: string, buf: Buffer): Promise<ParsedSubject[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
+  return subjectRowsFromRaw(rows);
+}
+
+/** Build ParsedSubject rows from rows already parsed by the browser. */
+export function buildSubjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
+  return subjectRowsFromRaw(rows);
 }

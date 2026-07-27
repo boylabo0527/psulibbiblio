@@ -1,15 +1,16 @@
 import { parseEbookTitles, parseJournals, parsePrintedBooks, buildTitleRowsFromRaw } from "@/lib/parsers";
-import { pageThrough } from "@/lib/paging";
 import { ndjsonStream } from "@/lib/streaming";
-import { RESOURCE_BY_ID, isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
+import { RESOURCE_BY_ID, isResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
 import type { TitleRow } from "@/lib/types";
+import { logActivity, userEmailFromRequest } from "@/lib/activity";
+import { getUserPermissions } from "@/lib/permissions";
+import { ingestTitleRecords } from "@/lib/ingest-titles";
+import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const BATCH = 500;
 
 export async function POST(req: Request, { params }: { params: { type: string } }) {
   // Accept either pre-parsed JSON rows (sent by the browser after client-side
@@ -32,157 +33,64 @@ export async function POST(req: Request, { params }: { params: { type: string } 
     campusInput = ((form.get("campus") as string | null) ?? "").trim();
   }
 
+  const userEmail = userEmailFromRequest(req);
+  const perms = await getUserPermissions(serviceClient(), userEmail);
+  if (!perms.isAdmin && !perms.tabs["upload"]?.can_edit) {
+    return new Response(JSON.stringify({ error: "Your account doesn't have permission to upload." }), {
+      status: 403, headers: { "Content-Type": "application/json" },
+    });
+  }
+  const batchId = randomUUID();
+
   const stream = ndjsonStream(async (send) => {
-    if (!isResourceTypeId(params.type)) {
-      throw new Error(`Unknown resource type: ${params.type}`);
-    }
-    const rt = RESOURCE_BY_ID[params.type];
-    if (!file) throw new Error("Missing file");
-    const defaultCampus = rt.campusScoped ? campusInput : "";
-    send({ phase: "parsing" });
-
-    let records: TitleRow[];
-    if (preRows) {
-      // Client already parsed the spreadsheet; just apply column aliases.
-      records = buildTitleRowsFromRaw(file.name, preRows, rt);
-    } else {
-      const buf = Buffer.from(await (file as File).arrayBuffer());
-      if (rt.kind === "journal") {
-        records = await parseJournals(file.name, buf);
-      } else if (rt.medium === "print") {
-        records = await parsePrintedBooks(file.name, buf);
-      } else {
-        records = await parseEbookTitles(file.name, buf);
-      }
-    }
-    send({ phase: "parsed", total: records.length });
-    if (!records.length) {
-      send({ phase: "done", received: 0, inserted: 0, skipped: 0 });
-      return;
-    }
     const db = serviceClient();
-
-    // Pre-fetch existing titles of this format so re-uploads dedup.
-    // Printed types include the campus in the dedup key so the same call
-    // number can exist at Main Campus AND PSU-Coron without colliding.
-    type Existing = { isbn: string; issn: string; call_no: string; title: string; author: string; year: string; campus: string };
-    const selectCols = rt.campusScoped
-      ? "isbn, issn, call_no, title, author, year, campus"
-      : "isbn, issn, call_no, title, author, year";
-    const existing = await pageThrough<Existing>(
-      (from, to) => db.from("titles")
-        .select(selectCols)
-        .eq("format", rt.id)
-        .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
-    );
-    send({ phase: "deduping", existing: existing.length });
-
-    const isbnSeen = new Set<string>();
-    const issnSeen = new Set<string>();
-    const tupleSeen = new Set<string>();
-    const campusKey = (c: string) => (rt.campusScoped ? `|${c}` : "");
-    for (const e of existing) {
-      switch (rt.dedupBy) {
-        case "isbn-or-tuple":
-          if (e.isbn) isbnSeen.add(e.isbn);
-          else tupleSeen.add(`${e.title}|${e.author}|${e.year}`);
-          break;
-        case "callno-title-author":
-          tupleSeen.add(`${e.call_no}|${e.title}|${e.author}${campusKey(e.campus ?? "")}`);
-          break;
-        case "callno-title-issn":
-          tupleSeen.add(`${e.call_no}|${e.title}|${e.issn}${campusKey(e.campus ?? "")}`);
-          break;
-        case "issn-or-title":
-          if (e.issn) issnSeen.add(e.issn);
-          else tupleSeen.add(e.title);
-          break;
+    try {
+      if (!isResourceTypeId(params.type)) {
+        throw new Error(`Unknown resource type: ${params.type}`);
       }
+      const rt = RESOURCE_BY_ID[params.type];
+      if (!file) throw new Error("Missing file");
+      const defaultCampus = rt.campusScoped ? campusInput : "";
+      send({ phase: "parsing" });
+
+      let records: TitleRow[];
+      if (preRows) {
+        // Client already parsed the spreadsheet; just apply column aliases.
+        records = buildTitleRowsFromRaw(file.name, preRows, rt);
+      } else {
+        const buf = Buffer.from(await (file as File).arrayBuffer());
+        if (rt.kind === "journal") {
+          records = await parseJournals(file.name, buf);
+        } else if (rt.medium === "print") {
+          records = await parsePrintedBooks(file.name, buf);
+        } else {
+          records = await parseEbookTitles(file.name, buf);
+        }
+      }
+      send({ phase: "parsed", total: records.length });
+      if (!records.length) {
+        send({ phase: "done", received: 0, inserted: 0, skipped: 0 });
+        return;
+      }
+
+      const result = await ingestTitleRecords(db, rt, records, batchId, send, defaultCampus);
+      send({ phase: "done", ...result });
+      await logActivity(db, {
+        userEmail, action: "upload_titles",
+        summary: result.duplicates != null
+          ? `Uploaded ${rt.uiLabel}: ${result.inserted} new, ${result.skipped} updated, ${result.duplicates} duplicate${result.duplicates === 1 ? "" : "s"} skipped`
+          : `Uploaded ${rt.uiLabel}: ${result.inserted} new, ${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} skipped`,
+        detail: { format: rt.id, ...result },
+        batchId, revertible: result.inserted > 0,
+      });
+    } catch (err) {
+      await logActivity(db, {
+        userEmail, action: "upload_titles",
+        summary: `Upload FAILED for ${params.type}: ${err instanceof Error ? err.message : String(err)}`,
+        detail: { type: params.type, error: err instanceof Error ? err.message : String(err) },
+      });
+      throw err;
     }
-
-    const rowCampus = (r: TitleRow): string => {
-      if (!rt.campusScoped) return "";
-      const fromRow = (r.campus ?? "").trim();
-      return fromRow || defaultCampus;
-    };
-
-    const shouldKeep = (r: TitleRow, c: string): boolean => {
-      switch (rt.dedupBy) {
-        case "isbn-or-tuple": {
-          const isbn = (r.isbn ?? "").trim();
-          if (isbn) {
-            if (isbnSeen.has(isbn)) return false;
-            isbnSeen.add(isbn);
-          } else {
-            const key = `${r.title}|${r.author ?? ""}|${r.year ?? ""}`;
-            if (tupleSeen.has(key)) return false;
-            tupleSeen.add(key);
-          }
-          return true;
-        }
-        case "callno-title-author": {
-          const key = `${r.call_no ?? ""}|${r.title}|${r.author ?? ""}${campusKey(c)}`;
-          if (tupleSeen.has(key)) return false;
-          tupleSeen.add(key);
-          return true;
-        }
-        case "callno-title-issn": {
-          const key = `${r.call_no ?? ""}|${r.title}|${r.issn ?? ""}${campusKey(c)}`;
-          if (tupleSeen.has(key)) return false;
-          tupleSeen.add(key);
-          return true;
-        }
-        case "issn-or-title": {
-          const issn = (r.issn ?? "").trim();
-          if (issn) {
-            if (issnSeen.has(issn)) return false;
-            issnSeen.add(issn);
-          } else {
-            if (tupleSeen.has(r.title)) return false;
-            tupleSeen.add(r.title);
-          }
-          return true;
-        }
-      }
-    };
-
-    let inserted = 0;
-    let skipped = 0;
-    for (let i = 0; i < records.length; i += BATCH) {
-      const batchInput = records.slice(i, i + BATCH);
-      const toInsert = [];
-      for (const r of batchInput) {
-        const c = rowCampus(r);
-        if (rt.campusScoped && !c) {
-          throw new Error(
-            `Row "${r.title}" has no campus — set a campus in the upload card or add a "Campus" column to the file.`,
-          );
-        }
-        if (!shouldKeep(r, c)) { skipped++; continue; }
-        const row: Record<string, unknown> = {
-          format: rt.id,
-          title: r.title,
-          author: r.author ?? "",
-          publisher: r.publisher ?? "",
-          year: r.year ?? "",
-          isbn: r.isbn ?? "",
-          issn: r.issn ?? "",
-          call_no: r.call_no ?? "",
-          copies: r.copies ?? 1,
-          url: r.url ?? "",
-          subjects: r.subjects ?? "",
-        };
-        if (rt.campusScoped) row.campus = c;
-        toInsert.push(row);
-      }
-      if (toInsert.length) {
-        const { data, error } = await db.from("titles").insert(toInsert).select("id");
-        if (error) throw error;
-        inserted += data?.length ?? 0;
-      }
-      send({ phase: "inserting", inserted, skipped, total: records.length });
-    }
-    send({ phase: "done", received: records.length, inserted, skipped });
   });
 
   return new Response(stream, {

@@ -16,6 +16,9 @@ export type TitleRow = {
   url?: string;
   subjects?: string;
   campus?: string;
+  /** Per-copy accession/barcode number, if the source file has one — used to
+   *  avoid double-counting the same physical copy across repeat uploads. */
+  barcode?: string;
 };
 
 export type ProgramRow = {
@@ -30,6 +33,9 @@ export type SubjectRow = {
   course_title: string;
   description?: string;
   sort_order?: number;
+  /** When true, /api/match/run skips this subject entirely so a curated
+   *  title list is never touched by a future match run. */
+  locked?: boolean;
 };
 
 export type AssignmentRow = {
