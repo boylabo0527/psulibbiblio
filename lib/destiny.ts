@@ -34,34 +34,41 @@
  */
 import sql from "mssql";
 
-// Best-effort placeholder, NOT confirmed against a real Destiny schema --
-// replace via DESTINY_CATALOG_QUERY once you've verified the real table
-// and column names (Destiny Administrator's "Advanced Reports" / a DBA can
-// confirm these, or reuse a query from anywhere else you already query
-// this same database). Whatever query you use MUST return columns named
-// exactly: barcode, call_no, title, author, publisher, year, sublocation,
-// copies -- alias them in the SELECT if your real column names differ.
+// Confirmed against this instance's actual CircCatAdmin schema.
+// CopyLibraryView carries per-copy details (barcode, call number, and
+// Sublocation -- Destiny's own name for the field, already text, no join
+// needed) and BibLibraryView carries the bibliographic (title-level) data.
+// DateWithdrawn is null for copies still actually on the shelf; withdrawn
+// copies are excluded so a withdrawn book doesn't keep re-appearing on
+// every sync.
 //
-// "sublocation" (Destiny's term) is finer-grained than this app's notion
-// of "campus": some sublocations are each their own separate campus (the
-// CCRD extension sites), while others are just sections of ONE campus's
-// library (e.g. "Main - Reference" and "Main - Circulation" are both
-// still Main Campus). See mapSublocationToCampus() below, which resolves
-// that down to the campus name this app actually tracks.
+// Not filtered by BibType/CollectionType (Destiny's internal material-type
+// codes) since this instance's exact enum values for "printed book" vs.
+// other physical media aren't confirmed -- if this library also catalogs
+// non-book physical items (AV, equipment, etc.) through the same tables,
+// those would come through too. Add a `and bv.BibType = <n>` filter once
+// you've confirmed the right value for "book" here (Destiny Admin console,
+// or ask Follett support) if that turns out to matter.
+//
+// "sublocation" is finer-grained than this app's notion of "campus": some
+// sublocations are each their own separate campus (the CCRD extension
+// sites), while others are just sections of ONE campus's library (e.g.
+// "Main - Reference" and "Main - Circulation" are both still Main Campus).
+// See mapSublocationToCampus() below, which resolves that down to the
+// campus name this app actually tracks.
 const DEFAULT_QUERY = `
   select
-    cp.Barcode          as barcode,
-    ti.CallNumber        as call_no,
-    ti.Title             as title,
-    ti.Author            as author,
-    ti.Publisher         as publisher,
-    ti.PublicationYear   as year,
-    si.Name              as sublocation,
-    1                    as copies
-  from Copy cp
-  join Title ti on ti.TitleID = cp.TitleID
-  left join Site si on si.SiteID = cp.SiteID
-  where cp.LostOrMissing = 0
+    cv.CopyBarcode     as barcode,
+    cv.CallNumber      as call_no,
+    bv.Title           as title,
+    bv.Author          as author,
+    bv.Publisher       as publisher,
+    bv.PublicationYear as year,
+    cv.Sublocation     as sublocation,
+    1                  as copies
+  from CopyLibraryView cv
+  join BibLibraryView bv on bv.BibID = cv.BibID
+  where cv.DateWithdrawn is null
 `;
 
 // Destiny sublocation -> this app's campus name (see supabase/migrations/
