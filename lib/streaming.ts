@@ -18,6 +18,8 @@
  * ndjsonStream<MatchProgressEvent>(...)) for anything other than the default
  * upload-flavored ProgressEvent.
  */
+import { errorMessage } from "./errors";
+
 export type ProgressEvent =
   | { phase: "parsing" }
   | { phase: "parsed"; total: number }
@@ -63,8 +65,7 @@ export function ndjsonStream<T extends { phase: string } = ProgressEvent>(
       try {
         await run(send);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        send({ phase: "error", error: message } as unknown as T);
+        send({ phase: "error", error: errorMessage(err) } as unknown as T);
       } finally {
         controller.close();
       }
