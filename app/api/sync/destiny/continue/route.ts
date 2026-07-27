@@ -8,11 +8,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Leaves headroom under the ~60s a Vercel function is allowed to run
-// (Hobby's actual cap; Pro allows much more but this still works fine
-// there, it just means each call gets more done) for the final job-row
-// update, activity logging, and response serialization.
-const BUDGET_MS = 45_000;
+// A 504 on this route in practice means the account's real enforced
+// function timeout is well under the 60s maxDuration declared above (or
+// there's a gateway/proxy in front of it with its own shorter cap) --
+// declaring a longer maxDuration doesn't help if something else is
+// cutting the request off first. Kept short and conservative so this
+// finishes with room to spare even on a tightly-capped plan; the client
+// (see DestinySyncCard) just calls this again and again regardless, so a
+// smaller budget only means more calls, not a slower sync overall.
+const BUDGET_MS = 8_000;
 
 export type DestinyContinueResponse =
   | {
