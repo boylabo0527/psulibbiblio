@@ -1,7 +1,7 @@
 import type { serviceClient } from "./supabase";
 
 export type ActivityAction =
-  | "upload_titles" | "upload_subjects"
+  | "upload_titles" | "upload_subjects" | "sync_destiny"
   | "match_run"
   | "bulk_delete"
   | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate"

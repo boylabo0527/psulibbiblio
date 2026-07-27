@@ -6,6 +6,7 @@ import type { ActivityRow } from "@/app/api/activity/route";
 const ACTION_LABEL: Record<string, string> = {
   upload_titles: "Upload (titles)",
   upload_subjects: "Upload (subjects)",
+  sync_destiny: "Synced from Destiny",
   match_run: "Match run",
   bulk_delete: "Bulk delete",
   program_create: "Program created",
@@ -33,7 +34,7 @@ const ACTION_LABEL: Record<string, string> = {
 
 function actionColor(action: string): string {
   if (action === "bulk_delete" || action.endsWith("_delete")) return "bg-red-100 text-red-700";
-  if (action.startsWith("upload_")) return "bg-blue-100 text-blue-700";
+  if (action.startsWith("upload_") || action === "sync_destiny") return "bg-blue-100 text-blue-700";
   if (action === "match_run") return "bg-purple-100 text-purple-700";
   if (action.includes("lock")) return "bg-amber-100 text-amber-700";
   return "bg-slate-100 text-slate-700";
