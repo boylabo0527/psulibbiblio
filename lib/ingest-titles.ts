@@ -3,6 +3,16 @@
  * /api/upload/[type] so a second source of rows -- a Destiny sync, or any
  * future automated feed -- can reuse the exact same dedup/accession
  * behavior as a manual file upload instead of duplicating it.
+ *
+ * Split into a planning phase (planIngestOps -- reads the DB to work out
+ * exactly what to insert/update, but writes nothing) and an execution
+ * phase (applyIngestOps -- does the actual writes, batched and optionally
+ * time-boxed). A manual file upload runs both in one request via
+ * ingestTitleRecords(). A large automated sync (see app/api/sync/destiny)
+ * instead persists the plan and calls applyIngestOps repeatedly across
+ * several short requests, since a catalog with tens of thousands of rows
+ * can easily take longer than a single Vercel function invocation is
+ * allowed to run on the Hobby (free) plan.
  */
 import type { serviceClient } from "./supabase";
 import type { TitleRow } from "./types";
@@ -24,21 +34,32 @@ const BATCH = 500;
 // log for someone to go back and correct later.
 const FALLBACK_CAMPUS = "Main Campus";
 
-/** Ingests already-parsed TitleRows for one resource type, applying the
- *  same accession-mode (printed books: dedupe by barcode, accumulate
- *  copies) or standard dedup-by-identifier logic as a manual upload. A
- *  campus-scoped row with no resolvable campus is filed under
- *  FALLBACK_CAMPUS rather than dropped, and reported back via
- *  IngestResult.noCampusTitles. */
-export async function ingestTitleRecords(
+export type IngestOp =
+  | { kind: "insert"; row: Record<string, unknown> }
+  | { kind: "update"; id: number; copies: number; barcodes: string[] };
+
+export type IngestPlan = {
+  ops: IngestOp[];
+  mode: "accession" | "standard";
+  duplicates?: number;  // accession mode: rows that matched an existing copy exactly (same barcode already on file)
+  skipped?: number;      // standard mode: rows dropped as duplicates before any op was even built
+  noCampusTitles: string[];
+  received: number;
+};
+
+/** Reads the DB to work out exactly what needs inserting/updating for this
+ *  batch of rows, without writing anything -- see applyIngestOps for the
+ *  write side. Mirrors ingestTitleRecords' old all-in-one dedup logic. */
+export async function planIngestOps(
   db: ReturnType<typeof serviceClient>,
   rt: ResourceType,
   records: TitleRow[],
   batchId: string,
-  send: IngestSend,
   defaultCampus = "",
-): Promise<IngestResult> {
-  if (!records.length) return { received: 0, inserted: 0, skipped: 0 };
+  send: IngestSend = () => {},
+): Promise<IngestPlan> {
+  const mode = rt.accessionMode ? "accession" : "standard";
+  if (!records.length) return { ops: [], mode, noCampusTitles: [], received: 0 };
 
   const rowCampus = (r: TitleRow): string => {
     if (!rt.campusScoped) return "";
@@ -111,8 +132,7 @@ export async function ingestTitleRecords(
       existingMap.set(`${normField(e.call_no ?? "")}|${normField(e.title)}|${normField(e.author ?? "")}|${e.campus ?? ""}`, e);
     }
 
-    const toInsert: Record<string, unknown>[] = [];
-    const toUpdate: { id: number; copies: number; barcodes: string[] }[] = [];
+    const ops: IngestOp[] = [];
     let duplicates = 0;
 
     for (const [k, { row, campus: c, barcodes, unbarcoded }] of aggMap) {
@@ -127,47 +147,31 @@ export async function ingestTitleRecords(
           duplicates++;
           continue;
         }
-        toUpdate.push({ id: ex.id, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
+        ops.push({ kind: "update", id: ex.id, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
       } else {
-        toInsert.push({
-          format: rt.id,
-          title: row.title,
-          author: row.author ?? "",
-          publisher: row.publisher ?? "",
-          year: row.year ?? "",
-          isbn: row.isbn ?? "",
-          issn: row.issn ?? "",
-          call_no: row.call_no ?? "",
-          copies: barcodes.size + unbarcoded,
-          url: row.url ?? "",
-          subjects: row.subjects ?? "",
-          campus: c,
-          barcodes: Array.from(barcodes),
-          batch_id: batchId,
+        ops.push({
+          kind: "insert",
+          row: {
+            format: rt.id,
+            title: row.title,
+            author: row.author ?? "",
+            publisher: row.publisher ?? "",
+            year: row.year ?? "",
+            isbn: row.isbn ?? "",
+            issn: row.issn ?? "",
+            call_no: row.call_no ?? "",
+            copies: barcodes.size + unbarcoded,
+            url: row.url ?? "",
+            subjects: row.subjects ?? "",
+            campus: c,
+            barcodes: Array.from(barcodes),
+            batch_id: batchId,
+          },
         });
       }
     }
 
-    let inserted = 0;
-    let updated = 0;
-    for (let i = 0; i < toInsert.length; i += BATCH) {
-      const slice = toInsert.slice(i, i + BATCH);
-      const { data, error } = await db.from("titles").insert(slice).select("id");
-      if (error) throw error;
-      inserted += data?.length ?? 0;
-      send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
-    }
-    for (let i = 0; i < toUpdate.length; i += BATCH) {
-      const slice = toUpdate.slice(i, i + BATCH);
-      for (const { id, copies, barcodes } of slice) {
-        const { error } = await db.from("titles").update({ copies, barcodes }).eq("id", id);
-        if (error) throw error;
-        updated++;
-      }
-      send({ phase: "inserting", inserted, skipped: updated, total: aggMap.size });
-    }
-
-    return { received: records.length, inserted, skipped: updated, duplicates, noCampusTitles };
+    return { ops, mode: "accession", duplicates, noCampusTitles, received: records.length };
   }
 
   // ---------------------------------------------------------------------
@@ -282,38 +286,107 @@ export async function ingestTitleRecords(
     }
   };
 
-  let inserted = 0;
+  const ops: IngestOp[] = [];
   let skipped = 0;
-  for (let i = 0; i < records.length; i += BATCH) {
-    const batchInput = records.slice(i, i + BATCH);
-    const toInsert = [];
-    for (const r of batchInput) {
-      const c = rowCampus(r);
-      if (!shouldKeep(r, c)) { skipped++; continue; }
-      const row: Record<string, unknown> = {
-        format: rt.id,
-        title: r.title,
-        author: r.author ?? "",
-        publisher: r.publisher ?? "",
-        year: r.year ?? "",
-        isbn: r.isbn ?? "",
-        issn: r.issn ?? "",
-        call_no: r.call_no ?? "",
-        copies: r.copies ?? 1,
-        url: r.url ?? "",
-        subjects: r.subjects ?? "",
-        batch_id: batchId,
-      };
-      if (rt.campusScoped) row.campus = c;
-      toInsert.push(row);
-    }
-    if (toInsert.length) {
-      const { data, error } = await db.from("titles").insert(toInsert).select("id");
-      if (error) throw error;
-      inserted += data?.length ?? 0;
-    }
-    send({ phase: "inserting", inserted, skipped, total: records.length });
+  for (const r of records) {
+    const c = rowCampus(r);
+    if (!shouldKeep(r, c)) { skipped++; continue; }
+    const row: Record<string, unknown> = {
+      format: rt.id,
+      title: r.title,
+      author: r.author ?? "",
+      publisher: r.publisher ?? "",
+      year: r.year ?? "",
+      isbn: r.isbn ?? "",
+      issn: r.issn ?? "",
+      call_no: r.call_no ?? "",
+      copies: r.copies ?? 1,
+      url: r.url ?? "",
+      subjects: r.subjects ?? "",
+      batch_id: batchId,
+    };
+    if (rt.campusScoped) row.campus = c;
+    ops.push({ kind: "insert", row });
   }
 
-  return { received: records.length, inserted, skipped, noCampusTitles };
+  return { ops, mode: "standard", skipped, noCampusTitles, received: records.length };
+}
+
+/** Executes a slice of a plan's ops, in batches, stopping either when the
+ *  whole list is done or when budgetMs has elapsed (whichever comes
+ *  first) -- so a caller can pass a large budget to run to completion in
+ *  one call, or a short one to do a bounded chunk per request and resume
+ *  from the returned cursor next time. */
+export async function applyIngestOps(
+  db: ReturnType<typeof serviceClient>,
+  ops: IngestOp[],
+  startCursor: number,
+  budgetMs: number,
+  onBatch?: (state: { cursor: number; inserted: number; updated: number }) => void,
+): Promise<{ cursor: number; inserted: number; updated: number; done: boolean }> {
+  const deadline = Date.now() + budgetMs;
+  let cursor = startCursor;
+  let inserted = 0;
+  let updated = 0;
+  while (cursor < ops.length && Date.now() < deadline) {
+    const end = Math.min(cursor + BATCH, ops.length);
+    const slice = ops.slice(cursor, end);
+    const inserts = slice.filter((o): o is Extract<IngestOp, { kind: "insert" }> => o.kind === "insert").map((o) => o.row);
+    const updates = slice.filter((o): o is Extract<IngestOp, { kind: "update" }> => o.kind === "update");
+    if (inserts.length) {
+      const { error } = await db.from("titles").insert(inserts);
+      if (error) throw error;
+      inserted += inserts.length;
+    }
+    if (updates.length) {
+      // upsert(), not one update() per row: a single round trip per batch
+      // instead of one per row is the difference between this finishing
+      // in seconds vs. running long enough to hit a serverless timeout.
+      // Only the listed columns are touched -- Postgres' ON CONFLICT ...
+      // DO UPDATE SET only overwrites columns present in the payload, so
+      // every other column on the existing row is left alone.
+      const { error } = await db.from("titles").upsert(
+        updates.map((u) => ({ id: u.id, copies: u.copies, barcodes: u.barcodes })),
+      );
+      if (error) throw error;
+      updated += updates.length;
+    }
+    cursor = end;
+    onBatch?.({ cursor, inserted, updated });
+  }
+  return { cursor, inserted, updated, done: cursor >= ops.length };
+}
+
+function combineResult(plan: IngestPlan, applied: { inserted: number; updated: number }): IngestResult {
+  if (plan.mode === "accession") {
+    return {
+      received: plan.received, inserted: applied.inserted, skipped: applied.updated,
+      duplicates: plan.duplicates, noCampusTitles: plan.noCampusTitles,
+    };
+  }
+  return {
+    received: plan.received, inserted: applied.inserted, skipped: plan.skipped ?? 0,
+    noCampusTitles: plan.noCampusTitles,
+  };
+}
+
+/** Plans and fully executes a batch of rows in one call -- used by the
+ *  manual file-upload route, where a whole upload comfortably finishes
+ *  within one request. Large automated feeds (Destiny) should use
+ *  planIngestOps + applyIngestOps directly instead, spread across several
+ *  requests -- see app/api/sync/destiny. */
+export async function ingestTitleRecords(
+  db: ReturnType<typeof serviceClient>,
+  rt: ResourceType,
+  records: TitleRow[],
+  batchId: string,
+  send: IngestSend,
+  defaultCampus = "",
+): Promise<IngestResult> {
+  const plan = await planIngestOps(db, rt, records, batchId, defaultCampus, send);
+  if (!plan.ops.length) return combineResult(plan, { inserted: 0, updated: 0 });
+  const applied = await applyIngestOps(db, plan.ops, 0, Number.POSITIVE_INFINITY, (state) => {
+    send({ phase: "inserting", inserted: state.inserted, skipped: state.updated, total: plan.ops.length });
+  });
+  return combineResult(plan, applied);
 }

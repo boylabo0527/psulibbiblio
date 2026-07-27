@@ -1,37 +1,117 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses } from "@/lib/use-campuses";
 import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
 import { usePermissions } from "@/lib/use-permissions";
-import type { DestinySyncEvent } from "@/app/api/sync/destiny/route";
 import type { DestinyDiagnostics } from "@/lib/destiny";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 
+// A Destiny catalog sync can involve tens of thousands of rows -- far more
+// than fits in one Vercel function call on the Hobby (free) plan, which
+// kills a request long before that much writing finishes. So rather than
+// one long streamed request, /api/sync/destiny "starts" a job and hands
+// back a jobId, then /continue is called in a loop -- each call is
+// time-boxed server-side and only does as much as fits -- until the job
+// reports done. Progress is persisted server-side (not just held in this
+// component's state), so /status can pick a sync back up after a reload.
+type DestinyProgress = {
+  jobId: string;
+  status: "running" | "done" | "error";
+  total: number;
+  remaining?: number;
+  inserted: number;
+  updated: number;
+  duplicates: number;
+  no_campus_titles: string[];
+  unmapped_campuses: string[];
+  error?: string;
+};
+
 function DestinySyncCard() {
   const { perms } = usePermissions();
-  const [ev, setEv] = useState<DestinySyncEvent | null>(null);
+  const [progress, setProgress] = useState<DestinyProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [diag, setDiag] = useState<DestinyDiagnostics | { error: string } | null>(null);
   const [diagBusy, setDiagBusy] = useState(false);
+  // Guards against two poll loops running at once (a fresh "Sync now"
+  // click while an old resumed-on-reload loop is still polling).
+  const activeJobRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!perms.isAdmin) return;
+    (async () => {
+      try {
+        const res = await apiFetch("/api/sync/destiny/status");
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && j.jobId) {
+          setProgress({
+            jobId: j.jobId, status: j.status, total: j.total,
+            inserted: j.inserted, updated: j.updated, duplicates: j.duplicates,
+            no_campus_titles: j.no_campus_titles ?? [], unmapped_campuses: j.unmapped_campuses ?? [],
+            error: j.error,
+          });
+          if (j.status === "running") pollUntilDone(j.jobId);
+        }
+      } catch {
+        // Best-effort "resume watching a sync in progress" check -- fine
+        // to just show nothing if it fails.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms.isAdmin]);
+
+  async function pollUntilDone(jobId: string) {
+    activeJobRef.current = jobId;
+    setBusy(true);
+    try {
+      for (;;) {
+        if (activeJobRef.current !== jobId) return; // superseded by a newer run
+        const res = await apiFetch("/api/sync/destiny/continue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) {
+          setProgress((p) => (p && p.jobId === jobId ? { ...p, status: "error", error: j.error || `HTTP ${res.status}` } : p));
+          return;
+        }
+        setProgress({
+          jobId, status: j.done ? "done" : "running", total: j.total,
+          remaining: j.remaining, inserted: j.inserted, updated: j.updated, duplicates: j.duplicates,
+          no_campus_titles: j.no_campus_titles ?? [], unmapped_campuses: j.unmapped_campuses ?? [],
+        });
+        if (j.done) return;
+      }
+    } finally {
+      if (activeJobRef.current === jobId) setBusy(false);
+    }
+  }
 
   if (!perms.isAdmin) return null;
 
-  async function run() {
+  async function runStart() {
     setBusy(true);
-    setEv(null);
+    setProgress(null);
     try {
       const res = await apiFetch("/api/sync/destiny", { method: "POST" });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        setEv({ phase: "error", error: j.error || `HTTP ${res.status}` });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) {
+        setProgress({ jobId: "", status: "error", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [], error: j.error || `HTTP ${res.status}` });
+        setBusy(false);
         return;
       }
-      await consumeNdjson<DestinySyncEvent>(res, (e) => setEv(e));
+      if (!j.jobId) {
+        setProgress({ jobId: "", status: "done", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [] });
+        setBusy(false);
+        return;
+      }
+      setProgress({ jobId: j.jobId, status: "running", total: j.total, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [] });
+      await pollUntilDone(j.jobId);
     } catch (e) {
-      setEv({ phase: "error", error: e instanceof Error ? e.message : String(e) });
-    } finally {
+      setProgress({ jobId: "", status: "error", total: 0, inserted: 0, updated: 0, duplicates: 0, no_campus_titles: [], unmapped_campuses: [], error: e instanceof Error ? e.message : String(e) });
       setBusy(false);
     }
   }
@@ -50,26 +130,28 @@ function DestinySyncCard() {
     }
   }
 
-  const label = !ev ? "" : ({
-    connecting: "Connecting to Destiny…",
-    parsed: `Fetched ${ev.phase === "parsed" ? ev.total.toLocaleString() : ""} rows — checking database…`,
-    deduping: "Checking against our catalog…",
-    inserting: ev.phase === "inserting" ? `Saving ${ev.inserted.toLocaleString()} / ${ev.total.toLocaleString()}` : "",
-    done: ev.phase === "done" ? `Done — ${ev.inserted.toLocaleString()} new, ${ev.skipped.toLocaleString()} updated` : "",
-    error: ev.phase === "error" ? `Error: ${ev.error}` : "",
-  } as Record<DestinySyncEvent["phase"], string>)[ev.phase];
+  const processed = progress ? progress.total - (progress.remaining ?? progress.total) : 0;
+  const pct = progress && progress.total > 0 ? Math.round((processed / progress.total) * 100) : 0;
+  const label = !progress ? "" :
+    progress.status === "error" ? `Error: ${progress.error}` :
+    progress.status === "done" ? (
+      progress.total === 0 ? "Nothing to sync — Destiny catalog fetched fine, but had no rows (or is already fully up to date)." :
+      `Done — ${progress.inserted.toLocaleString()} new, ${progress.updated.toLocaleString()} updated`
+    ) :
+    `Saving… ${processed.toLocaleString()} / ${progress.total.toLocaleString()} (${pct}%)`;
 
   return (
     <div className="card border-2 border-psu-light">
       <h2 className="text-psu font-semibold mb-1">Sync Printed Books from Destiny</h2>
       <p className="text-sm text-slate-600 mb-2">
         Pulls the printed-book catalog directly from your Destiny database instead of exporting and uploading a
-        file. Uses the same duplicate/copy-count logic as a manual Printed Books upload above. Admin-only, since it
-        uses org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab
-        permission.
+        file. Uses the same duplicate/copy-count logic as a manual Printed Books upload above. Runs in the
+        background across several short requests (so a large catalog doesn't hit Vercel's free-plan request time
+        limit) -- progress is saved, so it's safe to leave this page and come back. Admin-only, since it uses
+        org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab permission.
       </p>
       <div className="flex items-center gap-2">
-        <button className="btn text-xs" disabled={busy} onClick={run}>
+        <button className="btn text-xs" disabled={busy} onClick={runStart}>
           {busy ? "Syncing…" : "Sync now"}
         </button>
         <button
@@ -105,28 +187,33 @@ function DestinySyncCard() {
           )}
         </div>
       )}
-      {ev && (
+      {progress && (
         <div className="mt-3 text-xs">
-          <p className={ev.phase === "error" ? "text-red-700" : ev.phase === "done" ? "text-emerald-700" : "text-slate-600"}>
+          {progress.status === "running" && (
+            <div className="w-full bg-slate-200 rounded h-1.5 mb-1.5 overflow-hidden">
+              <div className="bg-psu h-full rounded transition-all" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+          <p className={progress.status === "error" ? "text-red-700" : progress.status === "done" ? "text-emerald-700" : "text-slate-600"}>
             {label}
           </p>
-          {ev.phase === "done" && ev.duplicates != null && ev.duplicates > 0 && (
-            <p className="text-slate-500 mt-0.5">{ev.duplicates.toLocaleString()} already-counted copies skipped.</p>
+          {progress.status === "done" && progress.duplicates > 0 && (
+            <p className="text-slate-500 mt-0.5">{progress.duplicates.toLocaleString()} already-counted copies skipped.</p>
           )}
-          {ev.phase === "done" && ev.unmapped_campuses.length > 0 && (
+          {progress.status === "done" && progress.unmapped_campuses.length > 0 && (
             <p className="text-amber-700 mt-1">
-              {ev.unmapped_campuses.length} Destiny sublocation{ev.unmapped_campuses.length === 1 ? "" : "s"} didn&apos;t
-              resolve to a campus already set up here: {ev.unmapped_campuses.join(", ")}. Those rows were still
+              {progress.unmapped_campuses.length} Destiny sublocation{progress.unmapped_campuses.length === 1 ? "" : "s"} didn&apos;t
+              resolve to a campus already set up here: {progress.unmapped_campuses.join(", ")}. Those rows were still
               synced, but won&apos;t show up correctly in campus-scoped reports until it's mapped (add the campus in
               Campus Validation, and/or add a line for it in lib/destiny.ts's sublocation mapping).
             </p>
           )}
-          {ev.phase === "done" && ev.no_campus_titles.length > 0 && (
+          {progress.status === "done" && progress.no_campus_titles.length > 0 && (
             <p className="text-amber-700 mt-1">
-              {ev.no_campus_titles.length} title{ev.no_campus_titles.length === 1 ? "" : "s"} had no campus at all
-              (blank Destiny sublocation) and {ev.no_campus_titles.length === 1 ? "was" : "were"} filed under
-              &quot;Main Campus&quot; for now: {ev.no_campus_titles.join(", ")}. Fix the sublocation in Destiny and
-              re-sync, or correct the campus directly in Campus Validation. This is also logged in the Activity Log.
+              {progress.no_campus_titles.length} title{progress.no_campus_titles.length === 1 ? "" : "s"} had no campus at all
+              (blank Destiny sublocation) and {progress.no_campus_titles.length === 1 ? "was" : "were"} filed under
+              &quot;Main Campus&quot; for now: {progress.no_campus_titles.join(", ")}. Fix the sublocation in Destiny
+              and re-sync, or correct the campus directly in Campus Validation. This is also logged in the Activity Log.
             </p>
           )}
         </div>

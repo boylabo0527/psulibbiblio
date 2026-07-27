@@ -8,8 +8,8 @@
 -- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
--- 16_user_campus_scope.sql in order. If you've already run some of those
--- individually, running this on top is still safe.
+-- 16_user_campus_scope.sql + 17_sync_jobs.sql in order. If you've already
+-- run some of those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -303,3 +303,35 @@ create table if not exists user_campuses (
   primary key (email, campus_id)
 );
 create index if not exists user_campuses_email_idx on user_campuses (email);
+
+-- ---------------------------------------------------------------------------
+-- 17: resumable background sync jobs
+-- ---------------------------------------------------------------------------
+create table if not exists sync_jobs (
+  id                uuid primary key,
+  kind              text not null,
+  status            text not null default 'running',
+  total             int not null default 0,
+  inserted          int not null default 0,
+  updated           int not null default 0,
+  duplicates        int not null default 0,
+  no_campus_titles  jsonb not null default '[]'::jsonb,
+  unmapped_campuses jsonb not null default '[]'::jsonb,
+  error             text,
+  batch_id          uuid,
+  created_by        text default '',
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+create index if not exists sync_jobs_kind_created_idx on sync_jobs (kind, created_at desc);
+
+create table if not exists sync_job_items (
+  id     bigserial primary key,
+  job_id uuid not null references sync_jobs(id) on delete cascade,
+  seq    int not null,
+  op     jsonb not null
+);
+create index if not exists sync_job_items_job_seq_idx on sync_job_items (job_id, seq);
+
+alter table sync_jobs enable row level security;
+alter table sync_job_items enable row level security;
