@@ -64,10 +64,10 @@ function DestinySyncCard() {
           )}
           {ev.phase === "done" && ev.unmapped_campuses.length > 0 && (
             <p className="text-amber-700 mt-1">
-              {ev.unmapped_campuses.length} campus name{ev.unmapped_campuses.length === 1 ? "" : "s"} from Destiny
-              didn&apos;t match a campus already set up here: {ev.unmapped_campuses.join(", ")}. Those rows were
-              still synced, but won&apos;t show up correctly in campus-scoped reports until the name matches (fix in
-              Campus Validation).
+              {ev.unmapped_campuses.length} Destiny sublocation{ev.unmapped_campuses.length === 1 ? "" : "s"} didn&apos;t
+              resolve to a campus already set up here: {ev.unmapped_campuses.join(", ")}. Those rows were still
+              synced, but won&apos;t show up correctly in campus-scoped reports until it's mapped (add the campus in
+              Campus Validation, and/or add a line for it in lib/destiny.ts's sublocation mapping).
             </p>
           )}
         </div>

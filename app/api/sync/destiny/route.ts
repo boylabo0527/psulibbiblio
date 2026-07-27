@@ -5,7 +5,7 @@ import type { TitleRow } from "@/lib/types";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
 import { ingestTitleRecords } from "@/lib/ingest-titles";
-import { destinyEnabled, fetchDestinyPrintedCatalog } from "@/lib/destiny";
+import { destinyEnabled, fetchDestinyPrintedCatalog, mapSublocationToCampus } from "@/lib/destiny";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -47,12 +47,15 @@ export async function POST(req: Request) {
       send({ phase: "connecting" });
       const destinyRows = await fetchDestinyPrintedCatalog();
 
-      // Campus names come from Destiny's own site/location field -- if one
-      // doesn't match a campus this app already knows about (Campus
-      // Validation's list), reports scoped by campus (Procurement,
-      // Dashboard breakdowns) won't recognize it. Still synced, but
-      // flagged so it can be fixed (rename the campus here to match, or
-      // add it in Campus Validation) rather than silently going unnoticed.
+      // Destiny's "sublocation" is finer-grained than this app's "campus"
+      // (some sublocations are library sections within ONE campus, others
+      // are each their own separate campus) -- mapSublocationToCampus
+      // resolves that down first. If the RESULT still doesn't match a
+      // campus this app already knows about (Campus Validation's list),
+      // reports scoped by campus (Procurement, Dashboard breakdowns) won't
+      // recognize it. Still synced, but flagged (by the original
+      // sublocation string, so it's clear which Destiny value needs
+      // attention) rather than silently going unnoticed.
       const { data: knownCampuses } = await db.from("campuses").select("name");
       const knownNames = new Set((knownCampuses ?? []).map((c) => c.name));
       const unmapped = new Set<string>();
@@ -60,8 +63,9 @@ export async function POST(req: Request) {
       const records: TitleRow[] = destinyRows
         .filter((r) => (r.title ?? "").trim())
         .map((r) => {
-          const campus = (r.campus ?? "").trim();
-          if (campus && !knownNames.has(campus)) unmapped.add(campus);
+          const sublocation = (r.sublocation ?? "").trim();
+          const campus = sublocation ? mapSublocationToCampus(sublocation) : "";
+          if (campus && !knownNames.has(campus)) unmapped.add(sublocation);
           return {
             title: r.title.trim(),
             author: (r.author ?? "").trim(),
