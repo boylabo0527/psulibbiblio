@@ -58,7 +58,7 @@ async function findDuplicate(
   db: ReturnType<typeof serviceClient>, edited: MergeableTitle,
 ): Promise<MergeableTitle | null> {
   const { data: candidates, error: candErr } = await db.from("titles")
-    .select("id, format, call_no, title, author, campus, copies")
+    .select("id, format, call_no, title, author, campus, copies, barcodes")
     .eq("format", edited.format)
     .eq("campus", edited.campus ?? "")
     .neq("id", edited.id);

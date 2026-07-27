@@ -29,7 +29,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "source_id and target_id must differ" }, { status: 400 });
     }
     const { data: rows, error } = await db.from("titles")
-      .select("id, format, call_no, title, author, campus, copies")
+      .select("id, format, call_no, title, author, campus, copies, barcodes")
       .in("id", [sourceId, targetId]);
     if (error) throw error;
     if (!rows || rows.length !== 2) {
