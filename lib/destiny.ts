@@ -122,13 +122,29 @@ const SUBLOCATION_TO_CAMPUS: Record<string, string> = {
 };
 
 /** Resolves a raw Destiny sublocation to this app's campus name. Falls
- *  back to the sublocation string itself when it's not in the table above
- *  (e.g. a new site/section added in Destiny since this list was written)
- *  -- the caller then flags it as an unrecognized campus rather than
- *  silently dropping or misfiling it. */
+ *  back to the sublocation string itself when it's not recognized at all
+ *  (e.g. a new CCRD extension site added in Destiny since this list was
+ *  written) -- the caller then flags it as an unrecognized campus rather
+ *  than silently dropping or misfiling it.
+ *
+ *  Main and Manalo get an extra prefix-match fallback, unlike the CCRD
+ *  sites: every Main/Manalo sublocation collapses to that one campus no
+ *  matter what the rest of the name says (a new library section added on
+ *  either campus is still that same campus), so matching on just the
+ *  prefix is always correct there -- whereas each CCRD sublocation is its
+ *  own distinct campus, so guessing from a shared "CCRD" prefix would
+ *  guess wrong. This also covers "Main - X"/"Manalo - X" not matching the
+ *  exact-string table above -- e.g. a hyphen/space quirk in how Destiny
+ *  actually renders it -- without needing that list kept in exact
+ *  lockstep with Destiny's own (not this app's) list of sections. */
 export function mapSublocationToCampus(sublocation: string): string {
   const trimmed = sublocation.trim();
-  return SUBLOCATION_TO_CAMPUS[trimmed] ?? trimmed;
+  const exact = SUBLOCATION_TO_CAMPUS[trimmed];
+  if (exact) return exact;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("main")) return "Main Campus";
+  if (lower.startsWith("manalo")) return "Manalo Campus";
+  return trimmed;
 }
 
 export function destinyEnabled(): boolean {
