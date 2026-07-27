@@ -398,6 +398,7 @@ function BookSection({
             {showIdent && <th className="text-left p-1 w-32">Call No. / ISSN</th>}
             <th className="text-left p-1 w-44">Author</th>
             <th className="text-left p-1">Title</th>
+            <th className="text-left p-1 w-32">Publisher</th>
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
             <th className="p-1 w-20"></th>
@@ -455,7 +456,7 @@ function EditableTitleRow({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           call_no: draft.call_no, issn: draft.issn, author: draft.author,
-          title: draft.title, year: draft.year,
+          title: draft.title, publisher: draft.publisher, year: draft.year,
           copies: Number(draft.copies) || 1,
         }),
       });
@@ -487,6 +488,7 @@ function EditableTitleRow({
         )}
         <td className="p-1"><input className="input text-xs w-full" value={draft.author ?? ""} onChange={(e) => setDraft({ ...draft, author: e.target.value })} /></td>
         <td className="p-1"><input className="input text-xs w-full" value={draft.title ?? ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></td>
+        <td className="p-1"><input className="input text-xs w-full" value={draft.publisher ?? ""} onChange={(e) => setDraft({ ...draft, publisher: e.target.value })} /></td>
         <td className="p-1"><input className="input text-xs w-full" value={draft.year ?? ""} onChange={(e) => setDraft({ ...draft, year: e.target.value })} /></td>
         <td className="p-1"><input type="number" min={1} className="input text-xs w-full" value={draft.copies ?? 1} onChange={(e) => setDraft({ ...draft, copies: Number(e.target.value) })} /></td>
         <td className="p-1">
@@ -515,6 +517,7 @@ function EditableTitleRow({
             </a>
           )}
         </td>
+        <td className="p-1">{local.publisher}</td>
         <td className="p-1">{local.year}</td>
         <td className="p-1">{local.copies ?? 1}</td>
         <td className="p-1">

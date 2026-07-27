@@ -173,7 +173,7 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
 function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
   const ws = wb.addWorksheet("Detail");
   ws.columns = [
-    { width: 20 }, { width: 30 }, { width: 60 }, { width: 8 }, { width: 8 }, { width: 30 },
+    { width: 20 }, { width: 30 }, { width: 60 }, { width: 30 }, { width: 8 }, { width: 8 }, { width: 30 },
   ];
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
@@ -200,13 +200,13 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
       r++;
       if (sub.subject.description) {
         ws.getCell(r, 1).value = sub.subject.description;
-        ws.mergeCells(r, 1, r, 6);
+        ws.mergeCells(r, 1, r, 7);
         ws.getRow(r).alignment = { wrapText: true, vertical: "top" };
         ws.getRow(r).height = 60;
         r++;
       }
       // Single header row, then a labeled block per non-empty resource type.
-      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"];
+      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"];
       ws.getRow(r).font = { bold: true };
       r++;
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
@@ -215,8 +215,8 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
         r++;
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.year || "", tt.copies ?? 1];
-          if (tt.url) ws.getCell(r, 6).value = { text: tt.url, hyperlink: tt.url };
+          ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
+          if (tt.url) ws.getCell(r, 7).value = { text: tt.url, hyperlink: tt.url };
           r++;
         }
       }
@@ -245,7 +245,7 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   const lines = [
     [
       "Section", "Course Code", "Course Title", "Description",
-      "Resource Type", "Call No.", "ISSN", "Author", "Title", "Year", "Copies", "Link",
+      "Resource Type", "Call No.", "ISSN", "Author", "Title", "Publisher", "Year", "Copies", "Link",
     ].join(","),
   ];
   for (const sec of b.bySection) {
@@ -255,7 +255,7 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
           lines.push([
             sec.section, sub.subject.course_code, sub.subject.course_title,
             sub.subject.description, t.sectionLabel,
-            tt.call_no, tt.issn, tt.author, tt.title, tt.year, tt.copies ?? 1, tt.url ?? "",
+            tt.call_no, tt.issn, tt.author, tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
           ].map(escape).join(","));
         }
       }
@@ -274,7 +274,8 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
   } = await import("docx");
 
   // Column widths in DXA (twips). Sum = 9000 = full page width inside margins.
-  const COL_DXA = [1400, 1500, 3200, 700, 600, 1600];
+  // [Call No./ISSN, Author, Title, Publisher, Year, Copy, Link]
+  const COL_DXA = [1200, 1300, 2400, 1400, 600, 500, 1600];
   const TOTAL_DXA = COL_DXA.reduce((a, c) => a + c, 0);
 
   const cell = (
@@ -303,29 +304,29 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
   const subjectHeaderRow = (code: string, title: string) => new TableRow({
     children: [
       cell(code, { bold: true, widthDxa: COL_DXA[0] }),
-      cell(title, { bold: true, colSpan: 5, widthDxa: TOTAL_DXA - COL_DXA[0] }),
+      cell(title, { bold: true, colSpan: COL_DXA.length - 1, widthDxa: TOTAL_DXA - COL_DXA[0] }),
     ],
   });
 
   const descriptionRow = (desc: string) => new TableRow({
-    children: [cell(desc, { colSpan: 6, widthDxa: TOTAL_DXA })],
+    children: [cell(desc, { colSpan: COL_DXA.length, widthDxa: TOTAL_DXA })],
   });
 
   const columnHeaderRow = () => new TableRow({
     tableHeader: true,
-    children: ["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"].map((c, i) =>
+    children: ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"].map((c, i) =>
       cell(c, { bold: true, widthDxa: COL_DXA[i] }),
     ),
   });
 
   const typeLabelRow = (label: string) => new TableRow({
-    children: [cell(label, { italic: true, colSpan: 6, widthDxa: TOTAL_DXA })],
+    children: [cell(label, { italic: true, colSpan: COL_DXA.length, widthDxa: TOTAL_DXA })],
   });
 
   const dataRow = (vals: string[], url: string | undefined) => new TableRow({
     children: [
       ...vals.map((v, i) => cell(v, { widthDxa: COL_DXA[i] })),
-      linkCell(url, COL_DXA[5]),
+      linkCell(url, COL_DXA[COL_DXA.length - 1]),
     ],
   });
 
@@ -347,7 +348,7 @@ export async function programBibliographyDocx(b: ProgramBibliography): Promise<B
         rows.push(typeLabelRow(t.sectionLabel));
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          rows.push(dataRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
+          rows.push(dataRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1)], tt.url));
         }
       }
       children.push(new Table({
@@ -492,13 +493,15 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
   programHeader("Professional Resources — Detail");
 
   // Switch to portrait-ish proportions inside landscape; reuse layout.
+  // [Call No./ISSN, Author, Title, Publisher, Year, Copy, Link]
   const cols = [
+    { width: 0.13 * WIDTH },
     { width: 0.14 * WIDTH },
+    { width: 0.24 * WIDTH },
     { width: 0.15 * WIDTH },
-    { width: 0.33 * WIDTH },
-    { width: 0.07 * WIDTH },
     { width: 0.06 * WIDTH },
-    { width: 0.20 * WIDTH },
+    { width: 0.05 * WIDTH },
+    { width: 0.19 * WIDTH },
   ];
   const driftSum = cols.reduce((a, c) => a + c.width, 0);
   cols[2].width += WIDTH - driftSum;
@@ -583,16 +586,16 @@ export async function programBibliographyPdf(b: ProgramBibliography): Promise<Bu
       // title in col B) instead of floating as plain text above the table.
       drawSubjectHeaderRow(sub.subject.course_code || "", sub.subject.course_title || "");
       if (sub.subject.description) {
-        drawRow([sub.subject.description, "", "", "", "", ""], { merged: true });
+        drawRow([sub.subject.description, "", "", "", "", "", ""], { merged: true });
       }
 
       // Column header row + per-type label row + entries.
-      drawRow(["Call No. / ISSN", "Author", "Title", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
+      drawRow(["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"], { bold: true, fillHeader: true });
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
-        drawRow([t.sectionLabel, "", "", "", "", ""], { italic: true, merged: true });
+        drawRow([t.sectionLabel, "", "", "", "", "", ""], { italic: true, merged: true });
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
-          drawRow([ident, tt.author || "", tt.title || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""]);
+          drawRow([ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", String(tt.copies ?? 1), tt.url || ""]);
         }
       }
       const all = subjectTotals(sub.buckets);
