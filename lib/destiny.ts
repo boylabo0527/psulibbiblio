@@ -72,9 +72,6 @@ const DEFAULT_QUERY = `
 // one-to-one (adjusting for a couple of naming differences, e.g. Destiny's
 // "Española" vs. the seeded "PSU-SOFRONIO ESPANOLA").
 //
-// "CCRD - San Rafael" has no corresponding campus yet -- add "PSU-SAN
-// RAFAEL" in Campus Validation if that's a real site, then add a line for
-// it here too (until then it's just flagged as unmapped, not blocked).
 const SUBLOCATION_TO_CAMPUS: Record<string, string> = {
   "CCRD - Araceli": "PSU-ARACELI",
   "CCRD - Balabac": "PSU-BALABAC",
@@ -90,6 +87,9 @@ const SUBLOCATION_TO_CAMPUS: Record<string, string> = {
   "CCRD - Quezon": "PSU-QUEZON",
   "CCRD - Rizal": "PSU-RIZAL",
   "CCRD - Roxas": "PSU-ROXAS",
+  // Note the space, not a hyphen, after "PSU" -- unlike the other CCRD
+  // entries above, that's this campus's actual name in the campuses table.
+  "CCRD - San Rafael": "PSU SAN RAFAEL",
   "CCRD - San Vicente": "PSU-SAN VICENTE",
   "CCRD - Taytay": "PSU-TAYTAY",
 
