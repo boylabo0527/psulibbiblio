@@ -6,12 +6,15 @@ import { useCampuses } from "@/lib/use-campuses";
 import { consumeNdjson, type ProgressEvent } from "@/lib/streaming";
 import { usePermissions } from "@/lib/use-permissions";
 import type { DestinySyncEvent } from "@/app/api/sync/destiny/route";
+import type { DestinyDiagnostics } from "@/lib/destiny";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 
 function DestinySyncCard() {
   const { perms } = usePermissions();
   const [ev, setEv] = useState<DestinySyncEvent | null>(null);
   const [busy, setBusy] = useState(false);
+  const [diag, setDiag] = useState<DestinyDiagnostics | { error: string } | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
 
   if (!perms.isAdmin) return null;
 
@@ -33,6 +36,20 @@ function DestinySyncCard() {
     }
   }
 
+  async function runDiagnose() {
+    setDiagBusy(true);
+    setDiag(null);
+    try {
+      const res = await apiFetch("/api/sync/destiny/diagnose");
+      const j = await res.json().catch(() => ({}));
+      setDiag(res.ok ? j.diagnostics : { error: j.error || `HTTP ${res.status}` });
+    } catch (e) {
+      setDiag({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setDiagBusy(false);
+    }
+  }
+
   const label = !ev ? "" : ({
     connecting: "Connecting to Destiny…",
     parsed: `Fetched ${ev.phase === "parsed" ? ev.total.toLocaleString() : ""} rows — checking database…`,
@@ -51,9 +68,43 @@ function DestinySyncCard() {
         uses org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab
         permission.
       </p>
-      <button className="btn text-xs" disabled={busy} onClick={run}>
-        {busy ? "Syncing…" : "Sync now"}
-      </button>
+      <div className="flex items-center gap-2">
+        <button className="btn text-xs" disabled={busy} onClick={run}>
+          {busy ? "Syncing…" : "Sync now"}
+        </button>
+        <button
+          className="text-xs border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-50"
+          disabled={diagBusy}
+          onClick={runDiagnose}
+          title="Checks what the configured Destiny account can actually see, without needing a separate SQL client"
+        >
+          {diagBusy ? "Checking…" : "Diagnose connection"}
+        </button>
+      </div>
+      {diag && (
+        <div className="mt-2 text-xs">
+          {"error" in diag ? (
+            <p className="text-red-700">Error: {diag.error}</p>
+          ) : (
+            <ul className="text-slate-600 space-y-0.5">
+              <li>Connected database: <span className="font-mono">{diag.current_db}</span></li>
+              <li>Login: <span className="font-mono">{diag.login_name}</span></li>
+              <li>
+                Can read CopyLibraryView:{" "}
+                <span className={diag.can_select_copylibraryview ? "text-emerald-700" : "text-red-700"}>
+                  {diag.can_select_copylibraryview ? "yes" : "no"}
+                </span>
+              </li>
+              <li>
+                Can read BibLibraryView:{" "}
+                <span className={diag.can_select_biblibraryview ? "text-emerald-700" : "text-red-700"}>
+                  {diag.can_select_biblibraryview ? "yes" : "no"}
+                </span>
+              </li>
+            </ul>
+          )}
+        </div>
+      )}
       {ev && (
         <div className="mt-3 text-xs">
           <p className={ev.phase === "error" ? "text-red-700" : ev.phase === "done" ? "text-emerald-700" : "text-slate-600"}>
