@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
-import { ACCREDITATION_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { RECENCY_YEARS, countsTowardBookCompliance, isPrintedBook, evaluateBookCompliance } from "@/lib/compliance";
 import { getUserPermissions } from "@/lib/permissions";
 import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
@@ -16,7 +16,8 @@ export type SupplierNeedRow = {
   course_title: string;
   current_printed: number;
   current_digital: number;
-  gap: number; // additional titles (any format) still needed for accreditation
+  gap: number; // additional titles (printed or ebook) still needed for accreditation
+  needs_printed: boolean; // true if a recent printed book specifically is still missing
 };
 
 /** GET /api/supplier/needs -- read-only, no cost figures: which subjects
@@ -65,7 +66,8 @@ export async function GET(req: Request) {
 
     const printedMap = new Map<number, number>();
     const digitalMap = new Map<number, number>();
-    const recentMap = new Map<number, number>();
+    const recentMap = new Map<number, number>(); // recent printed+ebook titles (journals/repository excluded)
+    const recentPrintedMap = new Map<number, number>(); // of those, printed books specifically
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
@@ -74,13 +76,17 @@ export async function GET(req: Request) {
       else digitalMap.set(a.subject_id, (digitalMap.get(a.subject_id) ?? 0) + 1);
 
       const y = parseInt(t.year ?? "", 10);
-      if (!isNaN(y) && y >= yearCutoff) recentMap.set(a.subject_id, (recentMap.get(a.subject_id) ?? 0) + 1);
+      if (!isNaN(y) && y >= yearCutoff && countsTowardBookCompliance(t.format)) {
+        recentMap.set(a.subject_id, (recentMap.get(a.subject_id) ?? 0) + 1);
+        if (isPrintedBook(t.format)) recentPrintedMap.set(a.subject_id, (recentPrintedMap.get(a.subject_id) ?? 0) + 1);
+      }
     }
 
     const rows: SupplierNeedRow[] = subjects
       .map((s) => {
         const recent = recentMap.get(s.id) ?? 0;
-        const gap = Math.max(0, ACCREDITATION_MIN - recent);
+        const recentPrinted = recentPrintedMap.get(s.id) ?? 0;
+        const { gap } = evaluateBookCompliance(recent, recentPrinted);
         return {
           subject_id: s.id,
           program: programMap.get(s.program_id) ?? "",
@@ -89,6 +95,7 @@ export async function GET(req: Request) {
           current_printed: printedMap.get(s.id) ?? 0,
           current_digital: digitalMap.get(s.id) ?? 0,
           gap,
+          needs_printed: recentPrinted < 1,
         };
       })
       .filter((r) => r.gap > 0)

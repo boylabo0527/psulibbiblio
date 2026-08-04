@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
-import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { RECENCY_YEARS, countsTowardBookCompliance, isPrintedBook, evaluateBookCompliance } from "@/lib/compliance";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest } from "@/lib/activity";
 
@@ -78,23 +78,25 @@ export async function GET(req: Request) {
       assignments.push(...rows);
     }
 
-    // recent_titles(subject, campus) = baseRecent[subject] (non-campus-scoped
-    // formats, same everywhere) + perCampusRecent[subject][campus] (printed
-    // formats, specific to that campus's copies).
-    const baseRecent = new Map<number, number>();
-    const perCampusRecent = new Map<number, Map<string, number>>();
+    // recent(subject, campus) = baseRecentBooks[subject] (ebook formats,
+    // same everywhere) + perCampusPrintedBooks[subject][campus] (printed
+    // books, specific to that campus's copies) -- journals/repository are
+    // excluded from both, same as the main procurement route, since the
+    // book-minimum rule only covers printed + ebook.
+    const baseRecentBooks = new Map<number, number>();
+    const perCampusPrintedBooks = new Map<number, Map<string, number>>();
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
       const titleYear = parseInt(t.year ?? "", 10);
       if (isNaN(titleYear) || titleYear < yearCutoff) continue;
-      const isCampusScoped = t.format === "book_printed" || t.format === "journal_printed";
-      if (isCampusScoped) {
-        if (!perCampusRecent.has(a.subject_id)) perCampusRecent.set(a.subject_id, new Map());
-        const m = perCampusRecent.get(a.subject_id)!;
+      if (!countsTowardBookCompliance(t.format)) continue;
+      if (isPrintedBook(t.format)) {
+        if (!perCampusPrintedBooks.has(a.subject_id)) perCampusPrintedBooks.set(a.subject_id, new Map());
+        const m = perCampusPrintedBooks.get(a.subject_id)!;
         m.set(t.campus, (m.get(t.campus) ?? 0) + 1);
       } else {
-        baseRecent.set(a.subject_id, (baseRecent.get(a.subject_id) ?? 0) + 1);
+        baseRecentBooks.set(a.subject_id, (baseRecentBooks.get(a.subject_id) ?? 0) + 1);
       }
     }
 
@@ -110,9 +112,11 @@ export async function GET(req: Request) {
       for (const campus of campusesHere) {
         let compliant = 0, partial = 0, needs = 0;
         for (const s of progSubjects) {
-          const recent = (baseRecent.get(s.id) ?? 0) + (perCampusRecent.get(s.id)?.get(campus) ?? 0);
-          if (recent >= ACCREDITATION_MIN) compliant++;
-          else if (recent >= PARTIAL_MIN) partial++;
+          const recentPrinted = perCampusPrintedBooks.get(s.id)?.get(campus) ?? 0;
+          const recent = (baseRecentBooks.get(s.id) ?? 0) + recentPrinted;
+          const status = evaluateBookCompliance(recent, recentPrinted);
+          if (status.compliant) compliant++;
+          else if (status.partial) partial++;
           else needs++;
         }
         const total = progSubjects.length;

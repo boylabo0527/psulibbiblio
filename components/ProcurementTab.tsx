@@ -7,7 +7,7 @@ import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
-import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS, MIN_PRINTED_BOOKS } from "@/lib/compliance";
 
 type Program = { id: number; name: string; cost_per_title: number | null };
 type ViewFilter = "all" | "compliant" | "partial" | "needs";
@@ -16,8 +16,11 @@ function money(n: number): string {
   return "₱" + Math.round(n).toLocaleString();
 }
 
-function statusOf(r: ProcurementRow): "compliant" | "partial" | "outdated" | "needs" {
+function statusOf(r: ProcurementRow): "compliant" | "needs_printed" | "partial" | "outdated" | "needs" {
   if (r.compliant) return "compliant";
+  // Enough recent titles overall, just missing the printed-book requirement
+  // specifically -- a narrower, more actionable case than generic "partial".
+  if (r.recent_titles >= ACCREDITATION_MIN) return "needs_printed";
   if (r.partial) return "partial";
   if (r.total_titles >= ACCREDITATION_MIN) return "outdated";
   return "needs";
@@ -118,13 +121,13 @@ export default function ProcurementTab() {
 
   async function exportReport(fmt: "xlsx" | "csv") {
     const XLSX = await import("xlsx");
-    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Required", "Gap", "Est. Cost/Title", "Est. Cost", "Status"];
-    const statusLabel = { compliant: "OK", partial: "Partial", outdated: "Outdated", needs: "Procure" };
+    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Recent Printed", "Required", "Min. Printed", "Gap", "Est. Cost/Title", "Est. Cost", "Status"];
+    const statusLabel = { compliant: "OK", needs_printed: "Needs Printed", partial: "Partial", outdated: "Outdated", needs: "Procure" };
     const aoa = [headers, ...filtered.map((r) => {
       const { printed, digital } = mediumBreakdown(r.counts);
       return [
-        r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles,
-        ACCREDITATION_MIN, r.gap, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
+        r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles, r.recent_printed_titles,
+        ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
       ];
     })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -147,9 +150,10 @@ export default function ProcurementTab() {
         <h2 className="text-psu font-semibold mb-1">Accreditation Procurement Analysis</h2>
         <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-xs text-blue-800">
           <span className="font-semibold">CHED Standard:</span> For each undergraduate program offering, the library shall provide{" "}
-          <span className="font-semibold">{ACCREDITATION_MIN} relevant book titles per major subject</span> published{" "}
-          <span className="font-semibold">within the last {RECENCY_YEARS} years</span> ({cutoffYear} – present).
-          Titles with no publication year or older than {cutoffYear} do not count toward compliance.
+          <span className="font-semibold">{ACCREDITATION_MIN} relevant book titles per major subject</span> (printed and eBook
+          combined, journals excluded) published <span className="font-semibold">within the last {RECENCY_YEARS} years</span> ({cutoffYear} – present),
+          including <span className="font-semibold">at least {MIN_PRINTED_BOOKS} recent printed book</span> -- {ACCREDITATION_MIN} recent
+          eBooks alone is not compliant. Titles with no publication year or older than {cutoffYear} do not count toward compliance.
           Subjects with at least <span className="font-semibold">{PARTIAL_MIN}</span> recent titles count as partial compliance.
         </div>
 
@@ -305,7 +309,8 @@ export default function ProcurementTab() {
           <div>
             <h3 className="text-psu font-semibold">Subject Breakdown</h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              "Recent" = titles published {cutoffYear} or later · Gap = titles still needed to reach {ACCREDITATION_MIN}
+              "Recent" = titles published {cutoffYear} or later · Gap = titles still needed to reach {ACCREDITATION_MIN} total
+              with at least {MIN_PRINTED_BOOKS} printed
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -346,8 +351,11 @@ export default function ProcurementTab() {
                     <th className="py-1 px-2 text-right" title="All titles regardless of year">Total Titles</th>
                     <th className="py-1 px-2 text-right" title="Printed books and journals">Printed</th>
                     <th className="py-1 px-2 text-right" title="eBooks, online journals, and institutional repository items">Digital/eBook</th>
-                    <th className="py-1 px-2 text-right" title={`Titles published ${cutoffYear} or later`}>
+                    <th className="py-1 px-2 text-right" title={`Titles published ${cutoffYear} or later (printed + eBook, journals excluded)`}>
                       Recent ({cutoffYear}+)
+                    </th>
+                    <th className="py-1 px-2 text-right" title={`Of those, how many are a printed book -- at least ${MIN_PRINTED_BOOKS} required`}>
+                      Recent Printed
                     </th>
                     <th className="py-1 px-2 text-right">Required</th>
                     <th className="py-1 px-2 text-right">Gap</th>
@@ -364,6 +372,7 @@ export default function ProcurementTab() {
                     <tr key={r.subject_id} className={
                       "border-b border-slate-100 " + (
                         status === "compliant" ? "hover:bg-green-50" :
+                        status === "needs_printed" ? "bg-amber-50/40 hover:bg-amber-50" :
                         status === "partial" ? "bg-yellow-50/40 hover:bg-yellow-50" :
                         "bg-red-50/40 hover:bg-red-50"
                       )
@@ -374,6 +383,9 @@ export default function ProcurementTab() {
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{printed}</td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{digital}</td>
                       <td className="py-1.5 px-2 text-right font-semibold tabular-nums">{r.recent_titles}</td>
+                      <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.recent_printed_titles < MIN_PRINTED_BOOKS ? "text-amber-600" : "")}>
+                        {r.recent_printed_titles}
+                      </td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{ACCREDITATION_MIN}</td>
                       <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.gap > 0 ? "text-red-600" : "text-green-600")}>
                         {r.gap > 0 ? `+${r.gap}` : "—"}
@@ -387,6 +399,8 @@ export default function ProcurementTab() {
                       <td className="py-1.5 pl-2 text-right">
                         {status === "compliant" ? (
                           <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">OK</span>
+                        ) : status === "needs_printed" ? (
+                          <span className="inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-medium" title={`Has ${ACCREDITATION_MIN}+ recent titles but no recent printed book`}>Needs Printed</span>
                         ) : status === "partial" ? (
                           <span className="inline-block bg-yellow-100 text-yellow-700 rounded px-1.5 py-0.5 text-[10px] font-medium" title={`Has ${PARTIAL_MIN}-${ACCREDITATION_MIN - 1} recent titles`}>Partial</span>
                         ) : status === "outdated" ? (

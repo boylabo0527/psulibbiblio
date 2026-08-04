@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
 import type { ResourceTypeId } from "@/lib/resources";
-import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS } from "@/lib/compliance";
+import { RECENCY_YEARS, countsTowardBookCompliance, isPrintedBook, evaluateBookCompliance } from "@/lib/compliance";
 import { getUserPermissions } from "@/lib/permissions";
 import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
@@ -20,11 +20,12 @@ export type ProcurementRow = {
   counts: Record<ResourceTypeId, number>;
   total_titles: number;       // all titles regardless of year
   total_volumes: number;
-  recent_titles: number;      // titles published within last RECENCY_YEARS years
+  recent_titles: number;      // recent (within RECENCY_YEARS) printed+ebook titles -- journals/repository excluded
+  recent_printed_titles: number; // of those, how many are a printed book specifically
   recent_year_cutoff: number; // the cutoff year (currentYear - RECENCY_YEARS)
-  gap: number;                // shortfall based on recent titles (0 = compliant)
-  compliant: boolean;         // recent_titles >= ACCREDITATION_MIN
-  partial: boolean;           // recent_titles >= PARTIAL_MIN but < ACCREDITATION_MIN
+  gap: number;                // additional titles needed to satisfy both the count and printed-book rule (0 = compliant)
+  compliant: boolean;         // recent_titles >= ACCREDITATION_MIN AND recent_printed_titles >= MIN_PRINTED_BOOKS
+  partial: boolean;           // recent_titles >= PARTIAL_MIN but not compliant
   cost_per_title: number | null;  // subject's own estimate, else its program's, else null
   estimated_cost: number | null;  // gap * cost_per_title, or null if no estimate set
 };
@@ -85,7 +86,8 @@ export async function GET(req: Request) {
     }
 
     const countMap = new Map<number, Record<string, number>>();
-    const recentCountMap = new Map<number, number>(); // titles within recency window
+    const recentCountMap = new Map<number, number>(); // recent printed+ebook titles (journals/repository excluded)
+    const recentPrintedCountMap = new Map<number, number>(); // of those, printed books specifically
     const volumeMap = new Map<number, number>();
 
     for (const a of assignments) {
@@ -102,10 +104,14 @@ export async function GET(req: Request) {
       const vol = isCampusScoped ? Math.max(1, t.copies ?? 1) : 1;
       volumeMap.set(sid, (volumeMap.get(sid) ?? 0) + vol);
 
-      // Count recent titles: year must be a valid number >= yearCutoff
+      // Count recent, book-compliance-eligible titles (printed + ebook,
+      // not journals/repository): year must be a valid number >= yearCutoff.
       const titleYear = parseInt(t.year ?? "", 10);
-      if (!isNaN(titleYear) && titleYear >= yearCutoff) {
+      if (!isNaN(titleYear) && titleYear >= yearCutoff && countsTowardBookCompliance(t.format)) {
         recentCountMap.set(sid, (recentCountMap.get(sid) ?? 0) + 1);
+        if (isPrintedBook(t.format)) {
+          recentPrintedCountMap.set(sid, (recentPrintedCountMap.get(sid) ?? 0) + 1);
+        }
       }
     }
 
@@ -114,9 +120,8 @@ export async function GET(req: Request) {
       const total_titles = Object.values(counts).reduce((a, b) => a + b, 0);
       const total_volumes = volumeMap.get(s.id) ?? total_titles;
       const recent_titles = recentCountMap.get(s.id) ?? 0;
-      // Gap is based on recent titles only — must have 5 recent titles
-      const gap = Math.max(0, ACCREDITATION_MIN - recent_titles);
-      const compliant = recent_titles >= ACCREDITATION_MIN;
+      const recent_printed_titles = recentPrintedCountMap.get(s.id) ?? 0;
+      const { compliant, partial, gap } = evaluateBookCompliance(recent_titles, recent_printed_titles);
       const cost_per_title = s.cost_per_title ?? programCostMap.get(s.program_id) ?? null;
       return {
         subject_id: s.id,
@@ -129,10 +134,11 @@ export async function GET(req: Request) {
         total_titles,
         total_volumes,
         recent_titles,
+        recent_printed_titles,
         recent_year_cutoff: yearCutoff,
         gap,
         compliant,
-        partial: !compliant && recent_titles >= PARTIAL_MIN,
+        partial,
         cost_per_title,
         estimated_cost: cost_per_title != null ? gap * cost_per_title : null,
       };

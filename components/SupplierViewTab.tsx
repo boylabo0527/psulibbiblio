@@ -74,10 +74,10 @@ export default function SupplierViewTab() {
   // they can supply -- adding extra rows with the same Code to offer more
   // than one title for a single need -- and uploads it back below.
   function exportCsv() {
-    const headers = ["Program", "Code", "Subject", "Have (Printed)", "Have (Digital)", "Titles Needed", "Offer Title", "Offer Author", "Offer Format", "Price", "Notes"];
+    const headers = ["Program", "Code", "Subject", "Have (Printed)", "Have (Digital)", "Titles Needed", "Printed Needed", "Offer Title", "Offer Author", "Offer Format", "Price", "Notes"];
     const lines = [headers.join(",")];
     for (const r of rows) {
-      const cells = [r.program, r.course_code, r.course_title, r.current_printed, r.current_digital, r.gap, "", "", "", "", ""]
+      const cells = [r.program, r.course_code, r.course_title, r.current_printed, r.current_digital, r.gap, r.needs_printed ? "Yes" : "No", "", "", "", "", ""]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`);
       lines.push(cells.join(","));
     }
@@ -182,6 +182,7 @@ export default function SupplierViewTab() {
                   <th className="py-1 px-2 text-right">Have (Printed)</th>
                   <th className="py-1 px-2 text-right">Have (Digital)</th>
                   <th className="py-1 px-2 text-right">Titles Needed</th>
+                  <th className="py-1 px-2"></th>
                   <th className="py-1 pl-2 w-20"></th>
                 </tr>
               </thead>
@@ -194,6 +195,13 @@ export default function SupplierViewTab() {
                     <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.current_printed}</td>
                     <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.current_digital}</td>
                     <td className="py-1.5 px-2 text-right font-semibold tabular-nums text-red-600">+{r.gap}</td>
+                    <td className="py-1.5 px-2">
+                      {r.needs_printed && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="A recent printed copy is specifically required, not just any format">
+                          Printed needed
+                        </span>
+                      )}
+                    </td>
                     <td className="py-1.5 pl-2 text-right">
                       <button className="text-psu text-[11px] underline" onClick={() => setOfferFor(r)}>
                         {r.gap > 1 ? `Offer titles` : "Offer"}
