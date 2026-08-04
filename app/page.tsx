@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import UploadTab from "@/components/UploadTab";
 import MatchTab from "@/components/MatchTab";
 import ProgramsTab from "@/components/ProgramsTab";
@@ -36,10 +36,35 @@ const tabs = [
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
 
+// Groups the tab bar into dropdown menus so the nav doesn't sprawl as more
+// tabs get added -- "dashboard" is rendered standalone, outside any group.
+// A tab can appear in more than one group if it genuinely belongs to both
+// (e.g. Market Canvassing is both an acquisitions step and a
+// supplier-facing one); each group only shows if at least one of its tabs
+// is visible to the signed-in user.
+const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
+  { id: "catalog", label: "Catalog", tabIds: ["upload", "match", "campus-validation"] },
+  { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "canvassing", "purchase-request"] },
+  { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view"] },
+  { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring"] },
+  { id: "admin", label: "Admin", tabIds: ["cleanup", "perlego-catalog", "user-management"] },
+];
+
 export default function Home() {
   const [tab, setTab] = useState<TabId>("dashboard");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const navRef = useRef<HTMLElement>(null);
   const { user, loading, signOut } = useAuth();
   const { perms, loading: permsLoading } = usePermissions();
+
+  useEffect(() => {
+    if (!openGroup) return;
+    function onClickOutside(e: MouseEvent) {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setOpenGroup(null);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [openGroup]);
 
   const currentTab = tabs.find((t) => t.id === tab);
   const needsAuth = currentTab && !currentTab.publicTab && !user;
@@ -93,11 +118,11 @@ export default function Home() {
         </div>
       </header>
 
-      <nav className="bg-white border-b border-slate-200 px-8 flex gap-2 overflow-x-auto">
-        {visibleTabs.map((t) => (
+      <nav ref={navRef} className="bg-white border-b border-slate-200 px-8 flex gap-1 overflow-visible relative">
+        {visibleTabs.filter((t) => t.id === "dashboard").map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => { setTab(t.id); setOpenGroup(null); }}
             className={
               "py-3 px-4 text-sm border-b-2 transition whitespace-nowrap " +
               (tab === t.id
@@ -106,11 +131,49 @@ export default function Home() {
             }
           >
             {t.label}
-            {!t.publicTab && !user && (
-              <span className="ml-1 text-xs" title="Sign in required">🔒</span>
-            )}
           </button>
         ))}
+        {NAV_GROUPS.map((g) => {
+          const items = visibleTabs.filter((t) => (g.tabIds as readonly string[]).includes(t.id));
+          if (items.length === 0) return null;
+          const isActiveGroup = items.some((t) => t.id === tab);
+          const isOpen = openGroup === g.id;
+          return (
+            <div key={g.id} className="relative">
+              <button
+                onClick={() => setOpenGroup(isOpen ? null : g.id)}
+                className={
+                  "py-3 px-4 text-sm border-b-2 transition whitespace-nowrap flex items-center gap-1 " +
+                  (isActiveGroup
+                    ? "border-psu text-psu font-semibold"
+                    : "border-transparent text-slate-500 hover:text-slate-800")
+                }
+              >
+                {g.label}
+                <span className="text-[9px] mt-0.5">▾</span>
+              </button>
+              {isOpen && (
+                <div className="absolute left-0 top-full z-20 bg-white border border-slate-200 rounded shadow-lg py-1 min-w-[210px]">
+                  {items.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setTab(t.id); setOpenGroup(null); }}
+                      className={
+                        "w-full text-left px-3 py-2 text-sm whitespace-nowrap " +
+                        (tab === t.id ? "text-psu font-semibold bg-psu-light/40" : "text-slate-600 hover:bg-slate-50")
+                      }
+                    >
+                      {t.label}
+                      {!t.publicTab && !user && (
+                        <span className="ml-1 text-xs" title="Sign in required">🔒</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </nav>
 
       <section className="px-8 py-6 max-w-7xl mx-auto">
