@@ -85,7 +85,11 @@ export default function MigrateToHostingerAdmin() {
         if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
         consecutiveFailures = 0;
         migratedSoFar += j.migrated ?? 0;
-        setProgress({ status: j.done ? "done" : "running", totalAtStart: preview, migrated: migratedSoFar, remaining: j.remaining ?? 0 });
+        // The server doesn't recompute an exact remaining count after every
+        // batch (that's the same slow anti-join the initial preview needed
+        // fixing to avoid) -- estimated from the preview total instead,
+        // which is exact as of when Start was clicked.
+        setProgress({ status: j.done ? "done" : "running", totalAtStart: preview, migrated: migratedSoFar, remaining: Math.max(0, preview - migratedSoFar) });
         if (j.done) break;
       }
     } catch (e) {

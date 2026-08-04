@@ -78,10 +78,11 @@ export async function POST(req: Request) {
     const { error: delErr } = await db.from("titles").delete().in("id", ids);
     if (delErr) throw delErr;
 
-    const { data: countData, error: countErr } = await db.rpc("unmatched_titles_count", { p_format: format });
-    if (countErr) throw countErr;
-    const remaining = Number(countData ?? 0);
-    const done = remaining === 0;
+    // A batch coming back short of BATCH_SIZE means there was nothing left
+    // to fill it -- cheaper and just as reliable as re-running the count
+    // function after every single batch (a few hundred of the ~256 batches
+    // this needs, each doing an anti-join re-scan for no real benefit).
+    const done = rows.length < BATCH_SIZE;
 
     if (done) {
       await logActivity(db, {
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json({ done, migrated: rows.length, remaining });
+    return NextResponse.json({ done, migrated: rows.length });
   } catch (err) {
     return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }

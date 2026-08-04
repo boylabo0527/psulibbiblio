@@ -9,8 +9,9 @@
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
 -- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
--- 19_unmatched_titles_function.sql in order. If you've already run some of
--- those individually, running this on top is still safe.
+-- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql in
+-- order. If you've already run some of those individually, running this on
+-- top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -353,7 +354,12 @@ alter table titles add constraint titles_format_check check (format in (
 alter table titles add column if not exists provider text default '';
 
 -- ---------------------------------------------------------------------------
--- 19: unmatched_titles_batch() helper for migrating never-matched titles
+-- 19+20: unmatched_titles_batch()/unmatched_titles_count() helpers for
+-- migrating never-matched titles. unmatched_titles_count is written as a
+-- subtraction of two cheap counts rather than a direct anti-join COUNT --
+-- unlike the batch function, a COUNT can't stop early via LIMIT, so
+-- computing it the naive way is slow enough on a 500k+ row table to hit
+-- Supabase's statement timeout.
 -- ---------------------------------------------------------------------------
 create or replace function unmatched_titles_batch(p_format text, batch_size int)
 returns table (
@@ -361,6 +367,7 @@ returns table (
   isbn text, url text, subjects text, provider text
 )
 language sql stable
+set statement_timeout = '25s'
 as $$
   select t.id, t.title, t.author, t.publisher, t.year, t.isbn, t.url, t.subjects, t.provider
   from titles t
@@ -373,9 +380,13 @@ $$;
 create or replace function unmatched_titles_count(p_format text)
 returns bigint
 language sql stable
+set statement_timeout = '25s'
 as $$
-  select count(*)
-  from titles t
-  where t.format = p_format
-    and not exists (select 1 from assignments a where a.title_id = t.id);
+  select
+    (select count(*) from titles t where t.format = p_format)
+    -
+    (select count(distinct a.title_id)
+     from assignments a
+     join titles t on t.id = a.title_id
+     where t.format = p_format);
 $$;
