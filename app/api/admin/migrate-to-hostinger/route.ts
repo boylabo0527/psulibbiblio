@@ -5,12 +5,11 @@ import { getUserPermissions } from "@/lib/permissions";
 import { hostingerEnabled } from "@/lib/hostinger-mysql";
 import { getLatestSyncJob } from "@/lib/sync-jobs";
 import { errorMessage } from "@/lib/errors";
+import { jobKind } from "@/lib/hostinger-migrate-job";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
-
-export const jobKind = (format: string) => `hostinger_migrate_${format}`;
 
 /** POST /api/admin/migrate-to-hostinger { format, dryRun }
  *

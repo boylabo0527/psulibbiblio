@@ -3,7 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
 import { getLatestSyncJob, getSyncJob } from "@/lib/sync-jobs";
-import { jobKind } from "@/app/api/admin/migrate-to-hostinger/route";
+import { jobKind } from "@/lib/hostinger-migrate-job";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
