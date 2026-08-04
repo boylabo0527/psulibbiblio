@@ -42,6 +42,10 @@ const ACTION_LABEL: Record<string, string> = {
   purchase_order_generate: "Purchase order generated",
   purchase_order_edit: "Purchase order edited",
   purchase_order_cancel: "Purchase order cancelled",
+  canvassing_price_reverify: "Canvassed price re-verified",
+  title_recommendation_submit: "Faculty title recommendation submitted",
+  title_recommendation_status: "Faculty title recommendation status changed",
+  title_recommendation_delete: "Faculty title recommendation removed",
 };
 
 function actionColor(action: string): string {

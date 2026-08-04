@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { groupRows } from "@/lib/group-rows";
+import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import type {
   PurchaseRequestRow, WorkflowStep, SupplierSummaryRow, ProgramSummaryRow, CampusBudgetRow, PurchaseOrderRow,
 } from "@/app/api/monitoring/route";
@@ -850,7 +851,7 @@ function PurchaseRequestEditPanel({
   );
 }
 
-type PoItem = { stock_prop_no: string; unit: string; description: string; quantity: number; unit_cost: number; source_pr_nos?: string[]; canvassing_ids?: number[] };
+type PoItem = { stock_prop_no: string; unit: string; description: string; quantity: number; unit_cost: number; source_pr_nos?: string[]; canvassing_ids?: number[]; priced_at?: string };
 
 function todayLong(): string {
   return new Date().toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
@@ -924,7 +925,7 @@ function GeneratePoPanel({
           transNo, philgepsRefNo, supplier, address, tin, poNo, date, modeOfProcurement,
           placeOfDelivery, deliveryTerm, dateOfDelivery, paymentTerm, fundCluster, orsBursNo, dateOfOrsBurs,
           approvedByName, approvedByTitle, notes,
-          items: items.map((i) => ({ stock_prop_no: i.stock_prop_no, unit: i.unit, description: i.description, quantity: i.quantity, unit_cost: i.unit_cost, canvassing_ids: i.canvassing_ids ?? [] })),
+          items: items.map((i) => ({ stock_prop_no: i.stock_prop_no, unit: i.unit, description: i.description, quantity: i.quantity, unit_cost: i.unit_cost, canvassing_ids: i.canvassing_ids ?? [], priced_at: i.priced_at || "" })),
         }),
       });
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `HTTP ${res.status}`); }
@@ -956,6 +957,17 @@ function GeneratePoPanel({
             <p className="text-slate-500 text-xs mb-3">
               {excludedCount} item(s) excluded -- already on another active purchase order for this supplier.
             </p>
+          )}
+          {items.some((i) => isPriceStale(i.priced_at || "")) && (
+            <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3">
+              <p className="text-sm font-semibold text-amber-800">
+                {items.filter((i) => isPriceStale(i.priced_at || "")).length} item(s) below were priced over {PRICE_VALIDITY_DAYS} days ago.
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Confirm current pricing with {supplier} before generating this PO -- edit the Unit Cost for any item
+                whose price has changed (marked ⚠ below).
+              </p>
+            </div>
           )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
             <label className="label flex-col items-start gap-1"><span className="text-xs">Trans No.</span>
@@ -1018,6 +1030,9 @@ function GeneratePoPanel({
                     <td className="py-1.5 pr-2 text-right">
                       <input type="number" min="0" step="0.01" className="input w-24 text-right text-xs py-0.5"
                         value={item.unit_cost} onChange={(e) => setItemField(i, "unit_cost", Number(e.target.value))} />
+                      {isPriceStale(item.priced_at || "") && (
+                        <span className="ml-1 text-amber-600" title={`Priced ${daysSincePriced(item.priced_at || "")} days ago -- verify with supplier`}>⚠</span>
+                      )}
                     </td>
                     <td className="py-1.5 pr-2 text-right font-semibold tabular-nums">{money(item.quantity * item.unit_cost)}</td>
                     <td className="py-1.5 pl-2 text-right">

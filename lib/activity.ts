@@ -14,7 +14,9 @@ export type ActivityAction =
   | "purchase_request_generate" | "purchase_request_edit" | "purchase_request_cancel"
   | "pr_workflow_step_create" | "pr_workflow_step_edit" | "pr_workflow_step_delete"
   | "pr_advance" | "campus_budget_set" | "purchase_order_generate"
-  | "purchase_order_edit" | "purchase_order_cancel";
+  | "purchase_order_edit" | "purchase_order_cancel"
+  | "canvassing_price_reverify"
+  | "title_recommendation_submit" | "title_recommendation_status" | "title_recommendation_delete";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed

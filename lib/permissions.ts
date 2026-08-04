@@ -20,7 +20,7 @@ export type UserPermissions = {
 const ALL_TAB_IDS = [
   "upload", "match", "programs", "campus-validation",
   "procurement", "canvassing", "purchase-request", "activity", "supplier-view",
-  "monitoring",
+  "monitoring", "faculty-recommendations",
 ];
 
 async function getCampusScope(

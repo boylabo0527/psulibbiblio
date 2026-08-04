@@ -3,6 +3,7 @@ import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { groupRows } from "@/lib/group-rows";
+import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
@@ -149,6 +150,10 @@ export default function CanvassingTab() {
   const [programFilter, setProgramFilter] = useState("");
   const [sortBy, setSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc" | "date_desc" | "date_asc">("none");
   const [showOnlyUnsourced, setShowOnlyUnsourced] = useState(false);
+  const [reverifyingId, setReverifyingId] = useState<number | null>(null);
+  const [reverifyValue, setReverifyValue] = useState("");
+  const [reverifyBusy, setReverifyBusy] = useState(false);
+  const [recommendationsBySubject, setRecommendationsBySubject] = useState<Map<number, { title: string; author: string }[]>>(new Map());
 
   function reload() {
     setLoading(true); setErr(null);
@@ -188,7 +193,22 @@ export default function CanvassingTab() {
   // loaded unconditionally on mount (previously this only ran once
   // canvassing rows existed, so a library with zero canvassing entries
   // uploaded yet never saw the gap list at all).
-  useEffect(() => { reload(); loadGaps(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    reload();
+    loadGaps();
+    apiFetch("/api/title-recommendations")
+      .then(r => r.json())
+      .then(j => {
+        const map = new Map<number, { title: string; author: string }[]>();
+        for (const r of (j.rows ?? []) as { subject_id: number; title: string; author: string; status: string }[]) {
+          if (r.status === "declined") continue;
+          if (!map.has(r.subject_id)) map.set(r.subject_id, []);
+          map.get(r.subject_id)!.push({ title: r.title, author: r.author });
+        }
+        setRecommendationsBySubject(map);
+      })
+      .catch(() => {}); // best-effort -- Faculty Recommendations may not be set up/granted yet
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pre-populate assignment dropdowns with best keyword match
   useEffect(() => {
@@ -279,6 +299,31 @@ export default function CanvassingTab() {
     if (!confirm("Delete this entry?")) return;
     await apiFetch(`/api/canvassing?id=${id}`, { method: "DELETE" });
     setRows(r => r.filter(x => x.id !== id));
+  }
+
+  function startReverify(r: CanvassingRow) {
+    setReverifyingId(r.id);
+    setReverifyValue(String(r.unit_cost));
+  }
+
+  async function saveReverify(id: number) {
+    const price = parseFloat(reverifyValue);
+    if (!Number.isFinite(price) || price < 0) return;
+    setReverifyBusy(true);
+    try {
+      const res = await apiFetch(`/api/canvassing?id=${id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unit_cost: price }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setReverifyingId(null);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReverifyBusy(false);
+    }
   }
 
   // Separate assigned vs unassigned
@@ -400,10 +445,13 @@ export default function CanvassingTab() {
                   <th className="py-1 px-2 text-right">Titles Needed</th>
                   <th className="py-1 px-2 text-right">Sourced</th>
                   <th className="py-1 pl-2">Status</th>
+                  <th className="py-1 pl-2">Faculty Suggested</th>
                 </tr>
               </thead>
               <tbody>
-                {displayedGapsWithSourcing.map(g => (
+                {displayedGapsWithSourcing.map(g => {
+                  const recs = recommendationsBySubject.get(g.subject_id) ?? [];
+                  return (
                   <tr key={g.subject_id} className="border-b border-slate-100">
                     <td className="py-1.5 pr-2 text-slate-500">{g.program}</td>
                     <td className="py-1.5 pr-2 font-medium">{g.course_code} — {g.course_title}</td>
@@ -418,8 +466,17 @@ export default function CanvassingTab() {
                         <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Sourced, pending purchase</span>
                       )}
                     </td>
+                    <td className="py-1.5 pl-2 text-slate-600 max-w-[220px]">
+                      {recs.length > 0 && (
+                        <span title={recs.map(r => `${r.title}${r.author ? ` — ${r.author}` : ""}`).join("\n")}>
+                          {recs.slice(0, 2).map(r => r.title).join("; ")}
+                          {recs.length > 2 ? ` +${recs.length - 2} more` : ""}
+                        </span>
+                      )}
+                    </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -606,6 +663,7 @@ export default function CanvassingTab() {
                   <th className="py-1 pr-2">Program</th>
                   <th className="py-1 pr-2">Supplier</th>
                   <th className="py-1 px-2 text-right">Unit Cost</th>
+                  <th className="py-1 px-2" title={`Prices older than ${PRICE_VALIDITY_DAYS} days are flagged for re-verification`}>Quoted</th>
                   <th className="py-1 px-2 text-right">Qty</th>
                   <th className="py-1 px-2 text-right">Total</th>
                   <th className="py-1 pl-2"></th>
@@ -615,27 +673,54 @@ export default function CanvassingTab() {
                 {assignedGroups.flatMap(([label, groupItems]) => [
                   ...(assignedGroupBy !== "none" ? [
                     <tr key={`g-${label}`} className="bg-slate-50">
-                      <td colSpan={9} className="py-1 px-2 font-semibold text-slate-600">
+                      <td colSpan={10} className="py-1 px-2 font-semibold text-slate-600">
                         {label} · {groupItems.length} · ₱{money(groupItems.reduce((s, r) => s + r.unit_cost * r.quantity, 0))}
                       </td>
                     </tr>,
                   ] : []),
-                  ...groupItems.map(r => (
-                    <tr key={r.id} className="border-b border-slate-100 hover:bg-green-50">
+                  ...groupItems.map(r => {
+                    const priceDate = r.canvass_date || r.created_at;
+                    const stale = isPriceStale(priceDate);
+                    return (
+                    <tr key={r.id} className={"border-b border-slate-100 " + (stale ? "bg-amber-50/40 hover:bg-amber-50" : "hover:bg-green-50")}>
                       <td className="py-1.5 pr-2 font-medium">{r.title}</td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
                       <td className="py-1.5 pr-2 text-psu font-medium">{r.subject_label}</td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
-                      <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">
+                        {reverifyingId === r.id ? (
+                          <div className="flex items-center gap-1 justify-end">
+                            <input type="number" min="0" step="0.01" className="input w-20 text-right text-xs py-0.5"
+                              value={reverifyValue} onChange={e => setReverifyValue(e.target.value)} autoFocus />
+                            <button className="text-psu text-[10px] underline" disabled={reverifyBusy} onClick={() => saveReverify(r.id)}>Save</button>
+                            <button className="text-slate-400 text-[10px] underline" onClick={() => setReverifyingId(null)}>x</button>
+                          </div>
+                        ) : (
+                          <>₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</>
+                        )}
+                      </td>
+                      <td className="py-1.5 px-2">
+                        {stale ? (
+                          <span className="inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-medium" title={`Quoted ${priceDate} -- verify with supplier before ordering`}>
+                            {daysSincePriced(priceDate)}d ago — verify
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-[10px]">{daysSincePriced(priceDate)}d ago</span>
+                        )}
+                      </td>
                       <td className="py-1.5 px-2 text-right tabular-nums">{r.quantity}</td>
                       <td className="py-1.5 px-2 text-right font-semibold tabular-nums">₱{(r.unit_cost * r.quantity).toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-                      <td className="py-1.5 pl-2">
+                      <td className="py-1.5 pl-2 whitespace-nowrap">
+                        {reverifyingId !== r.id && (
+                          <button className="text-psu text-[11px] underline mr-2" onClick={() => startReverify(r)}>Re-verify</button>
+                        )}
                         <button className="text-amber-600 text-[11px] underline mr-2" onClick={() => unassign(r.id)}>Unmatch</button>
                         <button className="text-red-500 text-[11px] underline" onClick={() => del(r.id)}>Delete</button>
                       </td>
                     </tr>
-                  )),
+                    );
+                  }),
                 ])}
               </tbody>
             </table>

@@ -10,6 +10,11 @@ export type PersistedPRItem = PRItem & {
   supplier?: string;
   program?: string;
   canvassing_id?: number | null;
+  /** The canvassing row's canvass_date/created_at at the moment this item
+   *  was copied onto the PR -- lets later stages (PO consolidation) flag a
+   *  price as stale even after the original canvassing row is edited,
+   *  unassigned, or deleted. */
+  priced_at?: string;
 };
 
 /** canvassing.id -> the (non-cancelled) purchase_requests row that already

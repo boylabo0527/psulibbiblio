@@ -14,6 +14,7 @@ import UserManagementTab from "@/components/UserManagementTab";
 import SupplierViewTab from "@/components/SupplierViewTab";
 import PerlegoCatalogTab from "@/components/PerlegoCatalogTab";
 import MonitoringTab from "@/components/MonitoringTab";
+import FacultyRecommendationsTab from "@/components/FacultyRecommendationsTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
@@ -27,6 +28,7 @@ const tabs = [
   { id: "procurement",      label: "Procurement Analysis", publicTab: false },
   { id: "canvassing",       label: "Market Canvassing",   publicTab: false },
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
+  { id: "faculty-recommendations", label: "Faculty Recommendations", publicTab: false },
   { id: "activity",         label: "Activity Log",        publicTab: false },
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
   { id: "monitoring",       label: "Monitoring",          publicTab: false },
@@ -44,8 +46,8 @@ type TabId = (typeof tabs)[number]["id"];
 // is visible to the signed-in user.
 const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
   { id: "catalog", label: "Catalog", tabIds: ["upload", "match", "campus-validation"] },
-  { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "canvassing", "purchase-request"] },
-  { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view"] },
+  { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "canvassing", "purchase-request", "faculty-recommendations"] },
+  { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view", "faculty-recommendations"] },
   { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring"] },
   { id: "admin", label: "Admin", tabIds: ["cleanup", "perlego-catalog", "user-management"] },
 ];
@@ -85,7 +87,7 @@ export default function Home() {
 
   return (
     <main>
-      <header className="bg-psu text-white px-8 py-4 flex flex-wrap gap-4 justify-between items-center">
+      <header className="bg-psu text-white px-8 py-4 flex flex-wrap gap-4 justify-between items-center border-b-4 border-psu-gold">
         <div>
           <h1 className="text-xl font-semibold">PSU Bibliography Generator</h1>
           <p className="text-xs opacity-90 mt-0.5">
@@ -199,6 +201,8 @@ export default function Home() {
           <CanvassingTab />
         ) : tab === "purchase-request" ? (
           <PurchaseRequestTab />
+        ) : tab === "faculty-recommendations" ? (
+          <FacultyRecommendationsTab />
         ) : tab === "activity" ? (
           <ActivityLogTab />
         ) : tab === "supplier-view" ? (

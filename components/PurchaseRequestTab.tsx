@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
+import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 
 type Program = { id: number; name: string };
@@ -151,6 +152,7 @@ export default function PurchaseRequestTab() {
           supplier: i.supplier || "",
           program: i.program || "",
           canvassing_id: i.id,
+          priced_at: i.canvass_date || i.created_at,
         })),
       };
       const res = await apiFetch("/api/purchase-request", {
@@ -365,7 +367,12 @@ export default function PurchaseRequestTab() {
                           <td className="py-1 pr-2 font-medium">{item.title}{item.year ? ` (${item.year})` : ""}</td>
                           <td className="py-1 pr-2 text-slate-600">{item.author}</td>
                           <td className="py-1 pr-2 text-slate-600">{item.supplier}</td>
-                          <td className="py-1 px-2 text-right tabular-nums">₱{item.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                          <td className="py-1 px-2 text-right tabular-nums">
+                            ₱{item.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                            {isPriceStale(item.canvass_date || item.created_at) && (
+                              <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(item.canvass_date || item.created_at)} days ago -- verify with supplier before ordering`}>⚠</span>
+                            )}
+                          </td>
                           <td className="py-1 px-2">
                             {item.selected ? (
                               <input type="number" min="1" className="input w-14 text-right text-xs py-0.5"

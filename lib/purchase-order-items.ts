@@ -5,7 +5,7 @@ import type { serviceClient } from "./supabase";
  *  canvassing_ids is which canvassing rows this merged line covers (a PO
  *  line can consolidate the same title requested across multiple PRs), and
  *  is what excludes them from future consolidation while this PO is active. */
-export type PersistedPOItem = PRItem & { canvassing_ids?: number[] };
+export type PersistedPOItem = PRItem & { canvassing_ids?: number[]; priced_at?: string };
 
 /** canvassing.id -> the (active) purchase_orders row that already includes
  *  it. Regenerating a PO for a supplier must not silently re-order a title

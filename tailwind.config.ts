@@ -5,7 +5,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        psu: { DEFAULT: "#1f4e79", light: "#e8f0fa", dark: "#163d61" },
+        // Retinted to match the PSU seal (sky-blue field, gold crown/stars) --
+        // previously an arbitrary navy unrelated to the university's actual
+        // colors. #0f6ba8 keeps ~5.7:1 contrast against white (header/button
+        // text), close to the seal's blue but deep enough to stay readable.
+        psu: { DEFAULT: "#0f6ba8", light: "#e3f1fa", dark: "#0a4e7d" },
+        "psu-gold": { DEFAULT: "#fdb913", dark: "#c98e00" },
       },
     },
   },

@@ -23,6 +23,7 @@ const TAB_LABELS: Record<string, string> = {
   activity: "Activity Log",
   "supplier-view": "Supplier View",
   monitoring: "Monitoring",
+  "faculty-recommendations": "Faculty Recommendations",
 };
 const TAB_IDS = Object.keys(TAB_LABELS);
 
@@ -308,7 +309,7 @@ export default function UserManagementTab() {
                 {users.map((u) => (
                   <tr key={u.email} className="border-b border-slate-100">
                     <td className="py-1.5 pr-2">{u.email}</td>
-                    <td className="py-1.5 pr-2">{u.role_name}{u.is_admin && <span className="ml-1 text-[10px] bg-psu-light text-psu rounded px-1">admin</span>}</td>
+                    <td className="py-1.5 pr-2">{u.role_name}{u.is_admin && <span className="ml-1 text-[10px] bg-psu-gold/25 text-psu-gold-dark rounded px-1">admin</span>}</td>
                     <td className="py-1.5 pr-2">
                       {u.is_admin ? (
                         <span className="text-slate-400">All (admin)</span>

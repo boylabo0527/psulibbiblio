@@ -13,8 +13,9 @@
 -- 21_faculty_role.sql + 22_purchase_request_records.sql +
 -- 23_purchase_request_campus.sql + 24_pr_workflow.sql +
 -- 25_campus_budgets.sql + 26_pr_cancel_and_po.sql +
--- 27_purchase_order_lifecycle.sql in order. If you've already run some of
--- those individually, running this on top is still safe.
+-- 27_purchase_order_lifecycle.sql + 28_title_recommendations.sql in
+-- order. If you've already run some of those individually, running this
+-- on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -535,3 +536,34 @@ alter table purchase_orders drop constraint if exists purchase_orders_status_che
 alter table purchase_orders add constraint purchase_orders_status_check
   check (status in ('active', 'cancelled'));
 alter table purchase_orders add column if not exists cancelled_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- 28: faculty-submitted title recommendations per subject, and the default
+-- tab grant that makes the Faculty Member role actually usable out of the
+-- box.
+-- ---------------------------------------------------------------------------
+create table if not exists title_recommendations (
+  id bigserial primary key,
+  subject_id bigint not null references subjects(id) on delete cascade,
+  recommended_by text not null default '',
+  title text not null,
+  author text default '',
+  publisher text default '',
+  year text default '',
+  isbn text default '',
+  format_preference text default '',
+  notes text default '',
+  status text not null default 'pending',
+  created_at timestamptz default now()
+);
+alter table title_recommendations drop constraint if exists title_recommendations_status_check;
+alter table title_recommendations add constraint title_recommendations_status_check
+  check (status in ('pending', 'sourced', 'declined'));
+create index if not exists title_recommendations_subject_idx on title_recommendations(subject_id);
+
+alter table title_recommendations enable row level security;
+
+insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
+select r.id, 'faculty-recommendations', true, true
+from roles r where r.name = 'Faculty Member'
+on conflict (role_id, tab_id) do nothing;

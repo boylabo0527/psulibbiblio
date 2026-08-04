@@ -18,6 +18,7 @@ export type SupplierNeedRow = {
   current_digital: number;
   gap: number; // additional titles (printed or ebook) still needed for accreditation
   needs_printed: boolean; // true if a recent printed book specifically is still missing
+  recommended_titles: { title: string; author: string; format_preference: string }[]; // faculty-suggested titles for this course, if any
 };
 
 /** GET /api/supplier/needs -- read-only, no cost figures: which subjects
@@ -82,6 +83,15 @@ export async function GET(req: Request) {
       }
     }
 
+    const { data: recs } = await db.from("title_recommendations")
+      .select("subject_id, title, author, format_preference")
+      .in("subject_id", subjectIds).in("status", ["pending", "sourced"]);
+    const recsBySubject = new Map<number, { title: string; author: string; format_preference: string }[]>();
+    for (const r of recs ?? []) {
+      if (!recsBySubject.has(r.subject_id)) recsBySubject.set(r.subject_id, []);
+      recsBySubject.get(r.subject_id)!.push({ title: r.title, author: r.author, format_preference: r.format_preference });
+    }
+
     const rows: SupplierNeedRow[] = subjects
       .map((s) => {
         const recent = recentMap.get(s.id) ?? 0;
@@ -96,6 +106,7 @@ export async function GET(req: Request) {
           current_digital: digitalMap.get(s.id) ?? 0,
           gap,
           needs_printed: recentPrinted < 1,
+          recommended_titles: recsBySubject.get(s.id) ?? [],
         };
       })
       .filter((r) => r.gap > 0)

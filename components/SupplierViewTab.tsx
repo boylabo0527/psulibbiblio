@@ -183,6 +183,7 @@ export default function SupplierViewTab() {
                   <th className="py-1 px-2 text-right">Have (Digital)</th>
                   <th className="py-1 px-2 text-right">Titles Needed</th>
                   <th className="py-1 px-2"></th>
+                  <th className="py-1 px-2">Faculty Suggested</th>
                   <th className="py-1 pl-2 w-20"></th>
                 </tr>
               </thead>
@@ -199,6 +200,14 @@ export default function SupplierViewTab() {
                       {r.needs_printed && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="A recent printed copy is specifically required, not just any format">
                           Printed needed
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 px-2 text-slate-600 max-w-[220px]">
+                      {r.recommended_titles.length > 0 && (
+                        <span title={r.recommended_titles.map(t => `${t.title}${t.author ? ` — ${t.author}` : ""}`).join("\n")}>
+                          {r.recommended_titles.slice(0, 2).map(t => t.title).join("; ")}
+                          {r.recommended_titles.length > 2 ? ` +${r.recommended_titles.length - 2} more` : ""}
                         </span>
                       )}
                     </td>

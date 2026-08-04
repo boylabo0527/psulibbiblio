@@ -12,6 +12,9 @@ export type ConsolidatedItem = {
   stock_prop_no: string; unit: string; description: string; quantity: number; unit_cost: number;
   source_pr_nos: string[];
   canvassing_ids: number[];
+  /** Earliest priced_at among the merged occurrences -- the most stale one,
+   *  since that's the one that most needs re-verifying before ordering. */
+  priced_at: string;
 };
 
 /** GET /api/purchase-order/consolidated?supplier=NAME -- every line item
@@ -56,12 +59,14 @@ export async function GET(req: Request) {
           merged.set(key, {
             stock_prop_no: item.stock_prop_no, unit: item.unit, description: item.description,
             quantity: 0, unit_cost: item.unit_cost, source_pr_nos: [], canvassing_ids: [],
+            priced_at: item.priced_at || "",
           });
         }
         const m = merged.get(key)!;
         m.quantity += item.quantity;
         if (!m.source_pr_nos.includes(row.pr_no)) m.source_pr_nos.push(row.pr_no);
         if (item.canvassing_id != null && !m.canvassing_ids.includes(item.canvassing_id)) m.canvassing_ids.push(item.canvassing_id);
+        if (item.priced_at && (!m.priced_at || item.priced_at < m.priced_at)) m.priced_at = item.priced_at;
       }
     }
     return NextResponse.json({ items: Array.from(merged.values()), excludedCount });

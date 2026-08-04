@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
-import { userEmailFromRequest } from "@/lib/activity";
+import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,6 +70,51 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json({ rows });
+  } catch (err) {
+    return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });
+  }
+}
+
+/** PATCH /api/canvassing?id=... -- re-verify a canvassed price with the
+ *  supplier: updates unit_cost and resets canvass_date to today (so the
+ *  staleness badge clears), logging the old -> new price for an audit
+ *  trail. Body: { unit_cost }. This is the integrity mechanism for prices
+ *  that "usually change" -- rather than silently trusting an old quote,
+ *  the UI flags it stale (see lib/pricing.ts) and this is how staff
+ *  confirm/update it before it's used on a new Purchase Request. Titles
+ *  already copied onto an existing PR/PO are unaffected -- those are
+ *  frozen snapshots, by design. */
+export async function PATCH(req: Request) {
+  try {
+    const db = serviceClient();
+    const email = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, email);
+    if (!perms.isAdmin && !perms.tabs["canvassing"]?.can_edit) {
+      return NextResponse.json({ error: "Your account doesn't have permission to update canvassing records." }, { status: 403 });
+    }
+    const u = new URL(req.url);
+    const id = Number(u.searchParams.get("id"));
+    if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+    const body = await req.json() as { unit_cost?: number };
+    const newCost = Number(body.unit_cost);
+    if (!Number.isFinite(newCost) || newCost < 0) {
+      return NextResponse.json({ error: "A valid unit_cost is required." }, { status: 400 });
+    }
+
+    const { data: existing } = await db.from("canvassing").select("id, title, unit_cost").eq("id", id).maybeSingle();
+    if (!existing) return NextResponse.json({ error: "Canvassing entry not found." }, { status: 404 });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const { error } = await db.from("canvassing").update({ unit_cost: newCost, canvass_date: today }).eq("id", id);
+    if (error) throw error;
+
+    await logActivity(db, {
+      userEmail: email, action: "canvassing_price_reverify",
+      summary: `${email} re-verified price for "${existing.title}": ${existing.unit_cost} -> ${newCost}`,
+      detail: { canvassing_id: id, old_price: existing.unit_cost, new_price: newCost },
+    });
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });
   }
