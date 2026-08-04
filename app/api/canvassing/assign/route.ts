@@ -19,6 +19,14 @@ export async function POST(req: Request) {
       .update({ subject_id: subject_id ?? null, program_id: program_id ?? null })
       .eq("id", Number(id));
     if (error) throw error;
+
+    // Reassigning the primary course resets which courses this title counts
+    // toward -- any additional courses linked via /link-subject were tied to
+    // the old assignment and shouldn't silently keep counting after a fix.
+    await db.from("canvassing_subjects").delete().eq("canvassing_id", Number(id));
+    if (subject_id) {
+      await db.from("canvassing_subjects").insert({ canvassing_id: Number(id), subject_id: Number(subject_id) });
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json({ error: (err as { message?: string })?.message ?? String(err) }, { status: 500 });

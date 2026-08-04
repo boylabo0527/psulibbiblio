@@ -155,6 +155,8 @@ export default function CanvassingTab() {
   const [reverifyValue, setReverifyValue] = useState("");
   const [reverifyBusy, setReverifyBusy] = useState(false);
   const [recommendationsBySubject, setRecommendationsBySubject] = useState<Map<number, { title: string; author: string }[]>>(new Map());
+  const [linkingId, setLinkingId] = useState<number | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
 
   function reload() {
     setLoading(true); setErr(null);
@@ -300,6 +302,26 @@ export default function CanvassingTab() {
     if (!confirm("Delete this entry?")) return;
     await apiFetch(`/api/canvassing?id=${id}`, { method: "DELETE" });
     setRows(r => r.filter(x => x.id !== id));
+  }
+
+  async function linkSubject(canvassingId: number, subjectId: string) {
+    if (!subjectId) return;
+    setLinkBusy(true);
+    try {
+      const res = await apiFetch("/api/canvassing/link-subject", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ canvassing_id: canvassingId, subject_id: Number(subjectId) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) { setErr(j.error || `HTTP ${res.status}`); return; }
+      setLinkingId(null);
+      reload();
+    } finally { setLinkBusy(false); }
+  }
+
+  async function unlinkSubject(canvassingId: number, subjectId: number) {
+    await apiFetch(`/api/canvassing/link-subject?canvassing_id=${canvassingId}&subject_id=${subjectId}`, { method: "DELETE" });
+    reload();
   }
 
   function startReverify(r: CanvassingRow) {
@@ -465,6 +487,11 @@ export default function CanvassingTab() {
                         <span className="inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Partially sourced</span>
                       ) : (
                         <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Sourced, pending purchase</span>
+                      )}
+                      {g.pending_titles > 0 && (
+                        <span className="block text-[10px] text-slate-400 mt-0.5" title="Already on an active Purchase Request or Purchase Order -- don't canvass/request more for this gap without checking it first.">
+                          {g.pending_titles} already ordered
+                        </span>
                       )}
                     </td>
                     <td className="py-1.5 pl-2 text-slate-600 max-w-[220px]">
@@ -683,7 +710,40 @@ export default function CanvassingTab() {
                     <tr key={r.id} className={"border-b border-slate-100 " + (stale ? "bg-amber-50/40 hover:bg-amber-50" : "hover:bg-green-50")}>
                       <td className="py-1.5 pr-2 font-medium">{r.title}</td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
-                      <td className="py-1.5 pr-2 text-psu font-medium">{r.subject_label}</td>
+                      <td className="py-1.5 pr-2 text-psu font-medium">
+                        <div>{r.subject_label}</div>
+                        {r.additional_subjects.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.additional_subjects.map(a => (
+                              <span key={a.subject_id} className="inline-flex items-center gap-1 bg-psu-light text-psu rounded px-1.5 py-0.5 text-[10px] font-normal">
+                                {a.course_code || a.course_title}
+                                <button type="button" className="text-psu/60 hover:text-red-600" title="Unlink" onClick={() => unlinkSubject(r.id, a.subject_id)}>×</button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {linkingId === r.id ? (
+                          <div className="mt-1 flex items-center gap-1">
+                            <SearchableSelect
+                              value=""
+                              onChange={(v) => linkSubject(r.id, v)}
+                              groups={gapsByProgram.map(([prog, { subjects }]) => ({
+                                label: prog,
+                                options: subjects
+                                  .filter(g => g.subject_id !== r.subject_id && !r.additional_subjects.some(a => a.subject_id === g.subject_id))
+                                  .map(g => ({ value: String(g.subject_id), label: `${g.course_code} — ${g.course_title}` })),
+                              }))}
+                              placeholder="Search a course…"
+                              className="input w-48 text-[11px] py-0.5"
+                            />
+                            <button type="button" className="text-slate-400 text-[10px] underline" disabled={linkBusy} onClick={() => setLinkingId(null)}>x</button>
+                          </div>
+                        ) : (
+                          <button type="button" className="text-[10px] text-psu underline mt-1" onClick={() => setLinkingId(r.id)}>
+                            + link to another course
+                          </button>
+                        )}
+                      </td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
                       <td className="py-1.5 px-2 text-right tabular-nums">

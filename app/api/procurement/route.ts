@@ -6,6 +6,8 @@ import { RECENCY_YEARS, countsTowardBookCompliance, isPrintedBook, evaluateBookC
 import { getUserPermissions } from "@/lib/permissions";
 import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
+import { getClaimedCanvassingIds } from "@/lib/purchase-request-items";
+import { getClaimedCanvassingIdsForPO } from "@/lib/purchase-order-items";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +30,12 @@ export type ProcurementRow = {
   partial: boolean;           // recent_titles >= PARTIAL_MIN but not compliant
   cost_per_title: number | null;  // subject's own estimate, else its program's, else null
   estimated_cost: number | null;  // gap * cost_per_title, or null if no estimate set
+  /** Canvassed titles already on an active (non-cancelled) Purchase Request
+   *  or Purchase Order for this subject, but not yet catalogued -- so "gap"
+   *  alone doesn't tell staff whether some of it is already in the pipeline
+   *  and doesn't need to be canvassed/requested again. Doesn't affect
+   *  compliant/partial/gap, which stay tied to what's actually catalogued. */
+  pending_titles: number;
 };
 
 export async function GET(req: Request) {
@@ -115,6 +123,35 @@ export async function GET(req: Request) {
       }
     }
 
+    // Titles already claimed by an active PR or PO (canvassed, requested,
+    // but not yet catalogued into `titles`/`assignments`) -- fanned out
+    // across every subject each canvassing entry counts toward (its primary
+    // subject_id plus any additional courses linked via
+    // /api/canvassing/link-subject), so a title relevant to multiple
+    // courses credits all of them, not just the one it was canvassed for.
+    const [claimedByPR, claimedByPO] = await Promise.all([getClaimedCanvassingIds(db), getClaimedCanvassingIdsForPO(db)]);
+    const claimedIds = Array.from(new Set([...claimedByPR.keys(), ...claimedByPO.keys()]));
+    const pendingMap = new Map<number, number>();
+    if (claimedIds.length) {
+      const [{ data: claimedCanvassing }, { data: claimedLinks }] = await Promise.all([
+        db.from("canvassing").select("id, subject_id").in("id", claimedIds),
+        db.from("canvassing_subjects").select("canvassing_id, subject_id").in("canvassing_id", claimedIds),
+      ]);
+      const subjectsByCanvassingId = new Map<number, Set<number>>();
+      for (const c of (claimedCanvassing ?? []) as { id: number; subject_id: number | null }[]) {
+        if (c.subject_id == null) continue;
+        if (!subjectsByCanvassingId.has(c.id)) subjectsByCanvassingId.set(c.id, new Set());
+        subjectsByCanvassingId.get(c.id)!.add(c.subject_id);
+      }
+      for (const l of (claimedLinks ?? []) as { canvassing_id: number; subject_id: number }[]) {
+        if (!subjectsByCanvassingId.has(l.canvassing_id)) subjectsByCanvassingId.set(l.canvassing_id, new Set());
+        subjectsByCanvassingId.get(l.canvassing_id)!.add(l.subject_id);
+      }
+      for (const subjSet of subjectsByCanvassingId.values()) {
+        for (const sid of subjSet) pendingMap.set(sid, (pendingMap.get(sid) ?? 0) + 1);
+      }
+    }
+
     const rows: ProcurementRow[] = subjects.map((s) => {
       const counts = (countMap.get(s.id) ?? {}) as Record<ResourceTypeId, number>;
       const total_titles = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -141,6 +178,7 @@ export async function GET(req: Request) {
         partial,
         cost_per_title,
         estimated_cost: cost_per_title != null ? gap * cost_per_title : null,
+        pending_titles: pendingMap.get(s.id) ?? 0,
       };
     });
 

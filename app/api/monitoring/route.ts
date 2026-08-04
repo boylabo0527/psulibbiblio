@@ -55,7 +55,7 @@ export type PurchaseOrderRow = {
 };
 
 export type CampusBudgetRow = {
-  campus_id: number;
+  campus_id: number | null; // null = "University-wide / Digital" (spend not tied to one physical campus)
   campus_name: string;
   period: string;
   amount: number;
@@ -134,7 +134,7 @@ export async function GET(req: Request) {
     for (const r of prRows) {
       if (r.status === "cancelled") continue; // never happened -- excluded from consolidation and spend
       const items = (Array.isArray(r.items) ? r.items : []) as ItemLine[];
-      const campusLabel = r.campus || "Unspecified";
+      const campusLabel = r.campus || "University-wide / Digital";
       for (const item of items) {
         const qty = Number(item.quantity ?? 0);
         const cost = Number(item.unit_cost ?? 0);
@@ -159,19 +159,25 @@ export async function GET(req: Request) {
       .sort((a, b) => b.total_amount - a.total_amount);
 
     // Budget vs. spent per campus/period -- spent is always computed live
-    // from purchase_requests, never stored, so it's never stale.
+    // from purchase_requests, never stored, so it's never stale. A PR with
+    // no campus_id (typically ebook-only, not tied to one physical campus)
+    // used to be silently excluded here; it now rolls up into the
+    // "University-wide / Digital" bucket (campus_id null) instead of
+    // disappearing from spend tracking entirely.
     const spentByCampusPeriod = new Map<string, number>();
+    const budgetKey = (campusId: number | null, period: string) => `${campusId ?? "uw"}:${period}`;
     for (const r of prRows) {
-      if (r.campus_id == null || r.status === "cancelled") continue;
+      if (r.status === "cancelled") continue;
       const period = String(new Date(r.created_at).getFullYear());
-      const key = `${r.campus_id}:${period}`;
+      const key = budgetKey(r.campus_id, period);
       spentByCampusPeriod.set(key, (spentByCampusPeriod.get(key) ?? 0) + Number(r.total_amount ?? 0));
     }
     const campusBudgets: CampusBudgetRow[] = (budgetsRes.data ?? []).map((b) => {
-      const spent = spentByCampusPeriod.get(`${b.campus_id}:${b.period}`) ?? 0;
+      const spent = spentByCampusPeriod.get(budgetKey(b.campus_id, b.period)) ?? 0;
       const amount = Number(b.amount ?? 0);
       return {
-        campus_id: b.campus_id, campus_name: campusNameById.get(b.campus_id) ?? `Campus #${b.campus_id}`,
+        campus_id: b.campus_id,
+        campus_name: b.campus_id == null ? "University-wide / Digital" : (campusNameById.get(b.campus_id) ?? `Campus #${b.campus_id}`),
         period: b.period, amount, spent, remaining: amount - spent, over: spent > amount,
       };
     }).sort((a, b) => a.campus_name.localeCompare(b.campus_name) || b.period.localeCompare(a.period));

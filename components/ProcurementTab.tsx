@@ -403,6 +403,11 @@ export default function ProcurementTab() {
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{ACCREDITATION_MIN}</td>
                       <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.gap > 0 ? "text-red-600" : "text-green-600")}>
                         {r.gap > 0 ? `+${r.gap}` : "—"}
+                        {r.gap > 0 && r.pending_titles > 0 && (
+                          <div className="text-[10px] font-normal text-amber-600" title="Already canvassed and on an active Purchase Request or Purchase Order, just not catalogued yet -- don't re-request these.">
+                            {Math.min(r.pending_titles, r.gap)} already ordered
+                          </div>
+                        )}
                       </td>
                       <td className="py-1.5 px-2 text-right">
                         <SubjectCostInput subjectId={r.subject_id} value={r.cost_per_title} onSaved={loadRows} />

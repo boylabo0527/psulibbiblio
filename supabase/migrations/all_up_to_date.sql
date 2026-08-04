@@ -567,3 +567,31 @@ insert into role_tab_permissions (role_id, tab_id, can_view, can_edit)
 select r.id, 'faculty-recommendations', true, true
 from roles r where r.name = 'Faculty Member'
 on conflict (role_id, tab_id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 29: let one canvassed/purchased title count toward more than one course's
+-- compliance gap, and let a Purchase Request that isn't tied to one
+-- physical campus (typically ebook-only requests) still be tracked against
+-- a budget instead of disappearing from Monitoring's spend totals.
+-- ---------------------------------------------------------------------------
+create table if not exists canvassing_subjects (
+  id            bigserial primary key,
+  canvassing_id bigint not null references canvassing(id) on delete cascade,
+  subject_id    bigint not null references subjects(id) on delete cascade,
+  created_at    timestamptz default now()
+);
+create unique index if not exists canvassing_subjects_unique on canvassing_subjects(canvassing_id, subject_id);
+create index if not exists canvassing_subjects_subject_idx on canvassing_subjects(subject_id);
+
+insert into canvassing_subjects (canvassing_id, subject_id)
+select id, subject_id from canvassing where subject_id is not null
+on conflict (canvassing_id, subject_id) do nothing;
+
+alter table canvassing_subjects enable row level security;
+do $$ begin
+  create policy "anon read canvassing_subjects" on canvassing_subjects for select using (true);
+exception when duplicate_object then null; end $$;
+
+alter table campus_budgets alter column campus_id drop not null;
+create unique index if not exists campus_budgets_university_wide_unique
+  on campus_budgets(period) where campus_id is null;

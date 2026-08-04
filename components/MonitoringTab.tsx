@@ -26,6 +26,11 @@ type FullPurchaseOrder = {
   total_amount: number; status: string;
 };
 
+/** Sentinel campus_id select value for the "University-wide / Digital"
+ *  budget line (real campus_id is null server-side) -- <select> can't hold
+ *  a null value, so this string stands in for it in the DOM. */
+const UNIVERSITY_WIDE = "__university_wide__";
+
 const STATUS_COLOR: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
   accepted: "bg-emerald-100 text-emerald-700",
@@ -83,6 +88,7 @@ export default function MonitoringTab() {
   const [poGroupBy, setPoGroupBy] = useState<"none" | "supplier" | "year">("none");
 
   const [prGroupBy, setPrGroupBy] = useState<"none" | "campus" | "office" | "year">("none");
+  const [prStatusFilter, setPrStatusFilter] = useState<"all" | "active" | "cancelled">("active");
   const [propGroupBy, setPropGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
 
   async function load() {
@@ -109,12 +115,17 @@ export default function MonitoringTab() {
 
   useEffect(() => { load(); }, []);
 
-  const prGroups = useMemo(() => groupRows(purchaseRequests, prGroupBy, (r) => {
-    if (prGroupBy === "campus") return r.campus;
-    if (prGroupBy === "year") return yearOf(r.created_at);
-    if (prGroupBy === "office") return r.status === "completed" ? "Completed" : (r.current_office || "Not started");
-    return "";
-  }), [purchaseRequests, prGroupBy]);
+  const prGroups = useMemo(() => {
+    const filtered = prStatusFilter === "all" ? purchaseRequests
+      : prStatusFilter === "cancelled" ? purchaseRequests.filter((r) => r.status === "cancelled")
+      : purchaseRequests.filter((r) => r.status !== "cancelled");
+    return groupRows(filtered, prGroupBy, (r) => {
+      if (prGroupBy === "campus") return r.campus;
+      if (prGroupBy === "year") return yearOf(r.created_at);
+      if (prGroupBy === "office") return r.status === "completed" ? "Completed" : (r.current_office || "Not started");
+      return "";
+    });
+  }, [purchaseRequests, prGroupBy, prStatusFilter]);
 
   const propGroups = useMemo(() => groupRows(proposals, propGroupBy, (r) => {
     if (propGroupBy === "program") return r.program || "";
@@ -161,6 +172,22 @@ export default function MonitoringTab() {
     setErr(null);
     try {
       const res = await apiFetch(`/api/purchase-request/${pr.id}/cancel`, { method: "POST" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
+
+  async function deletePr(pr: PurchaseRequestRow) {
+    if (!confirm(`Permanently delete cancelled purchase request ${pr.pr_no || "(draft)"}? This can't be undone.`)) return;
+    setStatusBusyId(pr.id);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/purchase-request/${pr.id}`, { method: "DELETE" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       await load();
@@ -385,17 +412,27 @@ export default function MonitoringTab() {
           </div>
 
           <div className="card">
-            <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
               <h2 className="text-psu font-semibold">Purchase Requests Generated</h2>
-              <label className="text-xs text-slate-500 flex items-center gap-1.5">
-                Group by:
-                <select className="input text-xs py-1" value={prGroupBy} onChange={(e) => setPrGroupBy(e.target.value as typeof prGroupBy)}>
-                  <option value="none">None</option>
-                  <option value="campus">Campus</option>
-                  <option value="office">Current office</option>
-                  <option value="year">Year</option>
-                </select>
-              </label>
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Status:
+                  <select className="input text-xs py-1" value={prStatusFilter} onChange={(e) => setPrStatusFilter(e.target.value as typeof prStatusFilter)}>
+                    <option value="active">Active &amp; completed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="all">All</option>
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Group by:
+                  <select className="input text-xs py-1" value={prGroupBy} onChange={(e) => setPrGroupBy(e.target.value as typeof prGroupBy)}>
+                    <option value="none">None</option>
+                    <option value="campus">Campus</option>
+                    <option value="office">Current office</option>
+                    <option value="year">Year</option>
+                  </select>
+                </label>
+              </div>
             </div>
             <p className="text-xs text-slate-500 mb-3">
               Every Purchase Request generated, its current office in the approval workflow, and how long
@@ -470,13 +507,21 @@ export default function MonitoringTab() {
                             {pr.status === "in_progress" && (
                               <button className="text-psu text-[11px] underline mr-2" onClick={() => setEditingPrId(pr.id)}>Edit</button>
                             )}
-                            {pr.status !== "cancelled" && (
+                            {pr.status !== "cancelled" ? (
                               <button
                                 className="text-red-600 text-[11px] underline disabled:opacity-40"
                                 disabled={statusBusyId === pr.id}
                                 onClick={() => cancelPr(pr)}
                               >
                                 Cancel
+                              </button>
+                            ) : (
+                              <button
+                                className="text-red-600 text-[11px] underline disabled:opacity-40"
+                                disabled={statusBusyId === pr.id}
+                                onClick={() => deletePr(pr)}
+                              >
+                                Delete
                               </button>
                             )}
                           </td>
@@ -486,6 +531,9 @@ export default function MonitoringTab() {
                   ])}
                   {purchaseRequests.length === 0 && (
                     <tr><td colSpan={canEditMonitoring ? 8 : 7} className="py-3 text-slate-400">No purchase requests generated yet.</td></tr>
+                  )}
+                  {purchaseRequests.length > 0 && prGroups.every(([, rows]) => rows.length === 0) && (
+                    <tr><td colSpan={canEditMonitoring ? 8 : 7} className="py-3 text-slate-400">No purchase requests match this filter.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -701,7 +749,7 @@ function BudgetByCampus({
     try {
       const res = await apiFetch("/api/admin/campus-budgets", {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campus_id: Number(campusId), period: period.trim(), amount: Number(amount) }),
+        body: JSON.stringify({ campus_id: campusId === UNIVERSITY_WIDE ? null : Number(campusId), period: period.trim(), amount: Number(amount) }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
@@ -756,6 +804,7 @@ function BudgetByCampus({
           <select className="input text-xs" value={campusId} onChange={(e) => setCampusId(e.target.value)}>
             <option value="">Select campus</option>
             {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value={UNIVERSITY_WIDE}>University-wide / Digital</option>
           </select>
           <input className="input text-xs w-24" placeholder="Period (e.g. 2026)" value={period} onChange={(e) => setPeriod(e.target.value)} />
           <input className="input text-xs w-32" type="number" min="0" step="100" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} />

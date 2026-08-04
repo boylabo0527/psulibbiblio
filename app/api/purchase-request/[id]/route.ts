@@ -106,3 +106,40 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }
+
+/** DELETE /api/purchase-request/:id -- permanently remove a purchase
+ *  request. Restricted to already-cancelled ones: an in-progress or
+ *  completed PR is a real procurement record and should be cancelled (kept,
+ *  audit-visible) rather than erased; this exists so a cancelled PR that
+ *  was a mistake or a duplicate doesn't have to sit in the list forever.
+ *  Admin-only, same bar as deleting any other record in this app. */
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+  try {
+    const id = parseInt(params.id, 10);
+    if (!Number.isFinite(id)) return NextResponse.json({ error: "Bad purchase request id" }, { status: 400 });
+
+    const db = serviceClient();
+    const email = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, email);
+    if (!perms.isAdmin) return NextResponse.json({ error: "Only an admin can delete a purchase request." }, { status: 403 });
+
+    const { data: pr, error: prErr } = await db.from("purchase_requests").select("id, pr_no, status").eq("id", id).maybeSingle();
+    if (prErr) throw prErr;
+    if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
+    if (pr.status !== "cancelled") {
+      return NextResponse.json({ error: "Only a cancelled purchase request can be deleted." }, { status: 400 });
+    }
+
+    const { error: delErr } = await db.from("purchase_requests").delete().eq("id", id);
+    if (delErr) throw delErr;
+
+    await logActivity(db, {
+      userEmail: email, action: "purchase_request_delete",
+      summary: `${email} deleted cancelled purchase request ${pr.pr_no || "(draft)"}`,
+      detail: { purchase_request_id: id },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
+}

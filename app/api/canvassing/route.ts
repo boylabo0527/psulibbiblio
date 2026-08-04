@@ -6,6 +6,8 @@ import { userEmailFromRequest, logActivity } from "@/lib/activity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export type AdditionalSubject = { subject_id: number; course_code: string; course_title: string; program: string };
+
 export type CanvassingRow = {
   id: number;
   title: string;
@@ -25,6 +27,10 @@ export type CanvassingRow = {
   canvass_date: string;
   notes: string;
   created_at: string;
+  /** Other courses (besides the primary subject_id above) this same title
+   *  also counts toward -- e.g. a general-education ebook relevant to
+   *  several subjects. See /api/canvassing/link-subject. */
+  additional_subjects: AdditionalSubject[];
 };
 
 export async function GET(req: Request) {
@@ -44,9 +50,32 @@ export async function GET(req: Request) {
     const { data, error } = await q;
     if (error) throw error;
 
+    const ids = (data ?? []).map((r: Record<string, unknown>) => r.id as number);
+    const additionalBySubject = new Map<number, AdditionalSubject[]>();
+    if (ids.length) {
+      const { data: links, error: linkErr } = await db.from("canvassing_subjects")
+        .select("canvassing_id, subject_id, subjects(course_code, course_title, program_id)")
+        .in("canvassing_id", ids);
+      if (linkErr) throw linkErr;
+      const { data: programRows } = await db.from("programs").select("id, name");
+      const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
+      for (const l of (links ?? []) as { canvassing_id: number; subject_id: number; subjects: { course_code?: string; course_title?: string; program_id?: number } | null }[]) {
+        const s = l.subjects;
+        if (!additionalBySubject.has(l.canvassing_id)) additionalBySubject.set(l.canvassing_id, []);
+        additionalBySubject.get(l.canvassing_id)!.push({
+          subject_id: l.subject_id,
+          course_code: s?.course_code ?? "",
+          course_title: s?.course_title ?? "",
+          program: s?.program_id != null ? (programMap.get(s.program_id) ?? "") : "",
+        });
+      }
+    }
+
     const rows: CanvassingRow[] = (data ?? []).map((r: Record<string, unknown>) => {
       const sub = r.subjects as { course_code?: string; course_title?: string } | null;
       const prog = r.programs as { name?: string } | null;
+      const primarySubjectId = r.subject_id as number | null;
+      const additional = (additionalBySubject.get(r.id as number) ?? []).filter((a) => a.subject_id !== primarySubjectId);
       return {
         id: r.id as number,
         title: (r.title as string) ?? "",
@@ -54,7 +83,7 @@ export async function GET(req: Request) {
         publisher: (r.publisher as string) ?? "",
         year: (r.year as string) ?? "",
         isbn: (r.isbn as string) ?? "",
-        subject_id: (r.subject_id as number | null),
+        subject_id: primarySubjectId,
         subject_label: sub ? [sub.course_code, sub.course_title].filter(Boolean).join(" — ") : "",
         program_id: (r.program_id as number | null),
         program: prog?.name ?? "",
@@ -66,6 +95,7 @@ export async function GET(req: Request) {
         canvass_date: (r.canvass_date as string) ?? "",
         notes: (r.notes as string) ?? "",
         created_at: (r.created_at as string) ?? "",
+        additional_subjects: additional,
       };
     });
 
