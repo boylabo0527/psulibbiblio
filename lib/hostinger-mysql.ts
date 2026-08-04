@@ -139,3 +139,23 @@ export async function countPerlegoTitles(): Promise<number> {
   const [rows] = await p.query("select count(*) as total from perlego_titles");
   return (rows as { total: number }[])[0]?.total ?? 0;
 }
+
+/** One archived title by its Hostinger id -- used when adding it to a
+ *  course, to fetch full details before copying it into Supabase. */
+export async function getPerlegoTitleById(id: number): Promise<(PerlegoTitle & { id: number }) | null> {
+  const p = getPool();
+  const [rows] = await p.query(
+    `select id, source_id, title, author, publisher, year, isbn, url, subjects, provider
+     from perlego_titles where id = ? limit 1`,
+    [id],
+  );
+  const list = rows as (PerlegoTitle & { id: number })[];
+  return list[0] ?? null;
+}
+
+/** Removes an archived title -- used once it's been copied into Supabase
+ *  and assigned to a course, so it doesn't sit in both places at once. */
+export async function deletePerlegoTitleById(id: number): Promise<void> {
+  const p = getPool();
+  await p.query("delete from perlego_titles where id = ?", [id]);
+}

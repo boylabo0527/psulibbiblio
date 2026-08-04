@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 
-type Program = { id: number; name: string };
+type Program = { id: number; name: string; college?: string };
 type Campus = { id: number; name: string };
 type Mapping = { program_id: number; campus_id: number; campus_name: string };
 type Course = { id: number; course_code: string; course_title: string; description: string };
@@ -24,6 +24,10 @@ export default function CampusValidationTab() {
   // Program rename
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+
+  // Program college
+  const [collegeEditId, setCollegeEditId] = useState<number | null>(null);
+  const [collegeDraft, setCollegeDraft] = useState("");
 
   // Program merge
   const [mergeTarget, setMergeTarget] = useState("");
@@ -198,6 +202,25 @@ export default function CampusValidationTab() {
     }
   }
 
+  async function saveCollege(p: Program) {
+    const college = collegeDraft.trim();
+    if (college === (p.college ?? "")) { setCollegeEditId(null); return; }
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/programs/${p.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ college }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setCollegeEditId(null);
+      await loadAll();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function mergeProgram() {
     if (selected === null || !mergeTarget) return;
     const targetId = Number(mergeTarget);
@@ -365,6 +388,19 @@ export default function CampusValidationTab() {
                         <button className="text-xs text-psu" onClick={() => renameProgram(p)}>save</button>
                         <button className="text-xs text-slate-400" onClick={() => setRenamingId(null)}>cancel</button>
                       </div>
+                    ) : collegeEditId === p.id ? (
+                      <div className="flex-1 flex items-center gap-1 px-2 py-1">
+                        <input
+                          className="input text-sm flex-1"
+                          placeholder="e.g. College of Nursing"
+                          value={collegeDraft}
+                          autoFocus
+                          onChange={(e) => setCollegeDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") saveCollege(p); if (e.key === "Escape") setCollegeEditId(null); }}
+                        />
+                        <button className="text-xs text-psu" onClick={() => saveCollege(p)}>save</button>
+                        <button className="text-xs text-slate-400" onClick={() => setCollegeEditId(null)}>cancel</button>
+                      </div>
                     ) : (
                       <>
                         <button
@@ -377,7 +413,15 @@ export default function CampusValidationTab() {
                           {p.name}
                           <span className="block text-xs text-slate-400">
                             {campusCount(p.id) === 0 ? "unmapped (shown everywhere)" : `${campusCount(p.id)} campus(es)`}
+                            {" · "}{p.college || "no college set"}
                           </span>
+                        </button>
+                        <button
+                          className="px-1.5 text-xs text-slate-500 hover:text-slate-700"
+                          title="Set which college this program belongs to"
+                          onClick={() => { setCollegeEditId(p.id); setCollegeDraft(p.college ?? ""); }}
+                        >
+                          college
                         </button>
                         <button
                           className="px-1.5 text-xs text-slate-500 hover:text-slate-700"

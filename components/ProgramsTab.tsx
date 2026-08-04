@@ -1,8 +1,11 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
+import { usePermissions } from "@/lib/use-permissions";
+import SearchableSelect from "@/components/SearchableSelect";
+import type { ProcurementRow } from "@/app/api/procurement/route";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -26,6 +29,7 @@ type Bibliography = {
 };
 
 export default function ProgramsTab() {
+  const { perms } = usePermissions();
   const [programs, setPrograms] = useState<Program[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [campus, setCampus] = useState<string>("");
@@ -258,7 +262,183 @@ export default function ProgramsTab() {
           )}
         </div>
       )}
+
+      {perms.isAdmin && <PerlegoSearchPanel />}
     </>
+  );
+}
+
+/** Search titles archived to Hostinger (moved out because they'd never
+ *  been assigned to any course) and add one straight to a course --
+ *  replaces the old two-step "re-upload the Perlego export, then match it"
+ *  workflow. Lives here (not its own tab) since adding a title to a course
+ *  is exactly what the rest of Programs & Export already does. */
+function PerlegoSearchPanel() {
+  type ArchivedTitle = { id: number; title: string; author: string; publisher: string; year: string; isbn: string; url?: string; provider: string };
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [rows, setRows] = useState<ArchivedTitle[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalArchived, setTotalArchived] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [courses, setCourses] = useState<ProcurementRow[]>([]);
+  const [addingId, setAddingId] = useState<number | null>(null);
+  const [courseChoice, setCourseChoice] = useState<Record<number, string>>({});
+  const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    apiFetch("/api/procurement").then((r) => r.json())
+      .then((j) => setCourses(j.rows ?? []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    setErr(null);
+    const p = new URLSearchParams({ page: String(page) });
+    if (q.trim()) p.set("q", q.trim());
+    apiFetch(`/api/hostinger/titles?${p}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) { setErr(j.error); return; }
+        setRows(j.rows ?? []);
+        setTotal(j.total ?? 0);
+        setTotalArchived(j.totalArchived ?? null);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, [q, page]);
+
+  const courseGroups = useMemo(() => {
+    const map = new Map<string, ProcurementRow[]>();
+    for (const c of courses) {
+      if (!map.has(c.program)) map.set(c.program, []);
+      map.get(c.program)!.push(c);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([label, subs]) => ({
+        label,
+        options: subs.map((s) => ({ value: String(s.subject_id), label: `${s.course_code} — ${s.course_title}` })),
+      }));
+  }, [courses]);
+
+  async function addToCourse(t: ArchivedTitle) {
+    const subjectId = courseChoice[t.id];
+    if (!subjectId) return;
+    setAddingId(t.id);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/hostinger/titles/assign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostinger_id: t.id, subject_id: Number(subjectId) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setAddedIds((prev) => new Set(prev).add(t.id));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAddingId(null);
+    }
+  }
+
+  const pageCount = Math.max(1, Math.ceil(total / 50));
+
+  return (
+    <div className="card">
+      <h2 className="text-psu font-semibold mb-1">Perlego Archive Search</h2>
+      <p className="text-xs text-slate-500 mb-3">
+        eBook titles moved out of the main catalog because they&apos;d never been assigned to a course --
+        {totalArchived != null ? ` ${totalArchived.toLocaleString()} archived.` : ""} Pick a course and click
+        Add to copy one back into the catalog and assign it directly, instead of re-uploading it.
+      </p>
+
+      <input
+        className="input w-full max-w-md mb-3"
+        placeholder="Search by title, author, or ISBN…"
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setPage(1); }}
+      />
+
+      {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
+      {loading && <p className="text-slate-500 text-sm">Loading…</p>}
+
+      {!loading && !err && (
+        <>
+          <p className="text-xs text-slate-500 mb-2">{total.toLocaleString()} match{total === 1 ? "" : "es"}</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-slate-500">
+                <tr className="border-b border-slate-200 text-left">
+                  <th className="py-1 pr-2">Title</th>
+                  <th className="py-1 pr-2">Author</th>
+                  <th className="py-1 pr-2">Year</th>
+                  <th className="py-1 pr-2">Provider</th>
+                  <th className="py-1 pr-2 w-64">Course</th>
+                  <th className="py-1 pr-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const added = addedIds.has(r.id);
+                  return (
+                    <tr key={r.id} className="border-b border-slate-100">
+                      <td className="py-1 pr-2">
+                        {r.title}
+                        {r.url && (
+                          <a href={r.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-psu" title={r.url}>🔗</a>
+                        )}
+                      </td>
+                      <td className="py-1 pr-2">{r.author}</td>
+                      <td className="py-1 pr-2">{r.year}</td>
+                      <td className="py-1 pr-2">{r.provider}</td>
+                      <td className="py-1 pr-2">
+                        {added ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <SearchableSelect
+                            value={courseChoice[r.id] ?? ""}
+                            onChange={(v) => setCourseChoice((prev) => ({ ...prev, [r.id]: v }))}
+                            groups={courseGroups}
+                            placeholder="Search a course…"
+                            className="input w-full text-xs py-0.5"
+                          />
+                        )}
+                      </td>
+                      <td className="py-1 pr-2 text-right whitespace-nowrap">
+                        {added ? (
+                          <span className="text-emerald-700 text-[11px]">Added ✓</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-psu text-[11px] underline disabled:opacity-40"
+                            disabled={!courseChoice[r.id] || addingId === r.id}
+                            onClick={() => addToCourse(r)}
+                          >
+                            {addingId === r.id ? "Adding…" : "+ Add"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {rows.length === 0 && <p className="text-slate-500 text-sm mt-2">No matches.</p>}
+
+          {pageCount > 1 && (
+            <div className="flex items-center gap-2 mt-3 text-xs">
+              <button className="btn-outline text-xs" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
+              <span className="text-slate-500">Page {page} of {pageCount.toLocaleString()}</span>
+              <button className="btn-outline text-xs" disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>Next</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

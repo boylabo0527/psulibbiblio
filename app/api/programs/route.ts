@@ -21,7 +21,7 @@ export async function GET(req: Request) {
       if (perms.campusIds !== null) allowedProgramIds = await getAllowedProgramIds(db, perms.campusIds);
     }
 
-    let q = db.from("programs").select("id, name, cost_per_title").order("name");
+    let q = db.from("programs").select("id, name, cost_per_title, college").order("name");
     if (allowedProgramIds) {
       q = q.in("id", allowedProgramIds.size ? Array.from(allowedProgramIds) : [-1]);
     }

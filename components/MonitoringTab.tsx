@@ -214,6 +214,22 @@ export default function MonitoringTab() {
     }
   }
 
+  async function deletePo(po: PurchaseOrderRow) {
+    if (!confirm(`Permanently delete cancelled purchase order ${po.po_no || "(draft)"}? This can't be undone.`)) return;
+    setPoBusyId(po.id);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/purchase-order/${po.id}`, { method: "DELETE" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPoBusyId(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {err && <p className="text-red-700 text-sm">{err}</p>}
@@ -386,7 +402,7 @@ export default function MonitoringTab() {
                         </td>
                         {canEditMonitoring && (
                           <td className="py-1.5 pl-2 text-right whitespace-nowrap">
-                            {po.status === "active" && (
+                            {po.status === "active" ? (
                               <>
                                 <button className="text-psu text-[11px] underline mr-2" onClick={() => setEditingPoId(po.id)}>Edit</button>
                                 <button
@@ -397,6 +413,14 @@ export default function MonitoringTab() {
                                   Cancel
                                 </button>
                               </>
+                            ) : (
+                              <button
+                                className="text-red-600 text-[11px] underline disabled:opacity-40"
+                                disabled={poBusyId === po.id}
+                                onClick={() => deletePo(po)}
+                              >
+                                Delete
+                              </button>
                             )}
                           </td>
                         )}

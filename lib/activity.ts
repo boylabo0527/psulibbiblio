@@ -4,7 +4,7 @@ export type ActivityAction =
   | "upload_titles" | "upload_subjects" | "sync_destiny"
   | "match_run"
   | "bulk_delete" | "hostinger_migrate"
-  | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate"
+  | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate" | "program_college_set"
   | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge"
   | "title_merge"
   | "assignment_add" | "assignment_remove"
@@ -14,7 +14,7 @@ export type ActivityAction =
   | "purchase_request_generate" | "purchase_request_edit" | "purchase_request_cancel" | "purchase_request_delete"
   | "pr_workflow_step_create" | "pr_workflow_step_edit" | "pr_workflow_step_delete"
   | "pr_advance" | "campus_budget_set" | "purchase_order_generate"
-  | "purchase_order_edit" | "purchase_order_cancel"
+  | "purchase_order_edit" | "purchase_order_cancel" | "purchase_order_delete"
   | "canvassing_price_reverify" | "canvassing_link_subject"
   | "title_recommendation_submit" | "title_recommendation_status" | "title_recommendation_delete";
 

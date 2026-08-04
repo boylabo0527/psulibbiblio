@@ -102,3 +102,39 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }
+
+/** DELETE /api/purchase-order/:id -- permanently remove a purchase order.
+ *  Restricted to already-cancelled ones, same reasoning as deleting a
+ *  cancelled Purchase Request: an active PO is a real procurement record
+ *  and should be cancelled (kept, audit-visible) rather than erased; this
+ *  is just cleanup for a mistaken/duplicate one. Admin-only. */
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+  try {
+    const id = parseInt(params.id, 10);
+    if (!Number.isFinite(id)) return NextResponse.json({ error: "Bad purchase order id" }, { status: 400 });
+
+    const db = serviceClient();
+    const email = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, email);
+    if (!perms.isAdmin) return NextResponse.json({ error: "Only an admin can delete a purchase order." }, { status: 403 });
+
+    const { data: po, error: poErr } = await db.from("purchase_orders").select("id, po_no, status").eq("id", id).maybeSingle();
+    if (poErr) throw poErr;
+    if (!po) return NextResponse.json({ error: "Purchase order not found." }, { status: 404 });
+    if (po.status !== "cancelled") {
+      return NextResponse.json({ error: "Only a cancelled purchase order can be deleted." }, { status: 400 });
+    }
+
+    const { error: delErr } = await db.from("purchase_orders").delete().eq("id", id);
+    if (delErr) throw delErr;
+
+    await logActivity(db, {
+      userEmail: email, action: "purchase_order_delete",
+      summary: `${email} deleted cancelled purchase order ${po.po_no || "(draft)"}`,
+      detail: { purchase_order_id: id },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
+}

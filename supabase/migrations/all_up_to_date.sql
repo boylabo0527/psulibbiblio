@@ -604,3 +604,11 @@ create unique index if not exists campus_budgets_university_wide_unique
 -- ---------------------------------------------------------------------------
 alter table title_recommendations add column if not exists canvassing_id bigint references canvassing(id) on delete set null;
 create index if not exists title_recommendations_canvassing_idx on title_recommendations(canvassing_id);
+
+-- ---------------------------------------------------------------------------
+-- 31: programs gain a "college" classification (e.g. "College of Nursing"),
+-- so faculty browsing canvassed titles to recommend can jump straight to
+-- their own college instead of scanning every program's titles.
+-- ---------------------------------------------------------------------------
+alter table programs add column if not exists college text default '';
+create index if not exists programs_college_idx on programs (college);

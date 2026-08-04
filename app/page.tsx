@@ -12,7 +12,6 @@ import CampusValidationTab from "@/components/CampusValidationTab";
 import ActivityLogTab from "@/components/ActivityLogTab";
 import UserManagementTab from "@/components/UserManagementTab";
 import SupplierViewTab from "@/components/SupplierViewTab";
-import PerlegoCatalogTab from "@/components/PerlegoCatalogTab";
 import MonitoringTab from "@/components/MonitoringTab";
 import FacultyRecommendationsTab from "@/components/FacultyRecommendationsTab";
 import LoginScreen from "@/components/LoginScreen";
@@ -33,7 +32,6 @@ const tabs = [
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
   { id: "monitoring",       label: "Monitoring",          publicTab: false },
   { id: "cleanup",          label: "Cleanup",             publicTab: false },
-  { id: "perlego-catalog",  label: "Perlego Catalog",     publicTab: false },
   { id: "user-management",  label: "User Management",     publicTab: false },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
@@ -49,7 +47,7 @@ const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
   { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "canvassing", "purchase-request", "faculty-recommendations"] },
   { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view", "faculty-recommendations"] },
   { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring"] },
-  { id: "admin", label: "Admin", tabIds: ["cleanup", "perlego-catalog", "user-management"] },
+  { id: "admin", label: "Admin", tabIds: ["cleanup", "user-management"] },
 ];
 
 export default function Home() {
@@ -72,16 +70,17 @@ export default function Home() {
   const needsAuth = currentTab && !currentTab.publicTab && !user;
 
   // A tab is visible if it's public, or the signed-in user's role can view
-  // it -- "user-management", "cleanup", and "perlego-catalog" are
-  // special-cased to admins only: user-management configures role
-  // permissions themselves, cleanup (merging duplicate programs/titles
-  // catalog-wide) is a power tool that predates the per-tab permission
-  // system, and perlego-catalog reads from org-wide Hostinger credentials
-  // rather than anything scoped per-tab.
+  // it -- "user-management" and "cleanup" are special-cased to admins
+  // only: user-management configures role permissions themselves, and
+  // cleanup (merging duplicate programs/titles catalog-wide) is a power
+  // tool that predates the per-tab permission system. The Perlego archive
+  // search lives inside Programs & Export and gates itself on isAdmin
+  // directly (it reads from org-wide Hostinger credentials, not anything
+  // scoped per-tab).
   const visibleTabs = tabs.filter((t) => {
     if (t.publicTab) return true;
     if (!user) return false;
-    if (t.id === "user-management" || t.id === "cleanup" || t.id === "perlego-catalog") return perms.isAdmin;
+    if (t.id === "user-management" || t.id === "cleanup") return perms.isAdmin;
     return canView(perms, t.id);
   });
 
@@ -213,8 +212,6 @@ export default function Home() {
           <UserManagementTab />
         ) : tab === "cleanup" ? (
           <CleanupTab />
-        ) : tab === "perlego-catalog" ? (
-          <PerlegoCatalogTab />
         ) : null}
       </section>
 

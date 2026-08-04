@@ -6,7 +6,7 @@ import { userEmailFromRequest, logActivity } from "@/lib/activity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export type AdditionalSubject = { subject_id: number; course_code: string; course_title: string; program: string };
+export type AdditionalSubject = { subject_id: number; course_code: string; course_title: string; program: string; college: string };
 
 export type CanvassingRow = {
   id: number;
@@ -19,6 +19,10 @@ export type CanvassingRow = {
   subject_label: string;
   program_id: number | null;
   program: string;
+  /** The primary program's college (e.g. "College of Nursing"), if one is
+   *  set -- lets faculty browsing canvassed titles group/filter by their
+   *  own college instead of scanning every program's titles. */
+  college: string;
   supplier: string;
   unit: string;
   stock_prop_no: string;
@@ -41,7 +45,7 @@ export async function GET(req: Request) {
     const db = serviceClient();
 
     let q = db.from("canvassing")
-      .select("*, subjects(course_code, course_title, program_id), programs(name)")
+      .select("*, subjects(course_code, course_title, program_id), programs(name, college)")
       .order("canvass_date", { ascending: false })
       .order("created_at", { ascending: false });
     if (subjectId) q = q.eq("subject_id", Number(subjectId));
@@ -50,6 +54,10 @@ export async function GET(req: Request) {
     const { data, error } = await q;
     if (error) throw error;
 
+    const { data: programRows } = await db.from("programs").select("id, name, college");
+    const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
+    const collegeMap = new Map((programRows ?? []).map((p: { id: number; college: string | null }) => [p.id, p.college ?? ""]));
+
     const ids = (data ?? []).map((r: Record<string, unknown>) => r.id as number);
     const additionalBySubject = new Map<number, AdditionalSubject[]>();
     if (ids.length) {
@@ -57,8 +65,6 @@ export async function GET(req: Request) {
         .select("canvassing_id, subject_id, subjects(course_code, course_title, program_id)")
         .in("canvassing_id", ids);
       if (linkErr) throw linkErr;
-      const { data: programRows } = await db.from("programs").select("id, name");
-      const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
       for (const l of (links ?? []) as { canvassing_id: number; subject_id: number; subjects: { course_code?: string; course_title?: string; program_id?: number } | null }[]) {
         const s = l.subjects;
         if (!additionalBySubject.has(l.canvassing_id)) additionalBySubject.set(l.canvassing_id, []);
@@ -67,13 +73,14 @@ export async function GET(req: Request) {
           course_code: s?.course_code ?? "",
           course_title: s?.course_title ?? "",
           program: s?.program_id != null ? (programMap.get(s.program_id) ?? "") : "",
+          college: s?.program_id != null ? (collegeMap.get(s.program_id) ?? "") : "",
         });
       }
     }
 
     const rows: CanvassingRow[] = (data ?? []).map((r: Record<string, unknown>) => {
       const sub = r.subjects as { course_code?: string; course_title?: string } | null;
-      const prog = r.programs as { name?: string } | null;
+      const prog = r.programs as { name?: string; college?: string } | null;
       const primarySubjectId = r.subject_id as number | null;
       const additional = (additionalBySubject.get(r.id as number) ?? []).filter((a) => a.subject_id !== primarySubjectId);
       return {
@@ -87,6 +94,7 @@ export async function GET(req: Request) {
         subject_label: sub ? [sub.course_code, sub.course_title].filter(Boolean).join(" — ") : "",
         program_id: (r.program_id as number | null),
         program: prog?.name ?? "",
+        college: prog?.college ?? "",
         supplier: (r.supplier as string) ?? "",
         unit: (r.unit as string) ?? "copy",
         stock_prop_no: (r.stock_prop_no as string) ?? "",

@@ -18,7 +18,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
     const db = serviceClient();
     const perms = await getUserPermissions(db, userEmailFromRequest(req));
-    const body = await req.json() as { name?: string; cost_per_title?: number | null };
+    const body = await req.json() as { name?: string; cost_per_title?: number | null; college?: string };
     const patch: Record<string, unknown> = {};
     let name: string | undefined;
     if ("name" in body) {
@@ -35,11 +35,17 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
       patch.cost_per_title = body.cost_per_title;
     }
+    if ("college" in body) {
+      if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
+        return NextResponse.json({ error: "Your account doesn't have permission to set a program's college." }, { status: 403 });
+      }
+      patch.college = (body.college ?? "").trim();
+    }
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
     }
     const { data: before } = await db.from("programs").select("name, cost_per_title").eq("id", id).maybeSingle();
-    const { data, error } = await db.from("programs").update(patch).eq("id", id).select("id, name, cost_per_title").single();
+    const { data, error } = await db.from("programs").update(patch).eq("id", id).select("id, name, cost_per_title, college").single();
     if (error) {
       if (error.code === "23505") {
         return NextResponse.json({ error: `A program named "${name}" already exists.` }, { status: 409 });
@@ -59,6 +65,13 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         userEmail, action: "program_cost_estimate",
         summary: `Set default cost per title for "${data.name}" to ${patch.cost_per_title ?? "unset"}`,
         detail: { program_id: id, cost_per_title: patch.cost_per_title },
+      });
+    }
+    if ("college" in patch) {
+      await logActivity(db, {
+        userEmail, action: "program_college_set",
+        summary: `Set "${data.name}"'s college to "${patch.college || "(none)"}"`,
+        detail: { program_id: id, college: patch.college },
       });
     }
     return NextResponse.json({ program: data });

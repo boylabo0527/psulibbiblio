@@ -8,6 +8,7 @@ import type { TitleRecommendationRow } from "@/app/api/title-recommendations/rou
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import { isPriceStale, daysSincePriced } from "@/lib/pricing";
+import { groupRows } from "@/lib/group-rows";
 
 const STATUS_COLOR: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -72,6 +73,7 @@ export default function FacultyRecommendationsTab() {
   const [submitting, setSubmitting] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogSort, setCatalogSort] = useState<"title_asc" | "price_asc" | "price_desc" | "newest">("title_asc");
+  const [catalogCollege, setCatalogCollege] = useState("");
 
   function load() {
     setLoading(true);
@@ -111,18 +113,25 @@ export default function FacultyRecommendationsTab() {
 
   const cartIds = useMemo(() => new Set(titles.map((t) => t.canvassing_id).filter((id): id is number => id != null)), [titles]);
 
-  const displayedCatalog = useMemo(() => {
+  const collegeOptions = useMemo(() => Array.from(new Set(catalog.map((c) => c.college).filter(Boolean))).sort(), [catalog]);
+
+  const catalogGroups = useMemo(() => {
     const q = catalogSearch.trim().toLowerCase();
     let list = catalog;
     if (q) list = list.filter((c) =>
       c.title.toLowerCase().includes(q) || c.author.toLowerCase().includes(q) || c.supplier.toLowerCase().includes(q));
+    if (catalogCollege) list = list.filter((c) => c.college === catalogCollege);
     const sorted = [...list];
     if (catalogSort === "title_asc") sorted.sort((a, b) => a.title.localeCompare(b.title));
     else if (catalogSort === "price_asc") sorted.sort((a, b) => a.unit_cost - b.unit_cost);
     else if (catalogSort === "price_desc") sorted.sort((a, b) => b.unit_cost - a.unit_cost);
     else if (catalogSort === "newest") sorted.sort((a, b) => (b.canvass_date || b.created_at).localeCompare(a.canvass_date || a.created_at));
-    return sorted;
-  }, [catalog, catalogSearch, catalogSort]);
+    // Grouped by college so a professor can jump straight to their own
+    // college's titles instead of scanning every program's -- staff/admin
+    // set each program's college in Campus Validation. Titles whose
+    // program has none set fall into "Unspecified" (groupRows' default).
+    return groupRows(sorted, "college", (c) => c.college);
+  }, [catalog, catalogSearch, catalogSort, catalogCollege]);
 
   function setTitleField(i: number, field: keyof DraftTitle, value: string) {
     setTitles((prev) => prev.map((t, idx) => idx === i ? { ...t, [field]: value } : t));
@@ -256,6 +265,13 @@ export default function FacultyRecommendationsTab() {
                   onChange={(e) => setCatalogSearch(e.target.value)}
                 />
                 <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  College:
+                  <select className="input text-xs py-1" value={catalogCollege} onChange={(e) => setCatalogCollege(e.target.value)}>
+                    <option value="">All colleges</option>
+                    {collegeOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
                   Sort:
                   <select className="input text-xs py-1" value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as typeof catalogSort)}>
                     <option value="title_asc">Title A-Z</option>
@@ -265,40 +281,48 @@ export default function FacultyRecommendationsTab() {
                   </select>
                 </label>
               </div>
-              <div className="max-h-56 overflow-y-auto border border-slate-200 rounded bg-white">
+              <div className="max-h-72 overflow-y-auto border border-slate-200 rounded bg-white">
                 <table className="w-full text-xs">
                   <tbody>
-                    {displayedCatalog.map((c) => {
-                      const inCart = cartIds.has(c.id);
-                      const stale = isPriceStale(c.canvass_date || c.created_at);
-                      return (
-                        <tr key={c.id} className="border-b border-slate-100 last:border-0">
-                          <td className="py-1.5 pl-2 pr-2">
-                            <div className="font-medium">{c.title}{c.year ? ` (${c.year})` : ""}</div>
-                            <div className="text-slate-500">
-                              {c.author && <>{c.author} · </>}{c.supplier || "Supplier not noted"}
-                              {c.subject_label && <> · already linked to {c.subject_label}</>}
-                            </div>
-                          </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">
-                            ₱{c.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
-                            {stale && <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(c.canvass_date || c.created_at)} days ago -- may need re-verifying before purchase`}>⚠</span>}
-                          </td>
-                          <td className="py-1.5 pr-2 text-right whitespace-nowrap">
-                            <button
-                              type="button"
-                              className={inCart ? "text-slate-400 text-[11px]" : "text-psu text-[11px] underline"}
-                              disabled={inCart}
-                              onClick={() => addFromCatalog(c)}
-                            >
-                              {inCart ? "Added ✓" : "+ Add"}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {displayedCatalog.length === 0 && (
-                      <tr><td className="py-3 text-center text-slate-400">{catalog.length === 0 ? "Nothing canvassed yet." : "No matches."}</td></tr>
+                    {catalogGroups.flatMap(([label, items]) => [
+                      <tr key={`g-${label}`} className="bg-slate-50 sticky top-0">
+                        <td colSpan={3} className="py-1 px-2 font-semibold text-slate-600">{label || "Unspecified college"} · {items.length}</td>
+                      </tr>,
+                      ...items.map((c) => {
+                        const inCart = cartIds.has(c.id);
+                        const stale = isPriceStale(c.canvass_date || c.created_at);
+                        return (
+                          <tr key={c.id} className="border-b border-slate-100 last:border-0">
+                            <td className="py-1.5 pl-2 pr-2">
+                              <div className="font-medium">{c.title}{c.year ? ` (${c.year})` : ""}</div>
+                              <div className="text-slate-500">
+                                {c.author && <>{c.author} · </>}{c.supplier || "Supplier not noted"}
+                                {c.subject_label && <> · already linked to {c.subject_label}</>}
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">
+                              ₱{c.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                              {stale && <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(c.canvass_date || c.created_at)} days ago -- may need re-verifying before purchase`}>⚠</span>}
+                            </td>
+                            <td className="py-1.5 pr-2 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                className={inCart ? "text-slate-400 text-[11px]" : "text-psu text-[11px] underline"}
+                                disabled={inCart}
+                                onClick={() => addFromCatalog(c)}
+                              >
+                                {inCart ? "Added ✓" : "+ Add"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }),
+                    ])}
+                    {catalog.length === 0 && (
+                      <tr><td colSpan={3} className="py-3 text-center text-slate-400">Nothing canvassed yet.</td></tr>
+                    )}
+                    {catalog.length > 0 && catalogGroups.every(([, items]) => items.length === 0) && (
+                      <tr><td colSpan={3} className="py-3 text-center text-slate-400">No matches.</td></tr>
                     )}
                   </tbody>
                 </table>
