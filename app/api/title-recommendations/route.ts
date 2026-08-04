@@ -21,6 +21,12 @@ export type TitleRecommendationRow = {
   notes: string;
   status: "pending" | "sourced" | "declined";
   created_at: string;
+  /** Set when this recommendation was added from the "browse what's already
+   *  been canvassed" list instead of typed in from scratch -- it already
+   *  has a real supplier and price, so it doesn't need fresh canvassing. */
+  canvassing_id: number | null;
+  supplier: string;
+  unit_cost: number | null;
 };
 
 /** Anyone who does canvassing (or is admin) counts as a "reviewer" here --
@@ -45,7 +51,7 @@ export async function GET(req: Request) {
     }
 
     const { data, error } = await db.from("title_recommendations")
-      .select("*, subjects(course_code, course_title, program_id)")
+      .select("*, subjects(course_code, course_title, program_id), canvassing(supplier, unit_cost)")
       .order("created_at", { ascending: false });
     if (error) throw error;
 
@@ -60,6 +66,7 @@ export async function GET(req: Request) {
 
     const rows: TitleRecommendationRow[] = (data ?? []).map((r) => {
       const sub = r.subjects as unknown as { course_code?: string; course_title?: string; program_id?: number } | null;
+      const canv = r.canvassing as unknown as { supplier?: string; unit_cost?: number } | null;
       return {
         id: r.id, subject_id: r.subject_id,
         subject_label: sub ? [sub.course_code, sub.course_title].filter(Boolean).join(" — ") : "",
@@ -67,6 +74,9 @@ export async function GET(req: Request) {
         recommended_by: r.recommended_by, title: r.title, author: r.author, publisher: r.publisher,
         year: r.year, isbn: r.isbn, format_preference: r.format_preference, notes: r.notes,
         status: r.status, created_at: r.created_at,
+        canvassing_id: r.canvassing_id ?? null,
+        supplier: canv?.supplier ?? "",
+        unit_cost: canv?.unit_cost ?? null,
       };
     });
     return NextResponse.json({ rows });
@@ -75,7 +85,7 @@ export async function GET(req: Request) {
   }
 }
 
-type TitleInput = { title?: string; author?: string; publisher?: string; year?: string; isbn?: string; format_preference?: string; notes?: string };
+type TitleInput = { title?: string; author?: string; publisher?: string; year?: string; isbn?: string; format_preference?: string; notes?: string; canvassing_id?: number | null };
 
 /** POST /api/title-recommendations -- a faculty member (or admin) suggests
  *  one or more titles for a single subject in one submission (e.g.
@@ -105,6 +115,7 @@ export async function POST(req: Request) {
       author: (t.author ?? "").trim(), publisher: (t.publisher ?? "").trim(),
       year: (t.year ?? "").trim(), isbn: (t.isbn ?? "").trim(),
       format_preference: (t.format_preference ?? "").trim(), notes: (t.notes ?? "").trim(),
+      canvassing_id: Number.isFinite(t.canvassing_id) ? t.canvassing_id : null,
     }));
 
     const { data, error } = await db.from("title_recommendations").insert(insertRows).select("id");

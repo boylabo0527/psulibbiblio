@@ -6,6 +6,8 @@ import { useAuth } from "@/components/AuthProvider";
 import SearchableSelect from "@/components/SearchableSelect";
 import type { TitleRecommendationRow } from "@/app/api/title-recommendations/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import type { CanvassingRow } from "@/app/api/canvassing/route";
+import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 
 const STATUS_COLOR: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -26,9 +28,21 @@ function formatWhen(iso: string): string {
   return d.toLocaleDateString();
 }
 
-type DraftTitle = { title: string; author: string; publisher: string; year: string; isbn: string; format_preference: string; notes: string };
+type DraftTitle = {
+  title: string; author: string; publisher: string; year: string; isbn: string;
+  format_preference: string; notes: string;
+  /** Set when this row was added from the "browse what's already been
+   *  canvassed" cart below instead of typed in -- it already has a real
+   *  supplier and price, so it's a much faster path to an actual purchase
+   *  than a from-scratch suggestion. */
+  canvassing_id: number | null;
+  supplier?: string; unit_cost?: number; canvass_date?: string;
+};
 function emptyDraftTitle(): DraftTitle {
-  return { title: "", author: "", publisher: "", year: "", isbn: "", format_preference: "", notes: "" };
+  return { title: "", author: "", publisher: "", year: "", isbn: "", format_preference: "", notes: "", canvassing_id: null };
+}
+function isEmptyDraft(t: DraftTitle): boolean {
+  return !t.title && !t.author && !t.publisher && !t.year && !t.isbn && !t.notes && t.canvassing_id == null;
 }
 
 /** Lets a faculty member recommend one or more specific titles for a
@@ -46,6 +60,7 @@ export default function FacultyRecommendationsTab() {
 
   const [subjects, setSubjects] = useState<ProcurementRow[]>([]);
   const [rows, setRows] = useState<TitleRecommendationRow[]>([]);
+  const [catalog, setCatalog] = useState<CanvassingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -55,6 +70,8 @@ export default function FacultyRecommendationsTab() {
   const [subjectId, setSubjectId] = useState("");
   const [titles, setTitles] = useState<DraftTitle[]>([emptyDraftTitle()]);
   const [submitting, setSubmitting] = useState(false);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogSort, setCatalogSort] = useState<"title_asc" | "price_asc" | "price_desc" | "newest">("title_asc");
 
   function load() {
     setLoading(true);
@@ -62,12 +79,14 @@ export default function FacultyRecommendationsTab() {
     Promise.all([
       apiFetch("/api/procurement").then((r) => r.json()),
       apiFetch("/api/title-recommendations").then((r) => r.json()),
+      apiFetch("/api/canvassing").then((r) => r.json()).catch(() => ({ rows: [] })),
     ])
-      .then(([subRes, recRes]) => {
+      .then(([subRes, recRes, canvRes]) => {
         if (subRes.error) throw new Error(subRes.error);
         if (recRes.error) throw new Error(recRes.error);
         setSubjects(subRes.rows ?? []);
         setRows(recRes.rows ?? []);
+        setCatalog(canvRes.rows ?? []);
       })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -90,6 +109,21 @@ export default function FacultyRecommendationsTab() {
 
   const programOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.program).filter(Boolean))).sort(), [rows]);
 
+  const cartIds = useMemo(() => new Set(titles.map((t) => t.canvassing_id).filter((id): id is number => id != null)), [titles]);
+
+  const displayedCatalog = useMemo(() => {
+    const q = catalogSearch.trim().toLowerCase();
+    let list = catalog;
+    if (q) list = list.filter((c) =>
+      c.title.toLowerCase().includes(q) || c.author.toLowerCase().includes(q) || c.supplier.toLowerCase().includes(q));
+    const sorted = [...list];
+    if (catalogSort === "title_asc") sorted.sort((a, b) => a.title.localeCompare(b.title));
+    else if (catalogSort === "price_asc") sorted.sort((a, b) => a.unit_cost - b.unit_cost);
+    else if (catalogSort === "price_desc") sorted.sort((a, b) => b.unit_cost - a.unit_cost);
+    else if (catalogSort === "newest") sorted.sort((a, b) => (b.canvass_date || b.created_at).localeCompare(a.canvass_date || a.created_at));
+    return sorted;
+  }, [catalog, catalogSearch, catalogSort]);
+
   function setTitleField(i: number, field: keyof DraftTitle, value: string) {
     setTitles((prev) => prev.map((t, idx) => idx === i ? { ...t, [field]: value } : t));
   }
@@ -98,6 +132,22 @@ export default function FacultyRecommendationsTab() {
   }
   function removeTitleRow(i: number) {
     setTitles((prev) => prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i));
+  }
+
+  /** "Add to cart" from the browse list -- prefills a row instead of
+   *  requiring faculty to retype a title that's already been priced with a
+   *  supplier. Fields stay editable afterward like any other row. */
+  function addFromCatalog(c: CanvassingRow) {
+    if (cartIds.has(c.id)) return;
+    const drafted: DraftTitle = {
+      title: c.title, author: c.author, publisher: c.publisher, year: c.year, isbn: c.isbn,
+      format_preference: "", notes: "",
+      canvassing_id: c.id, supplier: c.supplier, unit_cost: c.unit_cost, canvass_date: c.canvass_date || c.created_at,
+    };
+    setTitles((prev) => {
+      if (prev.length === 1 && isEmptyDraft(prev[0])) return [drafted];
+      return [...prev, drafted];
+    });
   }
 
   const validTitles = titles.filter((t) => t.title.trim());
@@ -110,7 +160,13 @@ export default function FacultyRecommendationsTab() {
     try {
       const res = await apiFetch("/api/title-recommendations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject_id: Number(subjectId), titles: validTitles }),
+        body: JSON.stringify({
+          subject_id: Number(subjectId),
+          titles: validTitles.map((t) => ({
+            title: t.title, author: t.author, publisher: t.publisher, year: t.year, isbn: t.isbn,
+            format_preference: t.format_preference, notes: t.notes, canvassing_id: t.canvassing_id,
+          })),
+        }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
@@ -182,11 +238,85 @@ export default function FacultyRecommendationsTab() {
               />
             </label>
 
+            <div className="border border-slate-200 rounded p-3 bg-slate-50/60">
+              <div className="mb-2">
+                <span className="text-xs font-semibold text-slate-700">Browse titles already priced with a supplier</span>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  These have already been market-canvassed, so they already have a real supplier and price -- picking one here
+                  is faster than typing a title from scratch and gets a click closer to an actual purchase. Search or sort to
+                  find something for your course, then click <span className="font-medium">Add</span>. You can still remove or
+                  edit it below before submitting, or add your own titles the old way if what you want isn't listed yet.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <input
+                  className="input text-xs py-1 flex-1 min-w-[180px]"
+                  placeholder="Search title, author, or supplier…"
+                  value={catalogSearch}
+                  onChange={(e) => setCatalogSearch(e.target.value)}
+                />
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Sort:
+                  <select className="input text-xs py-1" value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as typeof catalogSort)}>
+                    <option value="title_asc">Title A-Z</option>
+                    <option value="price_asc">Price: Low to High</option>
+                    <option value="price_desc">Price: High to Low</option>
+                    <option value="newest">Newest canvassed</option>
+                  </select>
+                </label>
+              </div>
+              <div className="max-h-56 overflow-y-auto border border-slate-200 rounded bg-white">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {displayedCatalog.map((c) => {
+                      const inCart = cartIds.has(c.id);
+                      const stale = isPriceStale(c.canvass_date || c.created_at);
+                      return (
+                        <tr key={c.id} className="border-b border-slate-100 last:border-0">
+                          <td className="py-1.5 pl-2 pr-2">
+                            <div className="font-medium">{c.title}{c.year ? ` (${c.year})` : ""}</div>
+                            <div className="text-slate-500">
+                              {c.author && <>{c.author} · </>}{c.supplier || "Supplier not noted"}
+                              {c.subject_label && <> · already linked to {c.subject_label}</>}
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">
+                            ₱{c.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                            {stale && <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(c.canvass_date || c.created_at)} days ago -- may need re-verifying before purchase`}>⚠</span>}
+                          </td>
+                          <td className="py-1.5 pr-2 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              className={inCart ? "text-slate-400 text-[11px]" : "text-psu text-[11px] underline"}
+                              disabled={inCart}
+                              onClick={() => addFromCatalog(c)}
+                            >
+                              {inCart ? "Added ✓" : "+ Add"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {displayedCatalog.length === 0 && (
+                      <tr><td className="py-3 text-center text-slate-400">{catalog.length === 0 ? "Nothing canvassed yet." : "No matches."}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <div className="space-y-3">
               {titles.map((t, i) => (
                 <div key={i} className="border border-slate-200 rounded p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-slate-500">Title {i + 1}</span>
+                    <span className="text-xs font-medium text-slate-500">
+                      Title {i + 1}
+                      {t.canvassing_id != null && (
+                        <span className="ml-2 inline-block bg-psu-light text-psu rounded px-1.5 py-0.5 text-[10px] font-normal">
+                          From canvassing · {t.supplier || "supplier"} · ₱{(t.unit_cost ?? 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                        </span>
+                      )}
+                    </span>
                     {titles.length > 1 && (
                       <button type="button" className="text-red-500 text-[11px] underline" onClick={() => removeTitleRow(i)}>Remove</button>
                     )}
@@ -287,7 +417,14 @@ export default function FacultyRecommendationsTab() {
                     <tr key={r.id} className="border-b border-slate-100">
                       <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
                       <td className="py-1.5 pr-2">{r.subject_label}</td>
-                      <td className="py-1.5 pr-2 font-medium">{r.title}</td>
+                      <td className="py-1.5 pr-2 font-medium">
+                        {r.title}
+                        {r.canvassing_id != null && (
+                          <span className="ml-1.5 inline-block bg-psu-light text-psu rounded px-1.5 py-0.5 text-[10px] font-normal" title={`Already priced -- ${r.supplier || "supplier"}, ₱${(r.unit_cost ?? 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`}>
+                            priced ✓
+                          </span>
+                        )}
+                      </td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.author}</td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.format_preference || "—"}</td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.recommended_by}</td>

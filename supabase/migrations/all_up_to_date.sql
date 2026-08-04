@@ -595,3 +595,12 @@ exception when duplicate_object then null; end $$;
 alter table campus_budgets alter column campus_id drop not null;
 create unique index if not exists campus_budgets_university_wide_unique
   on campus_budgets(period) where campus_id is null;
+
+-- ---------------------------------------------------------------------------
+-- 30: let a faculty title recommendation carry forward a link to an
+-- already-canvassed/priced title, when added from the Faculty
+-- Recommendations tab's "browse what's already been canvassed" list
+-- instead of typed in from scratch.
+-- ---------------------------------------------------------------------------
+alter table title_recommendations add column if not exists canvassing_id bigint references canvassing(id) on delete set null;
+create index if not exists title_recommendations_canvassing_idx on title_recommendations(canvassing_id);

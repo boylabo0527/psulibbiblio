@@ -1,19 +1,15 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
-import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
+import { useCampuses } from "@/lib/use-campuses";
 import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
-
-type Program = { id: number; name: string };
 
 type DraftItem = CanvassingRow & { selected: boolean; draftQty: number };
 
 function today() { return new Date().toISOString().slice(0, 10); }
 
 export default function PurchaseRequestTab() {
-  const [programs, setPrograms] = useState<Program[]>([]);
-  const [selectedPrograms, setSelectedPrograms] = useState<Set<number>>(new Set());
   const [campus, setCampus] = useState("");
   const [budget, setBudget] = useState("");
   const [allMatched, setAllMatched] = useState<CanvassingRow[]>([]);
@@ -23,8 +19,9 @@ export default function PurchaseRequestTab() {
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [excludedCount, setExcludedCount] = useState(0);
+  const [supplierFilter, setSupplierFilter] = useState("");
+  const [itemSortBy, setItemSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc">("none");
   const campuses = useCampuses();
-  const { isProgramAtCampus } = useProgramCampusMap();
 
   // PR header
   const [prNo, setPrNo] = useState("");
@@ -36,30 +33,18 @@ export default function PurchaseRequestTab() {
   const [requestedBy, setRequestedBy] = useState("");
   const [approvedBy, setApprovedBy] = useState("University President");
 
-  useEffect(() => {
-    apiFetch("/api/programs").then(r => r.json())
-      .then(j => {
-        const list: Program[] = j.programs ?? [];
-        setPrograms(list);
-      }).catch(() => {});
-  }, []);
-
-  function toggleProgram(id: number) {
-    setSelectedPrograms(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
   async function loadItems() {
-    if (selectedPrograms.size === 0) { setErr("Select at least one program."); return; }
     setLoading(true); setErr(null); setLoaded(false);
     try {
       // Fetch all matched canvassing entries (subject_id assigned), and
       // which of them are already claimed by another active purchase
       // request -- excluded below so the same title can't be requested
-      // twice while its first request is still pending/in-progress.
+      // twice while its first request is still pending/in-progress. Not
+      // filtered by program -- a title can now be linked to courses across
+      // more than one program, so gating by program either hid it from a
+      // program where it also applies, or required loading multiple times.
+      // Campus is this PR's own record (for budget attribution), not a
+      // filter over which titles are eligible.
       const [res, claimedRes] = await Promise.all([
         apiFetch("/api/canvassing").then(r => r.json()),
         apiFetch("/api/purchase-request/requested-ids").then(r => r.json()).catch(() => ({ claimed: [] })),
@@ -67,13 +52,7 @@ export default function PurchaseRequestTab() {
       if (res.error) throw new Error(res.error);
       const all: CanvassingRow[] = res.rows ?? [];
       const claimedIds = new Set<number>((claimedRes.claimed ?? []).map((c: { canvassing_id: number }) => c.canvassing_id));
-      // Filter: must have a subject assigned, belong to selected programs,
-      // and not already be on another active purchase request.
-      const eligible = all.filter(r =>
-        r.subject_id !== null &&
-        r.program_id !== null &&
-        selectedPrograms.has(r.program_id)
-      );
+      const eligible = all.filter(r => r.subject_id !== null);
       const matched = eligible.filter(r => !claimedIds.has(r.id));
       setExcludedCount(eligible.length - matched.length);
       setAllMatched(matched);
@@ -112,18 +91,38 @@ export default function PurchaseRequestTab() {
   const budgetVal = parseFloat(budget) || 0;
   const overBudget = budgetVal > 0 && grandTotal > budgetVal;
 
-  // Group selected items by program → subject
+  const supplierOptions = useMemo(() => Array.from(new Set(Array.from(draft.values()).map(i => i.supplier).filter(Boolean))).sort(), [draft]);
+
+  /** Every course a title counts toward, for display -- a title can now be
+   *  linked to more than one course/program (see canvassing_subjects), so
+   *  this is a list, not a single label. */
+  function courseTags(item: DraftItem): string[] {
+    const tags = [item.subject_label, ...item.additional_subjects.map(a => [a.course_code, a.course_title].filter(Boolean).join(" — "))];
+    return tags.filter(Boolean);
+  }
+
+  // Group selected items by supplier -- suppliers are the actual
+  // procurement-relevant grouping (one PO per supplier downstream), and
+  // unlike program, every item has exactly one. Program filtering isn't
+  // used here anymore: a title can now be linked to courses across more
+  // than one program, so gating by program either hid it from a program it
+  // also applies to, or forced loading the same title's PR more than once.
   const grouped = useMemo(() => {
-    const byProg = new Map<string, { program_id: number; subjects: Map<string, { label: string; items: DraftItem[] }> }>();
-    for (const item of selectedItems) {
-      if (!byProg.has(item.program)) byProg.set(item.program, { program_id: item.program_id!, subjects: new Map() });
-      const subjKey = item.subject_label || "General";
-      const prog = byProg.get(item.program)!;
-      if (!prog.subjects.has(subjKey)) prog.subjects.set(subjKey, { label: subjKey, items: [] });
-      prog.subjects.get(subjKey)!.items.push(item);
+    let list = selectedItems;
+    if (supplierFilter) list = list.filter(i => i.supplier === supplierFilter);
+    const sorted = [...list];
+    if (itemSortBy === "price_asc") sorted.sort((a, b) => a.unit_cost - b.unit_cost);
+    else if (itemSortBy === "price_desc") sorted.sort((a, b) => b.unit_cost - a.unit_cost);
+    else if (itemSortBy === "title_asc") sorted.sort((a, b) => a.title.localeCompare(b.title));
+
+    const bySupplier = new Map<string, DraftItem[]>();
+    for (const item of sorted) {
+      const key = item.supplier || "Unspecified";
+      if (!bySupplier.has(key)) bySupplier.set(key, []);
+      bySupplier.get(key)!.push(item);
     }
-    return Array.from(byProg.entries());
-  }, [selectedItems]);
+    return Array.from(bySupplier.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [selectedItems, supplierFilter, itemSortBy]);
 
   async function generate() {
     if (selectedItems.length === 0) return;
@@ -144,8 +143,7 @@ export default function PurchaseRequestTab() {
             i.author && `by ${i.author}`,
             i.publisher,
             i.year,
-            i.subject_label && `[${i.subject_label}]`,
-            i.program && `(${i.program})`,
+            courseTags(i).length > 0 && `[${courseTags(i).join("; ")}]`,
           ].filter(Boolean).join(", "),
           quantity: i.draftQty,
           unit_cost: i.unit_cost,
@@ -174,63 +172,20 @@ export default function PurchaseRequestTab() {
 
   return (
     <div className="space-y-4">
-      {/* Step 1: Select programs + campus + budget */}
+      {/* Step 1: Campus + budget */}
       <div className="card">
-        <h2 className="text-psu font-semibold mb-1">Step 1 — Select Programs & Budget</h2>
+        <h2 className="text-psu font-semibold mb-1">Step 1 — Campus &amp; Budget</h2>
         <p className="text-xs text-slate-500 mb-4">
-          Select one or more programs to consolidate into a single Purchase Request.
-          Only titles already matched to subject gaps in the Canvassing tab will appear.
+          Every title already matched to a subject gap in Market Canvassing loads below, organized by supplier --
+          not filtered by program, since a single title can now count toward courses in more than one program.
+          Campus is this request's own record (for budget tracking), not a filter on which titles appear.
         </p>
-
-        <div className="mb-3">
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-xs font-medium text-slate-600">Programs (select one or more):</span>
-            {campus && (
-              <button className="text-xs text-psu underline" onClick={() => {
-                const atCampus = programs.filter(p => isProgramAtCampus(p.id, campus));
-                setSelectedPrograms(new Set(atCampus.map(p => p.id)));
-              }}>
-                Select all {campus} programs
-              </button>
-            )}
-            {!campus && (
-              <button className="text-xs text-psu underline" onClick={() =>
-                setSelectedPrograms(new Set(programs.map(p => p.id)))
-              }>Select all</button>
-            )}
-            {selectedPrograms.size > 0 && (
-              <button className="text-xs text-slate-400 underline" onClick={() => setSelectedPrograms(new Set())}>Clear</button>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {(campus ? programs.filter(p => isProgramAtCampus(p.id, campus)) : programs).map(p => (
-              <label key={p.id} className={
-                "flex items-center gap-1.5 cursor-pointer rounded border px-3 py-1.5 text-xs transition " +
-                (selectedPrograms.has(p.id)
-                  ? "bg-psu text-white border-psu"
-                  : "border-slate-300 text-slate-600 hover:border-psu hover:text-psu")
-              }>
-                <input type="checkbox" className="hidden" checked={selectedPrograms.has(p.id)} onChange={() => toggleProgram(p.id)} />
-                {p.name}
-              </label>
-            ))}
-          </div>
-        </div>
 
         <div className="flex flex-wrap gap-3 mb-4">
           <label className="label">
             Campus
-            <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => {
-              const c = e.target.value;
-              setCampus(c);
-              // Remove selected programs not offered at this campus
-              if (c) setSelectedPrograms(prev => {
-                const next = new Set(prev);
-                programs.forEach(p => { if (next.has(p.id) && !isProgramAtCampus(p.id, c)) next.delete(p.id); });
-                return next;
-              });
-            }}>
-              <option value="">All campuses</option>
+            <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => setCampus(e.target.value)}>
+              <option value="">All campuses / not campus-specific</option>
               {campuses.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
@@ -240,7 +195,7 @@ export default function PurchaseRequestTab() {
               placeholder="e.g. 50000" value={budget} onChange={e => setBudget(e.target.value)} />
           </label>
           <div className="flex items-end">
-            <button className="btn-outline text-sm" onClick={loadItems} disabled={loading || selectedPrograms.size === 0}>
+            <button className="btn-outline text-sm" onClick={loadItems} disabled={loading}>
               {loading ? "Loading…" : "Load Matched Titles"}
             </button>
           </div>
@@ -248,7 +203,7 @@ export default function PurchaseRequestTab() {
         {err && <p className="text-red-700 text-sm">{err}</p>}
         {loaded && allMatched.length === 0 && (
           <p className="text-amber-700 text-sm">
-            No matched titles found for the selected program(s). Go to the Market Canvassing tab to assign canvassed titles to subject gaps first.
+            No matched titles found. Go to the Market Canvassing tab to assign canvassed titles to subject gaps first.
           </p>
         )}
         {loaded && excludedCount > 0 && (
@@ -299,12 +254,28 @@ export default function PurchaseRequestTab() {
         </div>
       )}
 
-      {/* Step 3: Review items grouped by program → subject */}
+      {/* Step 3: Review items grouped by supplier */}
       {loaded && allMatched.length > 0 && (
         <div className="card">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <h2 className="text-psu font-semibold">Step 3 — Review & Finalize Items</h2>
-            <div className="flex gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <label className="text-slate-500 flex items-center gap-1.5">
+                Supplier:
+                <select className="input text-xs py-1" value={supplierFilter} onChange={e => setSupplierFilter(e.target.value)}>
+                  <option value="">All suppliers</option>
+                  {supplierOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label className="text-slate-500 flex items-center gap-1.5">
+                Sort:
+                <select className="input text-xs py-1" value={itemSortBy} onChange={e => setItemSortBy(e.target.value as typeof itemSortBy)}>
+                  <option value="none">Default</option>
+                  <option value="price_asc">Price: Low to High</option>
+                  <option value="price_desc">Price: High to Low</option>
+                  <option value="title_asc">Title A-Z</option>
+                </select>
+              </label>
               <button className="btn-outline" onClick={() => setDraft(prev => {
                 const next = new Map(prev);
                 next.forEach((v, k) => next.set(k, { ...v, selected: true }));
@@ -339,57 +310,54 @@ export default function PurchaseRequestTab() {
             </div>
           )}
 
-          {/* Grouped by program → subject */}
-          {grouped.map(([progName, { subjects }]) => (
-            <div key={progName} className="mb-6">
-              <h3 className="text-sm font-semibold text-psu mb-2 pb-1 border-b border-slate-200">{progName}</h3>
-              {Array.from(subjects.entries()).map(([subjKey, { label, items }]) => (
-                <div key={subjKey} className="mb-3 ml-2">
-                  <div className="text-xs font-medium text-slate-600 mb-1">{label}</div>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-slate-400 text-left">
-                        <th className="py-0.5 pr-2 w-6"></th>
-                        <th className="py-0.5 pr-2">Title</th>
-                        <th className="py-0.5 pr-2">Author</th>
-                        <th className="py-0.5 pr-2">Supplier</th>
-                        <th className="py-0.5 px-2 text-right">Unit Cost</th>
-                        <th className="py-0.5 px-2 w-20 text-right">Qty</th>
-                        <th className="py-0.5 pl-2 text-right">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {items.map(item => (
-                        <tr key={item.id} className={"border-b border-slate-100 " + (item.selected ? "bg-psu-light" : "opacity-50")}>
-                          <td className="py-1 pr-2">
-                            <input type="checkbox" checked={item.selected} onChange={() => toggleItem(item.id)} />
-                          </td>
-                          <td className="py-1 pr-2 font-medium">{item.title}{item.year ? ` (${item.year})` : ""}</td>
-                          <td className="py-1 pr-2 text-slate-600">{item.author}</td>
-                          <td className="py-1 pr-2 text-slate-600">{item.supplier}</td>
-                          <td className="py-1 px-2 text-right tabular-nums">
-                            ₱{item.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
-                            {isPriceStale(item.canvass_date || item.created_at) && (
-                              <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(item.canvass_date || item.created_at)} days ago -- verify with supplier before ordering`}>⚠</span>
-                            )}
-                          </td>
-                          <td className="py-1 px-2">
-                            {item.selected ? (
-                              <input type="number" min="1" className="input w-14 text-right text-xs py-0.5"
-                                value={item.draftQty} onChange={e => setQty(item.id, Number(e.target.value))} />
-                            ) : (
-                              <span className="text-right block tabular-nums text-slate-400">{item.draftQty}</span>
-                            )}
-                          </td>
-                          <td className="py-1 pl-2 text-right font-semibold tabular-nums">
-                            {item.selected ? `₱${(item.unit_cost * item.draftQty).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
+          {/* Grouped by supplier */}
+          {grouped.map(([supplierName, items]) => (
+            <div key={supplierName} className="mb-6">
+              <h3 className="text-sm font-semibold text-psu mb-2 pb-1 border-b border-slate-200">
+                {supplierName} · {items.length} · ₱{items.reduce((s, i) => s + i.unit_cost * i.draftQty, 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+              </h3>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-slate-400 text-left">
+                    <th className="py-0.5 pr-2 w-6"></th>
+                    <th className="py-0.5 pr-2">Title</th>
+                    <th className="py-0.5 pr-2">Author</th>
+                    <th className="py-0.5 pr-2">Course(s)</th>
+                    <th className="py-0.5 px-2 text-right">Unit Cost</th>
+                    <th className="py-0.5 px-2 w-20 text-right">Qty</th>
+                    <th className="py-0.5 pl-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map(item => (
+                    <tr key={item.id} className={"border-b border-slate-100 " + (item.selected ? "bg-psu-light" : "opacity-50")}>
+                      <td className="py-1 pr-2">
+                        <input type="checkbox" checked={item.selected} onChange={() => toggleItem(item.id)} />
+                      </td>
+                      <td className="py-1 pr-2 font-medium">{item.title}{item.year ? ` (${item.year})` : ""}</td>
+                      <td className="py-1 pr-2 text-slate-600">{item.author}</td>
+                      <td className="py-1 pr-2 text-slate-500">{courseTags(item).join("; ") || "—"}</td>
+                      <td className="py-1 px-2 text-right tabular-nums">
+                        ₱{item.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                        {isPriceStale(item.canvass_date || item.created_at) && (
+                          <span className="ml-1 text-amber-600" title={`Quoted ${daysSincePriced(item.canvass_date || item.created_at)} days ago -- verify with supplier before ordering`}>⚠</span>
+                        )}
+                      </td>
+                      <td className="py-1 px-2">
+                        {item.selected ? (
+                          <input type="number" min="1" className="input w-14 text-right text-xs py-0.5"
+                            value={item.draftQty} onChange={e => setQty(item.id, Number(e.target.value))} />
+                        ) : (
+                          <span className="text-right block tabular-nums text-slate-400">{item.draftQty}</span>
+                        )}
+                      </td>
+                      <td className="py-1 pl-2 text-right font-semibold tabular-nums">
+                        {item.selected ? `₱${(item.unit_cost * item.draftQty).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ))}
         </div>
