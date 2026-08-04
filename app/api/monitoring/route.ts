@@ -23,7 +23,7 @@ export type PurchaseRequestRow = {
   step_entered_at: string | null;
   days_in_step: number | null;
   overdue: boolean;
-  status: "in_progress" | "completed";
+  status: "in_progress" | "completed" | "cancelled";
 };
 
 export type WorkflowStep = { id: number; seq: number; office_name: string };
@@ -41,6 +41,16 @@ export type ProgramSummaryRow = {
   item_count: number;
   total_amount: number;
   campuses: string[];
+};
+
+export type PurchaseOrderRow = {
+  id: number;
+  po_no: string;
+  supplier: string;
+  item_count: number;
+  total_amount: number;
+  generated_by: string;
+  created_at: string;
 };
 
 export type CampusBudgetRow = {
@@ -71,7 +81,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "You don't have access to this." }, { status: 403 });
     }
 
-    const [prRes, offersRes, stepsRes, budgetsRes, campusesRes] = await Promise.all([
+    const [prRes, offersRes, stepsRes, budgetsRes, campusesRes, posRes] = await Promise.all([
       db.from("purchase_requests")
         .select("id, pr_no, submitted_by, office, purpose, items, total_amount, campus, campus_id, current_step_seq, step_entered_at, status, created_at")
         .order("created_at", { ascending: false })
@@ -80,12 +90,17 @@ export async function GET(req: Request) {
       db.from("pr_workflow_steps").select("id, seq, office_name").order("seq"),
       db.from("campus_budgets").select("id, campus_id, period, amount, updated_at, updated_by"),
       db.from("campuses").select("id, name"),
+      db.from("purchase_orders")
+        .select("id, po_no, supplier, items, total_amount, generated_by, created_at")
+        .order("created_at", { ascending: false })
+        .limit(500),
     ]);
     if (prRes.error) throw prRes.error;
     if (offersRes.error) throw offersRes.error;
     if (stepsRes.error) throw stepsRes.error;
     if (budgetsRes.error) throw budgetsRes.error;
     if (campusesRes.error) throw campusesRes.error;
+    if (posRes.error) throw posRes.error;
 
     const steps: WorkflowStep[] = stepsRes.data ?? [];
     const officeBySeq = new Map(steps.map((s) => [s.seq, s.office_name]));
@@ -103,8 +118,8 @@ export async function GET(req: Request) {
         current_step_seq: r.current_step_seq,
         current_office: r.current_step_seq != null ? officeBySeq.get(r.current_step_seq) ?? null : null,
         step_entered_at: r.step_entered_at,
-        days_in_step: r.status === "completed" ? null : daysInStep,
-        overdue: r.status !== "completed" && daysInStep != null && daysInStep > OVERDUE_DAYS,
+        days_in_step: r.status === "in_progress" ? daysInStep : null,
+        overdue: r.status === "in_progress" && daysInStep != null && daysInStep > OVERDUE_DAYS,
         status: r.status,
       };
     });
@@ -116,6 +131,7 @@ export async function GET(req: Request) {
     const bySupplier = new Map<string, { item_count: number; total_amount: number; programs: Set<string>; campuses: Set<string> }>();
     const byProgram = new Map<string, { item_count: number; total_amount: number; campuses: Set<string> }>();
     for (const r of prRows) {
+      if (r.status === "cancelled") continue; // never happened -- excluded from consolidation and spend
       const items = (Array.isArray(r.items) ? r.items : []) as ItemLine[];
       const campusLabel = r.campus || "Unspecified";
       for (const item of items) {
@@ -145,7 +161,7 @@ export async function GET(req: Request) {
     // from purchase_requests, never stored, so it's never stale.
     const spentByCampusPeriod = new Map<string, number>();
     for (const r of prRows) {
-      if (r.campus_id == null) continue;
+      if (r.campus_id == null || r.status === "cancelled") continue;
       const period = String(new Date(r.created_at).getFullYear());
       const key = `${r.campus_id}:${period}`;
       spentByCampusPeriod.set(key, (spentByCampusPeriod.get(key) ?? 0) + Number(r.total_amount ?? 0));
@@ -182,9 +198,15 @@ export async function GET(req: Request) {
       program: o.subject_id != null ? programBySubject.get(o.subject_id) ?? "" : "",
     }));
 
+    const purchaseOrders: PurchaseOrderRow[] = (posRes.data ?? []).map((r) => ({
+      id: r.id, po_no: r.po_no, supplier: r.supplier,
+      item_count: Array.isArray(r.items) ? r.items.length : 0,
+      total_amount: Number(r.total_amount ?? 0), generated_by: r.generated_by, created_at: r.created_at,
+    }));
+
     return NextResponse.json({
       purchaseRequests, proposals, workflowSteps: steps,
-      supplierSummary, programSummary, campusBudgets,
+      supplierSummary, programSummary, campusBudgets, purchaseOrders,
       campuses: campusesRes.data ?? [],
     });
   } catch (err) {

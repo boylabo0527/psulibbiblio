@@ -12,8 +12,9 @@
 -- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
 -- 21_faculty_role.sql + 22_purchase_request_records.sql +
 -- 23_purchase_request_campus.sql + 24_pr_workflow.sql +
--- 25_campus_budgets.sql in order. If you've already run some of those
--- individually, running this on top is still safe.
+-- 25_campus_budgets.sql + 26_pr_cancel_and_po.sql in order. If you've
+-- already run some of those individually, running this on top is still
+-- safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -487,3 +488,39 @@ create table if not exists campus_budgets (
 create unique index if not exists campus_budgets_unique on campus_budgets(campus_id, period);
 
 alter table campus_budgets enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 26: Purchase Request cancellation + Purchase Orders (per-supplier
+-- consolidation document generation).
+-- ---------------------------------------------------------------------------
+alter table purchase_requests drop constraint if exists purchase_requests_status_check;
+alter table purchase_requests add constraint purchase_requests_status_check
+  check (status in ('in_progress', 'completed', 'cancelled'));
+alter table purchase_requests add column if not exists cancelled_at timestamptz;
+
+create table if not exists purchase_orders (
+  id bigserial primary key,
+  po_no text not null default '',
+  trans_no text default '',
+  philgeps_ref_no text default '',
+  supplier text not null default '',
+  address text default '',
+  tin text default '',
+  mode_of_procurement text default '',
+  place_of_delivery text default '',
+  delivery_term text default '',
+  date_of_delivery text default '',
+  payment_term text default '',
+  fund_cluster text default '',
+  ors_burs_no text default '',
+  date_of_ors_burs text default '',
+  po_date text default '',
+  items jsonb not null default '[]'::jsonb,
+  total_amount numeric not null default 0,
+  generated_by text not null default '',
+  created_at timestamptz default now()
+);
+create index if not exists purchase_orders_created_at_idx on purchase_orders(created_at desc);
+create index if not exists purchase_orders_supplier_idx on purchase_orders(supplier);
+
+alter table purchase_orders enable row level security;

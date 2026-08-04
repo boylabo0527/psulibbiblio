@@ -21,6 +21,7 @@ export default function PurchaseRequestTab() {
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [excludedCount, setExcludedCount] = useState(0);
   const campuses = useCampuses();
   const { isProgramAtCampus } = useProgramCampusMap();
 
@@ -54,16 +55,26 @@ export default function PurchaseRequestTab() {
     if (selectedPrograms.size === 0) { setErr("Select at least one program."); return; }
     setLoading(true); setErr(null); setLoaded(false);
     try {
-      // Fetch all matched canvassing entries (subject_id assigned)
-      const res = await apiFetch("/api/canvassing").then(r => r.json());
+      // Fetch all matched canvassing entries (subject_id assigned), and
+      // which of them are already claimed by another active purchase
+      // request -- excluded below so the same title can't be requested
+      // twice while its first request is still pending/in-progress.
+      const [res, claimedRes] = await Promise.all([
+        apiFetch("/api/canvassing").then(r => r.json()),
+        apiFetch("/api/purchase-request/requested-ids").then(r => r.json()).catch(() => ({ claimed: [] })),
+      ]);
       if (res.error) throw new Error(res.error);
       const all: CanvassingRow[] = res.rows ?? [];
-      // Filter: must have a subject assigned and belong to selected programs
-      const matched = all.filter(r =>
+      const claimedIds = new Set<number>((claimedRes.claimed ?? []).map((c: { canvassing_id: number }) => c.canvassing_id));
+      // Filter: must have a subject assigned, belong to selected programs,
+      // and not already be on another active purchase request.
+      const eligible = all.filter(r =>
         r.subject_id !== null &&
         r.program_id !== null &&
         selectedPrograms.has(r.program_id)
       );
+      const matched = eligible.filter(r => !claimedIds.has(r.id));
+      setExcludedCount(eligible.length - matched.length);
       setAllMatched(matched);
       // Initialize draft with all matched items selected
       const initDraft = new Map<number, DraftItem>();
@@ -139,6 +150,7 @@ export default function PurchaseRequestTab() {
           unit_cost: i.unit_cost,
           supplier: i.supplier || "",
           program: i.program || "",
+          canvassing_id: i.id,
         })),
       };
       const res = await apiFetch("/api/purchase-request", {
@@ -235,6 +247,11 @@ export default function PurchaseRequestTab() {
         {loaded && allMatched.length === 0 && (
           <p className="text-amber-700 text-sm">
             No matched titles found for the selected program(s). Go to the Market Canvassing tab to assign canvassed titles to subject gaps first.
+          </p>
+        )}
+        {loaded && excludedCount > 0 && (
+          <p className="text-slate-500 text-xs mt-1">
+            {excludedCount} matched title{excludedCount === 1 ? "" : "s"} excluded -- already on another active purchase request.
           </p>
         )}
       </div>

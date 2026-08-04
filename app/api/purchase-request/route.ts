@@ -1,19 +1,19 @@
 import { generatePurchaseRequestXlsx } from "@/lib/exports-pr";
-import type { PRData, PRItem } from "@/lib/exports-pr";
+import type { PRData } from "@/lib/exports-pr";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
+import { getClaimedCanvassingIds, type PersistedPRItem } from "@/lib/purchase-request-items";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // What PurchaseRequestTab actually sends: PRData's items, but with
-// supplier/program carried along per line too -- generatePurchaseRequestXlsx
-// only reads the PRItem fields (extra properties are just ignored there),
-// while the extra fields are what let Monitoring consolidate by supplier
-// and by program later.
-type IncomingItem = PRItem & { supplier?: string; program?: string };
-type IncomingPRData = Omit<PRData, "items"> & { items: IncomingItem[]; campus?: string; campus_id?: number | null };
+// supplier/program/canvassing_id carried along per line too --
+// generatePurchaseRequestXlsx only reads the PRItem fields (extra
+// properties are just ignored there); the extras are what let Monitoring
+// consolidate by supplier/program and what the duplicate check below keys on.
+type IncomingPRData = Omit<PRData, "items"> & { items: PersistedPRItem[]; campus?: string; campus_id?: number | null };
 
 export async function POST(req: Request) {
   try {
@@ -26,6 +26,30 @@ export async function POST(req: Request) {
       });
     }
     const data: IncomingPRData = await req.json();
+
+    // Duplicate prevention -- checked before anything is generated or
+    // saved, so a rejected request never produces a half-done download.
+    const prNo = (data.prNo ?? "").trim();
+    if (prNo) {
+      const { data: dupe } = await db.from("purchase_requests").select("id, status").eq("pr_no", prNo).neq("status", "cancelled").maybeSingle();
+      if (dupe) {
+        return new Response(JSON.stringify({ error: `PR No. "${prNo}" already exists (status: ${dupe.status}). Use a different PR No., or cancel/modify the existing one from Monitoring.` }), {
+          status: 409, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    const requestedCanvassingIds = (data.items ?? []).map((i) => i.canvassing_id).filter((id): id is number => id != null);
+    if (requestedCanvassingIds.length) {
+      const claimed = await getClaimedCanvassingIds(db);
+      const conflicts = (data.items ?? []).filter((i) => i.canvassing_id != null && claimed.has(i.canvassing_id));
+      if (conflicts.length) {
+        const names = conflicts.map((i) => `"${i.description}" (already in ${claimed.get(i.canvassing_id!)!.pr_no || "an existing PR"})`).join(", ");
+        return new Response(JSON.stringify({ error: `${conflicts.length} title(s) are already on another active purchase request: ${names}. Reload the item list, or cancel that PR first.` }), {
+          status: 409, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const buf = generatePurchaseRequestXlsx(data);
     const filename = `PR_${(data.prNo || "draft").replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;
 

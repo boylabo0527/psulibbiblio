@@ -17,16 +17,52 @@ function money(n: number): string {
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
-// Simple keyword relevance: how many meaningful words in the canvassing title
-// appear in the subject's course title / code.
+// Prioritizes the course title over the course code -- the code (e.g. "PSM
+// 1") is a short administrative label that never appears in a real book
+// title, so weighting it equally with the title (the old behavior) let
+// coincidental single-word overlaps outrank genuinely relevant titles,
+// producing far-fetched suggestions. This instead:
+//  1. Tiers an exact phrase match (either title contains the other) far
+//     above everything else -- the strongest, least ambiguous signal.
+//  2. Otherwise scores by what FRACTION of the course title's own
+//     significant words are present in the canvassed title (not a raw
+//     count), so a short precise course title matching well beats a long
+//     course title matching only a couple of incidental words.
+//  3. Excludes generic course-naming words ("introduction", "fundamentals",
+//     etc.) that show up in many unrelated course titles and would
+//     otherwise inflate matches across the board.
+//  4. The course code only tips a near-tie, as a minor bonus, never the
+//     primary signal.
+const NOISE_WORDS = new Set([
+  "the","and","of","in","to","a","an","for","on","with","by","at","as","is","are","be","or",
+  "it","its","from","that","this","into","has","have","not","but","was","were","can","all",
+  "more","their","they","been","also","over","some","such","than","then","these","those",
+  "when","will","your","our","per","introduction","fundamentals","principles","concepts",
+  "essentials","basic","basics","advanced","study","studies","practice","practices","general",
+  "theory","theories","overview","survey","topics","course","special","selected",
+]);
+
+function significantWords(s: string): string[] {
+  return (s.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter((w) => !NOISE_WORDS.has(w));
+}
+
 function relevanceScore(canvTitle: string, subject: ProcurementRow): number {
-  const STOP = new Set(["the","and","of","in","to","a","an","for","on","with","by","at","as","is","are","be","or","it","its","from","that","this","into","has","have","not","but","was","were","can","all","more","their","they","been","also","over","some","such","than","then","these","those","when","will","your","our","per"]);
-  const words = (s: string) => s.toLowerCase().split(/\W+/).filter(w => w.length > 2 && !STOP.has(w));
-  const titleW = new Set(words(canvTitle));
-  const subjectW = new Set(words(subject.course_title + " " + subject.course_code));
-  let hits = 0;
-  titleW.forEach(w => { if (subjectW.has(w)) hits++; });
-  return hits;
+  const canvLower = canvTitle.toLowerCase().trim();
+  const courseLower = subject.course_title.toLowerCase().trim();
+  if (!canvLower || !courseLower) return 0;
+
+  if (canvLower.includes(courseLower) || courseLower.includes(canvLower)) {
+    return 1000; // exact-phrase tier -- always wins over any partial-word match
+  }
+
+  const courseWords = significantWords(subject.course_title);
+  if (courseWords.length === 0) return 0;
+  const canvWords = new Set(significantWords(canvTitle));
+  const hits = courseWords.filter((w) => canvWords.has(w)).length;
+  const ratio = hits / courseWords.length;
+
+  const codeBonus = subject.course_code && canvLower.includes(subject.course_code.toLowerCase()) ? 0.05 : 0;
+  return ratio + codeBonus;
 }
 
 async function downloadTemplate(fmt: "xlsx" | "csv") {
@@ -156,14 +192,18 @@ export default function CanvassingTab() {
       if (r.subject_id) {
         init.set(r.id, String(r.subject_id)); // already assigned
       } else {
-        // Find best matching subject
-        let best = gaps[0];
-        let bestScore = -1;
+        // Find best matching subject -- only pre-select one if it actually
+        // shares real relevance (score > 0). Previously this always
+        // defaulted to gaps[0] even with zero overlap, which looked like a
+        // confident suggestion but was really just "whatever gap happened
+        // to be first" -- worse than leaving it for the librarian to pick.
+        let best: ProcurementRow | null = null;
+        let bestScore = 0;
         for (const g of gaps) {
           const s = relevanceScore(r.title, g);
           if (s > bestScore) { bestScore = s; best = g; }
         }
-        init.set(r.id, String(best.subject_id));
+        init.set(r.id, best ? String(best.subject_id) : "");
       }
     }
     setAssignments(init);

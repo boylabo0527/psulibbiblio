@@ -4,12 +4,18 @@ import { apiFetch } from "@/lib/api-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { groupRows } from "@/lib/group-rows";
 import type {
-  PurchaseRequestRow, WorkflowStep, SupplierSummaryRow, ProgramSummaryRow, CampusBudgetRow,
+  PurchaseRequestRow, WorkflowStep, SupplierSummaryRow, ProgramSummaryRow, CampusBudgetRow, PurchaseOrderRow,
 } from "@/app/api/monitoring/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
+import type { PersistedPRItem } from "@/lib/purchase-request-items";
 
 type ProposalRow = SupplierOfferRow & { subject_label?: string; program?: string };
 type CampusOpt = { id: number; name: string };
+
+type FullPurchaseRequest = {
+  id: number; pr_no: string; office: string; purpose: string; requested_by: string; approved_by: string;
+  items: PersistedPRItem[]; total_amount: number; status: string;
+};
 
 const STATUS_COLOR: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -54,10 +60,13 @@ export default function MonitoringTab() {
   const [supplierSummary, setSupplierSummary] = useState<SupplierSummaryRow[]>([]);
   const [programSummary, setProgramSummary] = useState<ProgramSummaryRow[]>([]);
   const [campusBudgets, setCampusBudgets] = useState<CampusBudgetRow[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRow[]>([]);
   const [campuses, setCampuses] = useState<CampusOpt[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [advancingId, setAdvancingId] = useState<number | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<number | null>(null);
+  const [editingPrId, setEditingPrId] = useState<number | null>(null);
+  const [poForSupplier, setPoForSupplier] = useState<string | null>(null);
 
   const [prGroupBy, setPrGroupBy] = useState<"none" | "campus" | "office" | "year">("none");
   const [propGroupBy, setPropGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
@@ -75,6 +84,7 @@ export default function MonitoringTab() {
       setSupplierSummary(j.supplierSummary ?? []);
       setProgramSummary(j.programSummary ?? []);
       setCampusBudgets(j.campusBudgets ?? []);
+      setPurchaseOrders(j.purchaseOrders ?? []);
       setCampuses(j.campuses ?? []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -99,18 +109,36 @@ export default function MonitoringTab() {
     return "";
   }), [proposals, propGroupBy]);
 
-  async function advance(prId: number) {
-    setAdvancingId(prId);
+  async function setPrStatus(prId: number, body: { current_step_seq: number } | { status: "completed" }) {
+    setStatusBusyId(prId);
     setErr(null);
     try {
-      const res = await apiFetch(`/api/purchase-request/${prId}/advance`, { method: "POST" });
+      const res = await apiFetch(`/api/purchase-request/${prId}/status`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setAdvancingId(null);
+      setStatusBusyId(null);
+    }
+  }
+
+  async function cancelPr(pr: PurchaseRequestRow) {
+    if (!confirm(`Cancel purchase request ${pr.pr_no || "(draft)"}? Its titles become available to request again. This can't be undone.`)) return;
+    setStatusBusyId(pr.id);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/purchase-request/${pr.id}/cancel`, { method: "POST" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStatusBusyId(null);
     }
   }
 
@@ -142,6 +170,7 @@ export default function MonitoringTab() {
                       <th className="py-1 pr-2 text-right">Items</th>
                       <th className="py-1 pr-2 text-right">Total</th>
                       <th className="py-1 pl-2">Programs / Campuses</th>
+                      {canEditMonitoring && <th className="py-1 pl-2"></th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -151,10 +180,17 @@ export default function MonitoringTab() {
                         <td className="py-1.5 pr-2 text-right">{s.item_count}</td>
                         <td className="py-1.5 pr-2 text-right">{money(s.total_amount)}</td>
                         <td className="py-1.5 pl-2 text-slate-500">{s.programs.length} program(s) · {s.campuses.length} campus(es)</td>
+                        {canEditMonitoring && (
+                          <td className="py-1.5 pl-2 text-right">
+                            {s.supplier !== "Unspecified" && (
+                              <button className="text-psu text-[11px] underline" onClick={() => setPoForSupplier(s.supplier)}>Generate PO</button>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     ))}
                     {supplierSummary.length === 0 && (
-                      <tr><td colSpan={4} className="py-2 text-slate-400">No data yet.</td></tr>
+                      <tr><td colSpan={canEditMonitoring ? 5 : 4} className="py-2 text-slate-400">No data yet.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -185,6 +221,50 @@ export default function MonitoringTab() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+
+          {poForSupplier != null && (
+            <GeneratePoPanel
+              supplier={poForSupplier}
+              onClose={() => setPoForSupplier(null)}
+              onGenerated={() => { setPoForSupplier(null); load(); }}
+            />
+          )}
+
+          <div className="card">
+            <h2 className="text-psu font-semibold mb-1">Purchase Orders Generated</h2>
+            <p className="text-xs text-slate-500 mb-3">Every Purchase Order generated from supplier consolidation, most recent first.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500 border-b border-slate-200">
+                    <th className="py-1 pr-2">PO No.</th>
+                    <th className="py-1 pr-2">Supplier</th>
+                    <th className="py-1 pr-2 text-right">Items</th>
+                    <th className="py-1 pr-2 text-right">Total</th>
+                    <th className="py-1 pr-2">Generated by</th>
+                    <th className="py-1 pl-2">When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseOrders.map((po) => (
+                    <tr key={po.id} className="border-b border-slate-100">
+                      <td className="py-1.5 pr-2 whitespace-nowrap">{po.po_no || "(draft)"}</td>
+                      <td className="py-1.5 pr-2">{po.supplier}</td>
+                      <td className="py-1.5 pr-2 text-right">{po.item_count}</td>
+                      <td className="py-1.5 pr-2 text-right">{money(po.total_amount)}</td>
+                      <td className="py-1.5 pr-2">{po.generated_by}</td>
+                      <td className="py-1.5 pl-2 text-slate-500 whitespace-nowrap" title={new Date(po.created_at).toLocaleString()}>
+                        {formatWhen(po.created_at)}
+                      </td>
+                    </tr>
+                  ))}
+                  {purchaseOrders.length === 0 && (
+                    <tr><td colSpan={6} className="py-3 text-slate-400">No purchase orders generated yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -236,7 +316,24 @@ export default function MonitoringTab() {
                         <td className="py-1.5 pr-2 text-right">{pr.item_count}</td>
                         <td className="py-1.5 pr-2 text-right">{money(pr.total_amount)}</td>
                         <td className="py-1.5 pr-2">
-                          {pr.status === "completed" ? (
+                          {pr.status === "cancelled" ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-200 text-slate-600">Cancelled</span>
+                          ) : canEditMonitoring ? (
+                            <select
+                              className={"input text-[11px] py-0.5 " + (pr.overdue ? "border-red-400 text-red-700" : "")}
+                              disabled={statusBusyId === pr.id}
+                              value={pr.status === "completed" ? "completed" : (pr.current_step_seq ?? "")}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === "completed") setPrStatus(pr.id, { status: "completed" });
+                                else if (v) setPrStatus(pr.id, { current_step_seq: Number(v) });
+                              }}
+                            >
+                              <option value="" disabled>Not started</option>
+                              {workflowSteps.map((s) => <option key={s.id} value={s.seq}>{s.office_name}</option>)}
+                              <option value="completed">Completed</option>
+                            </select>
+                          ) : pr.status === "completed" ? (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700">Completed</span>
                           ) : pr.current_office ? (
                             <span className={"px-1.5 py-0.5 rounded text-[10px] font-medium " + (pr.overdue ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-700")}>
@@ -245,19 +342,25 @@ export default function MonitoringTab() {
                           ) : (
                             <span className="text-slate-400 text-[10px]">Not started</span>
                           )}
+                          {canEditMonitoring && pr.status === "in_progress" && pr.overdue && (
+                            <span className="ml-1 text-[10px] text-red-600">{pr.days_in_step}d</span>
+                          )}
                         </td>
                         <td className="py-1.5 pl-2 text-slate-500 whitespace-nowrap" title={new Date(pr.created_at).toLocaleString()}>
                           {formatWhen(pr.created_at)}
                         </td>
                         {canEditMonitoring && (
-                          <td className="py-1.5 pl-2 text-right">
-                            {pr.status !== "completed" && (
+                          <td className="py-1.5 pl-2 text-right whitespace-nowrap">
+                            {pr.status === "in_progress" && (
+                              <button className="text-psu text-[11px] underline mr-2" onClick={() => setEditingPrId(pr.id)}>Edit</button>
+                            )}
+                            {pr.status !== "cancelled" && (
                               <button
-                                className="text-psu text-[11px] underline disabled:opacity-40"
-                                disabled={advancingId === pr.id}
-                                onClick={() => advance(pr.id)}
+                                className="text-red-600 text-[11px] underline disabled:opacity-40"
+                                disabled={statusBusyId === pr.id}
+                                onClick={() => cancelPr(pr)}
                               >
-                                {advancingId === pr.id ? "…" : "Advance"}
+                                Cancel
                               </button>
                             )}
                           </td>
@@ -272,6 +375,14 @@ export default function MonitoringTab() {
               </table>
             </div>
           </div>
+
+          {editingPrId != null && (
+            <PurchaseRequestEditPanel
+              prId={editingPrId}
+              onClose={() => setEditingPrId(null)}
+              onSaved={() => { setEditingPrId(null); load(); }}
+            />
+          )}
 
           <div className="card">
             <div className="flex items-center justify-between mb-1">
@@ -536,6 +647,338 @@ function BudgetByCampus({
             {busy ? "Saving…" : "Set budget"}
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** Edit a Purchase Request's header fields and each line item's
+ *  quantity/unit cost -- not which titles are on it (see
+ *  PATCH /api/purchase-request/:id). Loads the full row (including items,
+ *  which the Monitoring list itself doesn't carry) on open. */
+function PurchaseRequestEditPanel({
+  prId, onClose, onSaved,
+}: {
+  prId: number; onClose: () => void; onSaved: () => void;
+}) {
+  const [pr, setPr] = useState<FullPurchaseRequest | null>(null);
+  const [items, setItems] = useState<PersistedPRItem[]>([]);
+  const [office, setOffice] = useState("");
+  const [purpose, setPurpose] = useState("");
+  const [requestedBy, setRequestedBy] = useState("");
+  const [approvedBy, setApprovedBy] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setErr(null);
+    apiFetch(`/api/purchase-request/${prId}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) throw new Error(j.error);
+        const row: FullPurchaseRequest = j.pr;
+        setPr(row);
+        setItems(row.items ?? []);
+        setOffice(row.office ?? "");
+        setPurpose(row.purpose ?? "");
+        setRequestedBy(row.requested_by ?? "");
+        setApprovedBy(row.approved_by ?? "");
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, [prId]);
+
+  function setItemField(i: number, field: "quantity" | "unit_cost", value: number) {
+    setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, [field]: Math.max(field === "quantity" ? 1 : 0, value) } : it));
+  }
+
+  const total = items.reduce((s, i) => s + (i.quantity || 0) * (i.unit_cost || 0), 0);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/purchase-request/${prId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          office, purpose, requested_by: requestedBy, approved_by: approvedBy,
+          items: items.map((i) => ({ quantity: i.quantity, unit_cost: i.unit_cost })),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card border-psu">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-psu font-semibold">Edit {pr?.pr_no || "Purchase Request"}</h2>
+        <button className="text-slate-400 text-xs underline" onClick={onClose}>Close</button>
+      </div>
+      {loading && <p className="text-slate-500 text-sm">Loading…</p>}
+      {err && <p className="text-red-700 text-sm mb-2">{err}</p>}
+      {!loading && pr && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+            <label className="label flex-col items-start gap-1">
+              <span className="text-xs">Office / Section</span>
+              <input className="input w-full text-sm" value={office} onChange={(e) => setOffice(e.target.value)} />
+            </label>
+            <label className="label flex-col items-start gap-1">
+              <span className="text-xs">Requested By</span>
+              <input className="input w-full text-sm" value={requestedBy} onChange={(e) => setRequestedBy(e.target.value)} />
+            </label>
+            <label className="label flex-col items-start gap-1">
+              <span className="text-xs">Approved By</span>
+              <input className="input w-full text-sm" value={approvedBy} onChange={(e) => setApprovedBy(e.target.value)} />
+            </label>
+            <label className="label flex-col items-start gap-1 sm:col-span-2">
+              <span className="text-xs">Purpose</span>
+              <textarea className="input w-full text-sm h-16 resize-none" value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+            </label>
+          </div>
+
+          <div className="overflow-x-auto mb-3">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-1 pr-2">Description</th>
+                  <th className="py-1 pr-2 text-right w-20">Qty</th>
+                  <th className="py-1 pr-2 text-right w-28">Unit Cost</th>
+                  <th className="py-1 pl-2 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, i) => (
+                  <tr key={i} className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2">{item.description}</td>
+                    <td className="py-1.5 pr-2 text-right">
+                      <input type="number" min="1" className="input w-16 text-right text-xs py-0.5"
+                        value={item.quantity} onChange={(e) => setItemField(i, "quantity", Number(e.target.value))} />
+                    </td>
+                    <td className="py-1.5 pr-2 text-right">
+                      <input type="number" min="0" step="0.01" className="input w-24 text-right text-xs py-0.5"
+                        value={item.unit_cost} onChange={(e) => setItemField(i, "unit_cost", Number(e.target.value))} />
+                    </td>
+                    <td className="py-1.5 pl-2 text-right font-semibold tabular-nums">{money((item.quantity || 0) * (item.unit_cost || 0))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-slate-500">Grand Total: </span>
+              <span className="font-semibold text-psu">{money(total)}</span>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn-outline text-xs" onClick={onClose} disabled={saving}>Cancel</button>
+              <button className="btn text-xs" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+type PoItem = { stock_prop_no: string; unit: string; description: string; quantity: number; unit_cost: number; source_pr_nos?: string[] };
+
+function todayLong(): string {
+  return new Date().toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
+}
+
+/** Consolidates every non-cancelled Purchase Request's line items for one
+ *  supplier into a single editable Purchase Order -- see
+ *  /api/purchase-order/consolidated for the merge logic (same title across
+ *  multiple PRs becomes one line, quantities summed) and lib/exports-po.ts
+ *  for the generated document itself. */
+function GeneratePoPanel({
+  supplier, onClose, onGenerated,
+}: {
+  supplier: string; onClose: () => void; onGenerated: () => void;
+}) {
+  const [items, setItems] = useState<PoItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [transNo, setTransNo] = useState("");
+  const [philgepsRefNo, setPhilgepsRefNo] = useState("");
+  const [address, setAddress] = useState("");
+  const [tin, setTin] = useState("");
+  const [poNo, setPoNo] = useState("");
+  const [date, setDate] = useState(todayLong());
+  const [modeOfProcurement, setModeOfProcurement] = useState("Direct Contracting");
+  const [placeOfDelivery, setPlaceOfDelivery] = useState("PSU Supply Stockroom (Library Services)");
+  const [deliveryTerm, setDeliveryTerm] = useState("30 Calendar Days (FOB Destination)");
+  const [dateOfDelivery, setDateOfDelivery] = useState("30 days from receipt of Purchase Order");
+  const [paymentTerm, setPaymentTerm] = useState("30 Days");
+  const [fundCluster, setFundCluster] = useState("");
+  const [orsBursNo, setOrsBursNo] = useState("");
+  const [dateOfOrsBurs, setDateOfOrsBurs] = useState("");
+  const [approvedByName, setApprovedByName] = useState("");
+  const [approvedByTitle, setApprovedByTitle] = useState("University President");
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    setErr(null);
+    apiFetch(`/api/purchase-order/consolidated?supplier=${encodeURIComponent(supplier)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) throw new Error(j.error);
+        setItems(j.items ?? []);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, [supplier]);
+
+  function setItemField(i: number, field: "quantity" | "unit_cost", value: number) {
+    setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, [field]: Math.max(field === "quantity" ? 1 : 0, value) } : it));
+  }
+  function removeItem(i: number) {
+    setItems((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  const total = items.reduce((s, i) => s + i.quantity * i.unit_cost, 0);
+
+  async function generate() {
+    if (items.length === 0) return;
+    setGenerating(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/purchase-order", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transNo, philgepsRefNo, supplier, address, tin, poNo, date, modeOfProcurement,
+          placeOfDelivery, deliveryTerm, dateOfDelivery, paymentTerm, fundCluster, orsBursNo, dateOfOrsBurs,
+          approvedByName, approvedByTitle, notes,
+          items: items.map((i) => ({ stock_prop_no: i.stock_prop_no, unit: i.unit, description: i.description, quantity: i.quantity, unit_cost: i.unit_cost })),
+        }),
+      });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `HTTP ${res.status}`); }
+      const blob = await res.blob();
+      const fname = `PO_${(poNo || "draft").replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(a.href);
+      onGenerated();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <div className="card border-psu">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-psu font-semibold">Generate Purchase Order — {supplier}</h2>
+        <button className="text-slate-400 text-xs underline" onClick={onClose}>Close</button>
+      </div>
+      {err && <p className="text-red-700 text-sm mb-2">{err}</p>}
+      {loading && <p className="text-slate-500 text-sm">Loading consolidated items…</p>}
+      {!loading && (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Trans No.</span>
+              <input className="input w-full text-sm" value={transNo} onChange={(e) => setTransNo(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">PhilGEPS Ref No.</span>
+              <input className="input w-full text-sm" value={philgepsRefNo} onChange={(e) => setPhilgepsRefNo(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">P.O. No.</span>
+              <input className="input w-full text-sm" placeholder="e.g. 2026-DC-001" value={poNo} onChange={(e) => setPoNo(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1 sm:col-span-2"><span className="text-xs">Supplier Address</span>
+              <input className="input w-full text-sm" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">TIN</span>
+              <input className="input w-full text-sm" value={tin} onChange={(e) => setTin(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Date</span>
+              <input className="input w-full text-sm" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Mode of Procurement</span>
+              <input className="input w-full text-sm" value={modeOfProcurement} onChange={(e) => setModeOfProcurement(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Place of Delivery</span>
+              <input className="input w-full text-sm" value={placeOfDelivery} onChange={(e) => setPlaceOfDelivery(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Delivery Term</span>
+              <input className="input w-full text-sm" value={deliveryTerm} onChange={(e) => setDeliveryTerm(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Date of Delivery</span>
+              <input className="input w-full text-sm" value={dateOfDelivery} onChange={(e) => setDateOfDelivery(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Payment Term</span>
+              <input className="input w-full text-sm" value={paymentTerm} onChange={(e) => setPaymentTerm(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Fund Cluster</span>
+              <input className="input w-full text-sm" value={fundCluster} onChange={(e) => setFundCluster(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">ORS/BURS No.</span>
+              <input className="input w-full text-sm" value={orsBursNo} onChange={(e) => setOrsBursNo(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Date of ORS/BURS</span>
+              <input className="input w-full text-sm" value={dateOfOrsBurs} onChange={(e) => setDateOfOrsBurs(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Approved By (Name)</span>
+              <input className="input w-full text-sm" value={approvedByName} onChange={(e) => setApprovedByName(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1"><span className="text-xs">Approved By (Title)</span>
+              <input className="input w-full text-sm" value={approvedByTitle} onChange={(e) => setApprovedByTitle(e.target.value)} /></label>
+            <label className="label flex-col items-start gap-1 sm:col-span-3"><span className="text-xs">Notes (shown under the item table)</span>
+              <input className="input w-full text-sm" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+          </div>
+
+          <div className="overflow-x-auto mb-3">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-1 pr-2">Description</th>
+                  <th className="py-1 pr-2">From PR(s)</th>
+                  <th className="py-1 pr-2 text-right w-20">Qty</th>
+                  <th className="py-1 pr-2 text-right w-28">Unit Cost</th>
+                  <th className="py-1 pr-2 text-right">Total</th>
+                  <th className="py-1 pl-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, i) => (
+                  <tr key={i} className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2">{item.description}</td>
+                    <td className="py-1.5 pr-2 text-slate-500">{(item.source_pr_nos ?? []).join(", ")}</td>
+                    <td className="py-1.5 pr-2 text-right">
+                      <input type="number" min="1" className="input w-16 text-right text-xs py-0.5"
+                        value={item.quantity} onChange={(e) => setItemField(i, "quantity", Number(e.target.value))} />
+                    </td>
+                    <td className="py-1.5 pr-2 text-right">
+                      <input type="number" min="0" step="0.01" className="input w-24 text-right text-xs py-0.5"
+                        value={item.unit_cost} onChange={(e) => setItemField(i, "unit_cost", Number(e.target.value))} />
+                    </td>
+                    <td className="py-1.5 pr-2 text-right font-semibold tabular-nums">{money(item.quantity * item.unit_cost)}</td>
+                    <td className="py-1.5 pl-2 text-right">
+                      <button className="text-red-500 text-[11px] underline" onClick={() => removeItem(i)}>Remove</button>
+                    </td>
+                  </tr>
+                ))}
+                {items.length === 0 && (
+                  <tr><td colSpan={6} className="py-3 text-slate-400">No active line items found for this supplier.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-slate-500">Grand Total: </span>
+              <span className="font-semibold text-psu">{money(total)}</span>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn-outline text-xs" onClick={onClose} disabled={generating}>Cancel</button>
+              <button className="btn text-xs" disabled={generating || items.length === 0} onClick={generate}>
+                {generating ? "Generating…" : "Generate PO XLSX"}
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
