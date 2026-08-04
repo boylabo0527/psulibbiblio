@@ -12,9 +12,9 @@
 -- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
 -- 21_faculty_role.sql + 22_purchase_request_records.sql +
 -- 23_purchase_request_campus.sql + 24_pr_workflow.sql +
--- 25_campus_budgets.sql + 26_pr_cancel_and_po.sql in order. If you've
--- already run some of those individually, running this on top is still
--- safe.
+-- 25_campus_budgets.sql + 26_pr_cancel_and_po.sql +
+-- 27_purchase_order_lifecycle.sql in order. If you've already run some of
+-- those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -524,3 +524,14 @@ create index if not exists purchase_orders_created_at_idx on purchase_orders(cre
 create index if not exists purchase_orders_supplier_idx on purchase_orders(supplier);
 
 alter table purchase_orders enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 27: Purchase Orders gain a status/cancel lifecycle, same as Purchase
+-- Requests -- lets a PO be edited or cancelled, and cancelling frees its
+-- items back up for a future PO.
+-- ---------------------------------------------------------------------------
+alter table purchase_orders add column if not exists status text not null default 'active';
+alter table purchase_orders drop constraint if exists purchase_orders_status_check;
+alter table purchase_orders add constraint purchase_orders_status_check
+  check (status in ('active', 'cancelled'));
+alter table purchase_orders add column if not exists cancelled_at timestamptz;

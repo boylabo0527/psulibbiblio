@@ -40,6 +40,8 @@ const ACTION_LABEL: Record<string, string> = {
   pr_advance: "Purchase request status updated",
   campus_budget_set: "Campus budget set",
   purchase_order_generate: "Purchase order generated",
+  purchase_order_edit: "Purchase order edited",
+  purchase_order_cancel: "Purchase order cancelled",
 };
 
 function actionColor(action: string): string {

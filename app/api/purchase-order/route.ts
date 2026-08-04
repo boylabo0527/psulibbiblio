@@ -3,9 +3,12 @@ import type { POData } from "@/lib/exports-po";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
+import { getClaimedCanvassingIdsForPO, type PersistedPOItem } from "@/lib/purchase-order-items";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type IncomingPOData = Omit<POData, "items"> & { items: PersistedPOItem[] };
 
 /** POST /api/purchase-order -- generates a Purchase Order xlsx (see
  *  lib/exports-po.ts) from the supplied header fields + line items (the
@@ -23,12 +26,27 @@ export async function POST(req: Request) {
         status: 403, headers: { "Content-Type": "application/json" },
       });
     }
-    const data: POData = await req.json();
+    const data: IncomingPOData = await req.json();
     if (!data.items?.length) {
       return new Response(JSON.stringify({ error: "At least one item is required." }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
+
+    // Duplicate prevention -- a title already on a prior active PO can't be
+    // silently re-ordered on a new one (mirrors the PR-level check).
+    const requestedCanvassingIds = data.items.flatMap((i) => i.canvassing_ids ?? []);
+    if (requestedCanvassingIds.length) {
+      const claimed = await getClaimedCanvassingIdsForPO(db);
+      const conflicts = data.items.filter((i) => (i.canvassing_ids ?? []).some((cid) => claimed.has(cid)));
+      if (conflicts.length) {
+        const names = conflicts.map((i) => `"${i.description}"`).join(", ");
+        return new Response(JSON.stringify({ error: `${conflicts.length} item(s) are already on another active purchase order: ${names}. Reload this panel, or cancel that PO first.` }), {
+          status: 409, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const buf = generatePurchaseOrderXlsx(data);
     const filename = `PO_${(data.poNo || "draft").replace(/[^A-Za-z0-9_-]/g, "_")}.xlsx`;
 

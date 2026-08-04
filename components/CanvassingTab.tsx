@@ -145,6 +145,10 @@ export default function CanvassingTab() {
   const [assignments, setAssignments] = useState<Map<number, string>>(new Map());
   const [saving, setSaving] = useState(false);
   const [assignedGroupBy, setAssignedGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
+  const [supplierFilter, setSupplierFilter] = useState("");
+  const [programFilter, setProgramFilter] = useState("");
+  const [sortBy, setSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc" | "date_desc" | "date_asc">("none");
+  const [showOnlyUnsourced, setShowOnlyUnsourced] = useState(false);
 
   function reload() {
     setLoading(true); setErr(null);
@@ -180,9 +184,11 @@ export default function CanvassingTab() {
       .finally(() => setLoadingGaps(false));
   }
 
-  useEffect(() => { reload(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // Load gaps whenever canvassing rows are available
-  useEffect(() => { if (rows.length > 0) loadGaps(); }, [rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Gaps are the full list of subjects still needing procurement --
+  // loaded unconditionally on mount (previously this only ran once
+  // canvassing rows existed, so a library with zero canvassing entries
+  // uploaded yet never saw the gap list at all).
+  useEffect(() => { reload(); loadGaps(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pre-populate assignment dropdowns with best keyword match
   useEffect(() => {
@@ -280,12 +286,33 @@ export default function CanvassingTab() {
   const unassigned = useMemo(() => rows.filter(r => !r.subject_id), [rows]);
   const totalCost = assigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
 
-  const assignedGroups = useMemo(() => groupRows(assigned, assignedGroupBy, (r) => {
+  const supplierOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.supplier).filter(Boolean))).sort(), [assigned]);
+  const programOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.program).filter(Boolean))).sort(), [assigned]);
+
+  // Filter + sort first (this is what narrows down "which titles to buy"),
+  // then group -- group order/subtotals reflect the filtered, sorted set.
+  const filteredSortedAssigned = useMemo(() => {
+    let list = assigned;
+    if (supplierFilter) list = list.filter(r => r.supplier === supplierFilter);
+    if (programFilter) list = list.filter(r => r.program === programFilter);
+    if (sortBy === "none") return list;
+    const sorted = [...list];
+    if (sortBy === "price_asc") sorted.sort((a, b) => a.unit_cost - b.unit_cost);
+    else if (sortBy === "price_desc") sorted.sort((a, b) => b.unit_cost - a.unit_cost);
+    else if (sortBy === "title_asc") sorted.sort((a, b) => a.title.localeCompare(b.title));
+    else if (sortBy === "date_desc") sorted.sort((a, b) => (b.canvass_date || b.created_at).localeCompare(a.canvass_date || a.created_at));
+    else if (sortBy === "date_asc") sorted.sort((a, b) => (a.canvass_date || a.created_at).localeCompare(b.canvass_date || b.created_at));
+    return sorted;
+  }, [assigned, supplierFilter, programFilter, sortBy]);
+
+  const filteredTotalCost = filteredSortedAssigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
+
+  const assignedGroups = useMemo(() => groupRows(filteredSortedAssigned, assignedGroupBy, (r) => {
     if (assignedGroupBy === "program") return r.program;
     if (assignedGroupBy === "supplier") return r.supplier;
     if (assignedGroupBy === "year") return yearOf(r.canvass_date || r.created_at);
     return "";
-  }), [assigned, assignedGroupBy]);
+  }), [filteredSortedAssigned, assignedGroupBy]);
 
   // Gap subjects grouped by program for the dropdown.
   // Computed unconditionally (before the needsMigration early return below) so
@@ -300,6 +327,26 @@ export default function CanvassingTab() {
     }
     return Array.from(map.entries());
   }, [gaps]);
+
+  // Every subject still needing procurement (per official compliance data,
+  // same list as Procurement Analysis' "Needs procurement" filter), not
+  // just the ones that happen to have a canvassed candidate -- this is what
+  // makes courses with zero canvassed titles yet visible at all, since
+  // otherwise they'd never appear anywhere in this tab. "sourced" = how many
+  // canvassing entries are currently assigned to that subject (already
+  // found, just not purchased/uploaded yet).
+  const sourcedCountBySubject = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of rows) {
+      if (r.subject_id != null) m.set(r.subject_id, (m.get(r.subject_id) ?? 0) + 1);
+    }
+    return m;
+  }, [rows]);
+  const gapsWithSourcing = useMemo(() => {
+    return gaps
+      .map(g => ({ ...g, sourced: sourcedCountBySubject.get(g.subject_id) ?? 0 }))
+      .sort((a, b) => a.sourced - b.sourced || a.program.localeCompare(b.program) || a.course_code.localeCompare(b.course_code));
+  }, [gaps, sourcedCountBySubject]);
 
   if (needsMigration) {
     return (
@@ -318,8 +365,67 @@ export default function CanvassingTab() {
     );
   }
 
+  const displayedGapsWithSourcing = showOnlyUnsourced ? gapsWithSourcing.filter(g => g.sourced === 0) : gapsWithSourcing;
+  const unsourcedCount = gapsWithSourcing.filter(g => g.sourced === 0).length;
+
   return (
     <div className="space-y-4">
+      {/* Every subject still needing procurement -- not just ones with a
+          canvassed candidate already, so a course nobody has canvassed
+          anything for yet is still visible and actionable. */}
+      <div className="card">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+          <h2 className="text-psu font-semibold">Still Needs Procurement</h2>
+          <label className="text-xs text-slate-600 flex items-center gap-1.5">
+            <input type="checkbox" checked={showOnlyUnsourced} onChange={e => setShowOnlyUnsourced(e.target.checked)} />
+            Only courses with nothing canvassed yet ({unsourcedCount})
+          </label>
+        </div>
+        <p className="text-xs text-slate-500 mb-3">
+          Every course still short on recent titles per Procurement Analysis. "Sourced" is how many canvassing
+          entries are already assigned to it (found, but not yet purchased/uploaded) -- 0 means nobody has
+          canvassed anything for this course yet.
+        </p>
+        {loadingGaps && <p className="text-slate-400 text-xs">Loading…</p>}
+        {!loadingGaps && displayedGapsWithSourcing.length === 0 && (
+          <p className="text-slate-500 text-sm">{showOnlyUnsourced ? "Every course with a gap has at least one canvassed candidate." : "No courses currently need procurement."}</p>
+        )}
+        {!loadingGaps && displayedGapsWithSourcing.length > 0 && (
+          <div className="overflow-x-auto max-h-96 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b border-slate-200 text-slate-500 text-left">
+                  <th className="py-1 pr-2">Program</th>
+                  <th className="py-1 pr-2">Course</th>
+                  <th className="py-1 px-2 text-right">Titles Needed</th>
+                  <th className="py-1 px-2 text-right">Sourced</th>
+                  <th className="py-1 pl-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedGapsWithSourcing.map(g => (
+                  <tr key={g.subject_id} className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-500">{g.program}</td>
+                    <td className="py-1.5 pr-2 font-medium">{g.course_code} — {g.course_title}</td>
+                    <td className="py-1.5 px-2 text-right tabular-nums">{g.gap}</td>
+                    <td className="py-1.5 px-2 text-right tabular-nums">{g.sourced}</td>
+                    <td className="py-1.5 pl-2">
+                      {g.sourced === 0 ? (
+                        <span className="inline-block bg-red-100 text-red-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Needs sourcing</span>
+                      ) : g.sourced < g.gap ? (
+                        <span className="inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Partially sourced</span>
+                      ) : (
+                        <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Sourced, pending purchase</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <SupplierOffersReview />
 
       {/* Upload */}
@@ -444,20 +550,51 @@ export default function CanvassingTab() {
       {/* Assigned titles — ready for PR */}
       {assigned.length > 0 && (
         <div className="card">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <div>
               <h2 className="text-psu font-semibold">Matched & Ready for Purchase Request</h2>
-              <p className="text-xs text-slate-500 mt-0.5">{assigned.length} titles matched to subject gaps · Total: ₱{totalCost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {(supplierFilter || programFilter)
+                  ? <>{filteredSortedAssigned.length} of {assigned.length} titles shown · Total: ₱{money(filteredTotalCost)}</>
+                  : <>{assigned.length} titles matched to subject gaps · Total: ₱{money(totalCost)}</>}
+              </p>
             </div>
-            <label className="text-xs text-slate-500 flex items-center gap-1.5">
-              Group by:
-              <select className="input text-xs py-1" value={assignedGroupBy} onChange={e => setAssignedGroupBy(e.target.value as typeof assignedGroupBy)}>
-                <option value="none">None</option>
-                <option value="program">Program</option>
-                <option value="supplier">Supplier</option>
-                <option value="year">Year</option>
-              </select>
-            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Supplier:
+                <select className="input text-xs py-1" value={supplierFilter} onChange={e => setSupplierFilter(e.target.value)}>
+                  <option value="">All suppliers</option>
+                  {supplierOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Program:
+                <select className="input text-xs py-1" value={programFilter} onChange={e => setProgramFilter(e.target.value)}>
+                  <option value="">All programs</option>
+                  {programOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Sort by:
+                <select className="input text-xs py-1" value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)}>
+                  <option value="none">Default</option>
+                  <option value="price_asc">Price: Low to High</option>
+                  <option value="price_desc">Price: High to Low</option>
+                  <option value="title_asc">Title A-Z</option>
+                  <option value="date_desc">Newest canvassed</option>
+                  <option value="date_asc">Oldest canvassed</option>
+                </select>
+              </label>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Group by:
+                <select className="input text-xs py-1" value={assignedGroupBy} onChange={e => setAssignedGroupBy(e.target.value as typeof assignedGroupBy)}>
+                  <option value="none">None</option>
+                  <option value="program">Program</option>
+                  <option value="supplier">Supplier</option>
+                  <option value="year">Year</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
