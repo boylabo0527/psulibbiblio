@@ -25,7 +25,8 @@ export default function DashboardTab() {
   const [toYear, setToYear] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState("apa7");
   const [subjects, setSubjects] = useState<SubjectSummaryRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // true only until the very first fetch resolves
+  const [refreshing, setRefreshing] = useState(false); // true for every fetch after that
   const [err, setErr] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const campuses = useCampuses();
@@ -56,13 +57,21 @@ export default function DashboardTab() {
     ? programs.filter(p => isProgramAtCampus(p.id, campus))
     : programs;
 
-  // Fetch per-subject counts whenever filters change (skip until programs loaded).
+  // Fetch per-subject counts whenever campus/year change (skip until programs
+  // loaded). Program is deliberately NOT a fetch dependency -- it's a pure
+  // client-side filter over the same campus/year-scoped dataset below, so
+  // switching programs is instant instead of round-tripping the network
+  // (campus/year genuinely change the server-side computation -- printed
+  // copies are campus-scoped and year bounds the count -- so those two
+  // still refetch). `loading` only gates the very first fetch; subsequent
+  // campus/year changes keep the current table visible with a small
+  // "Updating…" note instead of blanking it, so picking a filter doesn't
+  // feel like the page reloaded out from under you.
   useEffect(() => {
     if (programId === null) return;
-    setLoading(true);
+    setRefreshing(true);
     setErr(null);
     const p = new URLSearchParams();
-    if (programId) p.set("program_id", programId);
     if (campus) p.set("campus", campus);
     if (fromYear) p.set("from_year", fromYear);
     if (toYear) p.set("to_year", toYear);
@@ -73,17 +82,21 @@ export default function DashboardTab() {
         else setSubjects(j.subjects ?? []);
       })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, [programId, campus, fromYear, toYear]);
+      .finally(() => { setRefreshing(false); setLoading(false); });
+  }, [programId !== null, campus, fromYear, toYear]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Derive summary totals from the filtered subjects data.
-  // When "All [campus] programs" is selected (programId=""), limit to programs offered at that campus.
-  const validProgramIds = campus && !programId
+  // Derive summary totals from the filtered subjects data. Program is
+  // always a client-side filter now (see above); "All [campus] programs"
+  // additionally limits to programs actually offered at that campus.
+  const validProgramIds = campus
     ? new Set(visiblePrograms.map(p => p.id))
     : null;
-  const displaySubjects = validProgramIds
-    ? subjects.filter(s => validProgramIds.has(s.program_id))
+  const programScoped = programId
+    ? subjects.filter(s => String(s.program_id) === programId)
     : subjects;
+  const displaySubjects = validProgramIds
+    ? programScoped.filter(s => validProgramIds.has(s.program_id))
+    : programScoped;
 
   const summaryPrograms = new Set(displaySubjects.map((s) => s.program_id)).size;
   const summarySubjects = displaySubjects.length;
@@ -261,6 +274,7 @@ export default function DashboardTab() {
 
         {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}
+        {!loading && refreshing && <p className="text-slate-400 text-xs mb-2">Updating…</p>}
 
         {!loading && displaySubjects.length === 0 && (
           <p className="text-slate-500 text-sm">No subjects found. Upload subjects first.</p>

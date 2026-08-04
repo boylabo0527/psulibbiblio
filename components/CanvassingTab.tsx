@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/api-client";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { groupRows } from "@/lib/group-rows";
 import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
+import SearchableSelect from "@/components/SearchableSelect";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
@@ -579,22 +580,19 @@ export default function CanvassingTab() {
                     <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
                     <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
                     <td className="py-1.5 pl-2">
-                      <select
+                      <SearchableSelect
                         className="input text-xs w-full"
+                        placeholder="Type to search a course…"
                         value={assignments.get(r.id) ?? ""}
-                        onChange={e => setAssignments(prev => new Map(prev).set(r.id, e.target.value))}
-                      >
-                        <option value="">— select subject —</option>
-                        {gapsByProgram.map(([prog, { subjects }]) => (
-                          <optgroup key={prog} label={prog}>
-                            {subjects.map(g => (
-                              <option key={g.subject_id} value={g.subject_id}>
-                                {g.course_code} — {g.course_title} (needs +{g.gap})
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
+                        onChange={v => setAssignments(prev => new Map(prev).set(r.id, v))}
+                        groups={gapsByProgram.map(([prog, { subjects }]) => ({
+                          label: prog,
+                          options: subjects.map(g => ({
+                            value: String(g.subject_id),
+                            label: `${g.course_code} — ${g.course_title} (needs +${g.gap})`,
+                          })),
+                        }))}
+                      />
                     </td>
                   </tr>
                 ))}

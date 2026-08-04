@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { useAuth } from "@/components/AuthProvider";
+import SearchableSelect from "@/components/SearchableSelect";
 import type { TitleRecommendationRow } from "@/app/api/title-recommendations/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 
@@ -25,13 +26,19 @@ function formatWhen(iso: string): string {
   return d.toLocaleDateString();
 }
 
-/** Lets a faculty member recommend a specific title for a course they
- *  teach -- a concrete starting point for Market Canvassing and for
- *  suppliers browsing needs (see /api/supplier/needs), rather than staff
- *  and suppliers only ever seeing a generic "needs N more titles" gap.
- *  Faculty submit and see everything (so they don't duplicate a
- *  suggestion someone else already made); reviewing/marking status is
- *  restricted to whoever can edit Market Canvassing (or admin). */
+type DraftTitle = { title: string; author: string; publisher: string; year: string; isbn: string; format_preference: string; notes: string };
+function emptyDraftTitle(): DraftTitle {
+  return { title: "", author: "", publisher: "", year: "", isbn: "", format_preference: "", notes: "" };
+}
+
+/** Lets a faculty member recommend one or more specific titles for a
+ *  course they teach in a single submission -- a concrete starting point
+ *  for Market Canvassing and for suppliers browsing needs (see
+ *  /api/supplier/needs), rather than staff and suppliers only ever
+ *  seeing a generic "needs N more titles" gap. Faculty submit and see
+ *  everything (so they don't duplicate a suggestion someone else already
+ *  made); reviewing/marking status is restricted to whoever can edit
+ *  Market Canvassing (or admin). */
 export default function FacultyRecommendationsTab() {
   const { perms } = usePermissions();
   const { user } = useAuth();
@@ -43,15 +50,10 @@ export default function FacultyRecommendationsTab() {
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "sourced" | "declined">("all");
+  const [programFilter, setProgramFilter] = useState("");
 
   const [subjectId, setSubjectId] = useState("");
-  const [title, setTitle] = useState("");
-  const [author, setAuthor] = useState("");
-  const [publisher, setPublisher] = useState("");
-  const [year, setYear] = useState("");
-  const [isbn, setIsbn] = useState("");
-  const [formatPreference, setFormatPreference] = useState("");
-  const [notes, setNotes] = useState("");
+  const [titles, setTitles] = useState<DraftTitle[]>([emptyDraftTitle()]);
   const [submitting, setSubmitting] = useState(false);
 
   function load() {
@@ -72,31 +74,47 @@ export default function FacultyRecommendationsTab() {
   }
   useEffect(load, []);
 
-  const subjectsByProgram = useMemo(() => {
+  const courseGroups = useMemo(() => {
     const map = new Map<string, ProcurementRow[]>();
     for (const s of subjects) {
       if (!map.has(s.program)) map.set(s.program, []);
       map.get(s.program)!.push(s);
     }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([label, subs]) => ({
+        label,
+        options: subs.map((s) => ({ value: String(s.subject_id), label: `${s.course_code} — ${s.course_title}` })),
+      }));
   }, [subjects]);
+
+  const programOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.program).filter(Boolean))).sort(), [rows]);
+
+  function setTitleField(i: number, field: keyof DraftTitle, value: string) {
+    setTitles((prev) => prev.map((t, idx) => idx === i ? { ...t, [field]: value } : t));
+  }
+  function addTitleRow() {
+    setTitles((prev) => [...prev, emptyDraftTitle()]);
+  }
+  function removeTitleRow(i: number) {
+    setTitles((prev) => prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i));
+  }
+
+  const validTitles = titles.filter((t) => t.title.trim());
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!subjectId || !title.trim()) return;
+    if (!subjectId || validTitles.length === 0) return;
     setSubmitting(true);
     setErr(null);
     try {
       const res = await apiFetch("/api/title-recommendations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subject_id: Number(subjectId), title, author, publisher, year, isbn,
-          format_preference: formatPreference, notes,
-        }),
+        body: JSON.stringify({ subject_id: Number(subjectId), titles: validTitles }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setTitle(""); setAuthor(""); setPublisher(""); setYear(""); setIsbn(""); setFormatPreference(""); setNotes("");
+      setTitles([emptyDraftTitle()]);
       load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -139,69 +157,85 @@ export default function FacultyRecommendationsTab() {
     }
   }
 
-  const displayed = statusFilter === "all" ? rows : rows.filter((r) => r.status === statusFilter);
+  const displayed = rows
+    .filter((r) => statusFilter === "all" || r.status === statusFilter)
+    .filter((r) => !programFilter || r.program === programFilter);
 
   return (
     <div className="space-y-4">
       {perms.tabs["faculty-recommendations"]?.can_edit && (
         <div className="card">
-          <h2 className="text-psu font-semibold mb-1">Recommend a Title</h2>
+          <h2 className="text-psu font-semibold mb-1">Recommend Titles</h2>
           <p className="text-xs text-slate-500 mb-3">
-            Suggest a specific book for a course you teach -- this becomes a starting point for Market
-            Canvassing and is shown to suppliers browsing what's needed, instead of just a generic gap count.
+            Suggest one or more specific books for a course you teach -- these become a starting point for
+            Market Canvassing and are shown to suppliers browsing what's needed, instead of just a generic gap count.
           </p>
           <form onSubmit={submit} className="space-y-3">
             <label className="label flex-col items-start gap-1">
               <span className="text-xs">Course</span>
-              <select className="input w-full max-w-md" value={subjectId} onChange={(e) => setSubjectId(e.target.value)} required>
-                <option value="">— select a course —</option>
-                {subjectsByProgram.map(([prog, subs]) => (
-                  <optgroup key={prog} label={prog}>
-                    {subs.map((s) => (
-                      <option key={s.subject_id} value={s.subject_id}>{s.course_code} — {s.course_title}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
+              <SearchableSelect
+                value={subjectId}
+                onChange={setSubjectId}
+                groups={courseGroups}
+                placeholder="Type to search a course…"
+                className="input w-full max-w-md"
+              />
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Title *</span>
-                <input className="input w-full" value={title} onChange={(e) => setTitle(e.target.value)} required />
-              </label>
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Author</span>
-                <input className="input w-full" value={author} onChange={(e) => setAuthor(e.target.value)} />
-              </label>
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Publisher</span>
-                <input className="input w-full" value={publisher} onChange={(e) => setPublisher(e.target.value)} />
-              </label>
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Year</span>
-                <input className="input w-full" value={year} onChange={(e) => setYear(e.target.value)} />
-              </label>
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">ISBN</span>
-                <input className="input w-full" value={isbn} onChange={(e) => setIsbn(e.target.value)} />
-              </label>
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Format preference</span>
-                <select className="input w-full" value={formatPreference} onChange={(e) => setFormatPreference(e.target.value)}>
-                  <option value="">Either is fine</option>
-                  <option value="printed">Printed preferred</option>
-                  <option value="ebook">eBook preferred</option>
-                </select>
-              </label>
+
+            <div className="space-y-3">
+              {titles.map((t, i) => (
+                <div key={i} className="border border-slate-200 rounded p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-slate-500">Title {i + 1}</span>
+                    {titles.length > 1 && (
+                      <button type="button" className="text-red-500 text-[11px] underline" onClick={() => removeTitleRow(i)}>Remove</button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Title *</span>
+                      <input className="input w-full" value={t.title} onChange={(e) => setTitleField(i, "title", e.target.value)} />
+                    </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Author</span>
+                      <input className="input w-full" value={t.author} onChange={(e) => setTitleField(i, "author", e.target.value)} />
+                    </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Publisher</span>
+                      <input className="input w-full" value={t.publisher} onChange={(e) => setTitleField(i, "publisher", e.target.value)} />
+                    </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Year</span>
+                      <input className="input w-full" value={t.year} onChange={(e) => setTitleField(i, "year", e.target.value)} />
+                    </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">ISBN</span>
+                      <input className="input w-full" value={t.isbn} onChange={(e) => setTitleField(i, "isbn", e.target.value)} />
+                    </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Format preference</span>
+                      <select className="input w-full" value={t.format_preference} onChange={(e) => setTitleField(i, "format_preference", e.target.value)}>
+                        <option value="">Either is fine</option>
+                        <option value="printed">Printed preferred</option>
+                        <option value="ebook">eBook preferred</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="label flex-col items-start gap-1 mt-3">
+                    <span className="text-xs">Notes</span>
+                    <textarea className="input w-full h-14 resize-none" value={t.notes} onChange={(e) => setTitleField(i, "notes", e.target.value)} placeholder="Why this title, edition notes, etc." />
+                  </label>
+                </div>
+              ))}
             </div>
-            <label className="label flex-col items-start gap-1">
-              <span className="text-xs">Notes</span>
-              <textarea className="input w-full h-16 resize-none" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Why this title, edition notes, etc." />
-            </label>
+            <button type="button" className="btn-outline text-xs" onClick={addTitleRow}>+ Add another title</button>
+
             {err && <p className="text-red-700 text-sm">{err}</p>}
-            <button type="submit" className="btn text-sm" disabled={submitting || !subjectId || !title.trim()}>
-              {submitting ? "Submitting…" : "Submit Recommendation"}
-            </button>
+            <div>
+              <button type="submit" className="btn text-sm" disabled={submitting || !subjectId || validTitles.length === 0}>
+                {submitting ? "Submitting…" : validTitles.length > 1 ? `Submit ${validTitles.length} Recommendations` : "Submit Recommendation"}
+              </button>
+            </div>
           </form>
         </div>
       )}
@@ -209,15 +243,24 @@ export default function FacultyRecommendationsTab() {
       <div className="card">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
           <h2 className="text-psu font-semibold">Recommendations</h2>
-          <label className="text-xs text-slate-500 flex items-center gap-1.5">
-            Status:
-            <select className="input text-xs py-1" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
-              <option value="all">All</option>
-              <option value="pending">Pending</option>
-              <option value="sourced">Sourced</option>
-              <option value="declined">Declined</option>
-            </select>
-          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="text-xs text-slate-500 flex items-center gap-1.5">
+              Program:
+              <select className="input text-xs py-1" value={programFilter} onChange={(e) => setProgramFilter(e.target.value)}>
+                <option value="">All programs</option>
+                {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-slate-500 flex items-center gap-1.5">
+              Status:
+              <select className="input text-xs py-1" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
+                <option value="all">All</option>
+                <option value="pending">Pending</option>
+                <option value="sourced">Sourced</option>
+                <option value="declined">Declined</option>
+              </select>
+            </label>
+          </div>
         </div>
         {err && !perms.tabs["faculty-recommendations"]?.can_edit && <p className="text-red-700 text-sm mb-2">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}

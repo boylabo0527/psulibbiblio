@@ -78,6 +78,9 @@ export default function MonitoringTab() {
   const [poForSupplier, setPoForSupplier] = useState<string | null>(null);
   const [editingPoId, setEditingPoId] = useState<number | null>(null);
   const [poBusyId, setPoBusyId] = useState<number | null>(null);
+  const [poStatusFilter, setPoStatusFilter] = useState<"all" | "active" | "cancelled">("all");
+  const [poSortBy, setPoSortBy] = useState<"date_desc" | "date_asc" | "total_desc" | "total_asc">("date_desc");
+  const [poGroupBy, setPoGroupBy] = useState<"none" | "supplier" | "year">("none");
 
   const [prGroupBy, setPrGroupBy] = useState<"none" | "campus" | "office" | "year">("none");
   const [propGroupBy, setPropGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
@@ -119,6 +122,21 @@ export default function MonitoringTab() {
     if (propGroupBy === "year") return yearOf(r.created_at);
     return "";
   }), [proposals, propGroupBy]);
+
+  const poGroups = useMemo(() => {
+    const filtered = poStatusFilter === "all" ? purchaseOrders : purchaseOrders.filter((po) => po.status === poStatusFilter);
+    const sorted = [...filtered].sort((a, b) => {
+      if (poSortBy === "date_desc") return b.created_at.localeCompare(a.created_at);
+      if (poSortBy === "date_asc") return a.created_at.localeCompare(b.created_at);
+      if (poSortBy === "total_desc") return b.total_amount - a.total_amount;
+      return a.total_amount - b.total_amount;
+    });
+    return groupRows(sorted, poGroupBy, (po) => {
+      if (poGroupBy === "supplier") return po.supplier;
+      if (poGroupBy === "year") return yearOf(po.created_at);
+      return "";
+    });
+  }, [purchaseOrders, poStatusFilter, poSortBy, poGroupBy]);
 
   async function setPrStatus(prId: number, body: { current_step_seq: number } | { status: "completed" }) {
     setStatusBusyId(prId);
@@ -268,8 +286,37 @@ export default function MonitoringTab() {
           )}
 
           <div className="card">
-            <h2 className="text-psu font-semibold mb-1">Purchase Orders Generated</h2>
-            <p className="text-xs text-slate-500 mb-3">Every Purchase Order generated from supplier consolidation, most recent first.</p>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+              <h2 className="text-psu font-semibold">Purchase Orders Generated</h2>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Status:
+                  <select className="input text-xs py-1" value={poStatusFilter} onChange={(e) => setPoStatusFilter(e.target.value as typeof poStatusFilter)}>
+                    <option value="all">All</option>
+                    <option value="active">Active</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Sort by:
+                  <select className="input text-xs py-1" value={poSortBy} onChange={(e) => setPoSortBy(e.target.value as typeof poSortBy)}>
+                    <option value="date_desc">Newest first</option>
+                    <option value="date_asc">Oldest first</option>
+                    <option value="total_desc">Total: High to Low</option>
+                    <option value="total_asc">Total: Low to High</option>
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                  Group by:
+                  <select className="input text-xs py-1" value={poGroupBy} onChange={(e) => setPoGroupBy(e.target.value as typeof poGroupBy)}>
+                    <option value="none">None</option>
+                    <option value="supplier">Supplier</option>
+                    <option value="year">Year</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mb-3">Every Purchase Order generated from supplier consolidation.</p>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -285,41 +332,50 @@ export default function MonitoringTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {purchaseOrders.map((po) => (
-                    <tr key={po.id} className="border-b border-slate-100">
-                      <td className="py-1.5 pr-2 whitespace-nowrap">{po.po_no || "(draft)"}</td>
-                      <td className="py-1.5 pr-2">{po.supplier}</td>
-                      <td className="py-1.5 pr-2 text-right">{po.item_count}</td>
-                      <td className="py-1.5 pr-2 text-right">{money(po.total_amount)}</td>
-                      <td className="py-1.5 pr-2">{po.generated_by}</td>
-                      <td className="py-1.5 pr-2">
-                        {po.status === "cancelled" ? (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-200 text-slate-600">Cancelled</span>
-                        ) : (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700">Active</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pl-2 text-slate-500 whitespace-nowrap" title={new Date(po.created_at).toLocaleString()}>
-                        {formatWhen(po.created_at)}
-                      </td>
-                      {canEditMonitoring && (
-                        <td className="py-1.5 pl-2 text-right whitespace-nowrap">
-                          {po.status === "active" && (
-                            <>
-                              <button className="text-psu text-[11px] underline mr-2" onClick={() => setEditingPoId(po.id)}>Edit</button>
-                              <button
-                                className="text-red-600 text-[11px] underline disabled:opacity-40"
-                                disabled={poBusyId === po.id}
-                                onClick={() => cancelPo(po)}
-                              >
-                                Cancel
-                              </button>
-                            </>
+                  {poGroups.flatMap(([label, poRows]) => [
+                    ...(poGroupBy !== "none" ? [
+                      <tr key={`g-${label}`} className="bg-slate-50">
+                        <td colSpan={canEditMonitoring ? 8 : 7} className="py-1 px-2 font-semibold text-slate-600">
+                          {label} · {poRows.length} · ₱{money(poRows.reduce((s, r) => s + r.total_amount, 0))}
+                        </td>
+                      </tr>,
+                    ] : []),
+                    ...poRows.map((po) => (
+                      <tr key={po.id} className="border-b border-slate-100">
+                        <td className="py-1.5 pr-2 whitespace-nowrap">{po.po_no || "(draft)"}</td>
+                        <td className="py-1.5 pr-2">{po.supplier}</td>
+                        <td className="py-1.5 pr-2 text-right">{po.item_count}</td>
+                        <td className="py-1.5 pr-2 text-right">{money(po.total_amount)}</td>
+                        <td className="py-1.5 pr-2">{po.generated_by}</td>
+                        <td className="py-1.5 pr-2">
+                          {po.status === "cancelled" ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-200 text-slate-600">Cancelled</span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700">Active</span>
                           )}
                         </td>
-                      )}
-                    </tr>
-                  ))}
+                        <td className="py-1.5 pl-2 text-slate-500 whitespace-nowrap" title={new Date(po.created_at).toLocaleString()}>
+                          {formatWhen(po.created_at)}
+                        </td>
+                        {canEditMonitoring && (
+                          <td className="py-1.5 pl-2 text-right whitespace-nowrap">
+                            {po.status === "active" && (
+                              <>
+                                <button className="text-psu text-[11px] underline mr-2" onClick={() => setEditingPoId(po.id)}>Edit</button>
+                                <button
+                                  className="text-red-600 text-[11px] underline disabled:opacity-40"
+                                  disabled={poBusyId === po.id}
+                                  onClick={() => cancelPo(po)}
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    )),
+                  ])}
                   {purchaseOrders.length === 0 && (
                     <tr><td colSpan={canEditMonitoring ? 8 : 7} className="py-3 text-slate-400">No purchase orders generated yet.</td></tr>
                   )}

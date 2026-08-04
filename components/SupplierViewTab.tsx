@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { isSpreadsheet, parseSheetRows } from "@/lib/parse-client";
 import type { SupplierNeedRow } from "@/app/api/supplier/needs/route";
@@ -49,6 +49,8 @@ export default function SupplierViewTab() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ inserted: number; problems: { line: number; course_code: string; reason: string }[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [programFilter, setProgramFilter] = useState("");
+  const [sortBy, setSortBy] = useState<"gap_desc" | "gap_asc" | "program_asc">("gap_desc");
 
   function load() {
     setLoading(true);
@@ -68,6 +70,16 @@ export default function SupplierViewTab() {
   }
 
   useEffect(load, []);
+
+  const programOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.program).filter(Boolean))).sort(), [rows]);
+  const displayedRows = useMemo(() => {
+    const filtered = programFilter ? rows.filter((r) => r.program === programFilter) : rows;
+    const sorted = [...filtered];
+    if (sortBy === "gap_desc") sorted.sort((a, b) => b.gap - a.gap);
+    else if (sortBy === "gap_asc") sorted.sort((a, b) => a.gap - b.gap);
+    else if (sortBy === "program_asc") sorted.sort((a, b) => a.program.localeCompare(b.program) || b.gap - a.gap);
+    return sorted;
+  }, [rows, programFilter, sortBy]);
 
   // The export doubles as the bulk-upload template: a supplier downloads
   // this, fills in Offer Title/Author/Format/Price/Notes on whichever rows
@@ -172,6 +184,24 @@ export default function SupplierViewTab() {
         {!loading && rows.length === 0 && <p className="text-slate-500 text-sm">No open needs right now.</p>}
 
         {!loading && rows.length > 0 && (
+          <>
+            <div className="flex flex-wrap items-center gap-3 mb-2">
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Program:
+                <select className="input text-xs py-1" value={programFilter} onChange={(e) => setProgramFilter(e.target.value)}>
+                  <option value="">All programs</option>
+                  {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5">
+                Sort by:
+                <select className="input text-xs py-1" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+                  <option value="gap_desc">Most needed first</option>
+                  <option value="gap_asc">Least needed first</option>
+                  <option value="program_asc">Program A-Z</option>
+                </select>
+              </label>
+            </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -188,7 +218,7 @@ export default function SupplierViewTab() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => (
+                {displayedRows.map((r, i) => (
                   <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
                     <td className="py-1.5 pr-2 text-slate-500">{r.course_code}</td>
@@ -221,6 +251,7 @@ export default function SupplierViewTab() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 

@@ -44,7 +44,8 @@ export default function ProcurementTab() {
   const [campus, setCampus] = useState("");
   const [view, setView] = useState<ViewFilter>("needs");
   const [rows, setRows] = useState<ProcurementRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // true only until the very first fetch resolves
+  const [refreshing, setRefreshing] = useState(false); // true for every fetch after that
   const [err, setErr] = useState<string | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(false);
 
@@ -64,27 +65,39 @@ export default function ProcurementTab() {
       .catch(() => setProgramId(""));
   }, []);
 
+  // Program is deliberately not a fetch dependency -- it's a pure
+  // client-side filter over the same campus-scoped dataset (see
+  // displayRows below), so switching programs is instant instead of
+  // round-tripping the network. Campus still refetches since printed
+  // copies are campus-scoped and genuinely change the server-side
+  // compliance computation. `loading` only gates the very first fetch;
+  // later campus changes keep the current table visible with a small
+  // "Updating…" note instead of blanking it.
   function loadRows() {
     if (programId === null) return;
-    setLoading(true); setErr(null);
+    setRefreshing(true); setErr(null);
     const p = new URLSearchParams();
-    if (programId) p.set("program_id", programId);
     if (campus) p.set("campus", campus);
     apiFetch(`/api/procurement?${p}`)
       .then((r) => r.json())
       .then((j) => { if (j.error) setErr(j.error); else setRows(j.rows ?? []); })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+      .finally(() => { setRefreshing(false); setLoading(false); });
   }
 
+  // `programId !== null` (not programId itself) so this fires once the
+  // initial /api/programs fetch resolves, but never again on later program
+  // switches -- only a real campus change re-triggers the network fetch.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(loadRows, [programId, campus]);
+  useEffect(loadRows, [campus, programId !== null]);
 
-  // When "All [campus] programs" is selected, filter rows to programs offered at that campus.
-  const validProgramIds = campus && !programId
+  // When "All [campus] programs" is selected, filter rows to programs
+  // offered at that campus; a specific program is always a client-side filter.
+  const validProgramIds = campus
     ? new Set(visiblePrograms.map(p => p.id))
     : null;
-  const displayRows = validProgramIds ? rows.filter(r => validProgramIds.has(r.program_id)) : rows;
+  const programScoped = programId ? rows.filter(r => String(r.program_id) === programId) : rows;
+  const displayRows = validProgramIds ? programScoped.filter(r => validProgramIds.has(r.program_id)) : programScoped;
 
   const filtered = useMemo(() => {
     if (view === "compliant") return displayRows.filter((r) => r.compliant);
@@ -336,6 +349,7 @@ export default function ProcurementTab() {
 
         {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}
+        {!loading && refreshing && <p className="text-slate-400 text-xs mb-2">Updating…</p>}
         {!loading && rows.length === 0 && <p className="text-slate-500 text-sm">No subjects found. Upload subjects first.</p>}
         {!loading && rows.length > 0 && filtered.length === 0 && <p className="text-slate-500 text-sm">No subjects match this filter.</p>}
 

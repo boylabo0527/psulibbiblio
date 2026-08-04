@@ -75,9 +75,15 @@ export async function GET(req: Request) {
   }
 }
 
+type TitleInput = { title?: string; author?: string; publisher?: string; year?: string; isbn?: string; format_preference?: string; notes?: string };
+
 /** POST /api/title-recommendations -- a faculty member (or admin) suggests
- *  a title for a subject. Body: { subject_id, title, author?, publisher?,
- *  year?, isbn?, format_preference?, notes? }. */
+ *  one or more titles for a single subject in one submission (e.g.
+ *  recommending 3 books for a course at once). Body: { subject_id,
+ *  titles: [{ title, author?, publisher?, year?, isbn?, format_preference?,
+ *  notes? }, ...] }. A single-title recommendation is just a `titles`
+ *  array of length 1 -- there's no separate single-item shape to keep in
+ *  sync (same reasoning as POST /api/supplier/offers). */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -87,30 +93,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Your account doesn't have permission to submit recommendations." }, { status: 403 });
     }
 
-    const body = await req.json() as {
-      subject_id?: number; title?: string; author?: string; publisher?: string;
-      year?: string; isbn?: string; format_preference?: string; notes?: string;
-    };
+    const body = await req.json() as { subject_id?: number; titles?: TitleInput[] };
     const subjectId = body.subject_id;
-    const title = (body.title ?? "").trim();
-    if (!Number.isFinite(subjectId) || !title) {
-      return NextResponse.json({ error: "subject_id and title are required." }, { status: 400 });
+    const inputs = (body.titles ?? []).filter((t) => (t.title ?? "").trim());
+    if (!Number.isFinite(subjectId) || !inputs.length) {
+      return NextResponse.json({ error: "subject_id and at least one title are required." }, { status: 400 });
     }
 
-    const { data, error } = await db.from("title_recommendations").insert({
-      subject_id: subjectId, recommended_by: email, title,
-      author: (body.author ?? "").trim(), publisher: (body.publisher ?? "").trim(),
-      year: (body.year ?? "").trim(), isbn: (body.isbn ?? "").trim(),
-      format_preference: (body.format_preference ?? "").trim(), notes: (body.notes ?? "").trim(),
-    }).select("id").single();
+    const insertRows = inputs.map((t) => ({
+      subject_id: subjectId, recommended_by: email, title: (t.title ?? "").trim(),
+      author: (t.author ?? "").trim(), publisher: (t.publisher ?? "").trim(),
+      year: (t.year ?? "").trim(), isbn: (t.isbn ?? "").trim(),
+      format_preference: (t.format_preference ?? "").trim(), notes: (t.notes ?? "").trim(),
+    }));
+
+    const { data, error } = await db.from("title_recommendations").insert(insertRows).select("id");
     if (error) throw error;
 
     await logActivity(db, {
       userEmail: email, action: "title_recommendation_submit",
-      summary: `${email} recommended "${title}"`,
-      detail: { recommendation_id: data.id, subject_id: subjectId },
+      summary: inputs.length === 1
+        ? `${email} recommended "${insertRows[0].title}"`
+        : `${email} recommended ${inputs.length} titles: ${inputs.map((t) => `"${t.title}"`).join(", ")}`,
+      detail: { recommendation_ids: (data ?? []).map((d) => d.id), subject_id: subjectId },
     });
-    return NextResponse.json({ ok: true, id: data.id });
+    return NextResponse.json({ ok: true, ids: (data ?? []).map((d) => d.id) });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
