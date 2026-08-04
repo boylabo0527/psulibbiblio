@@ -32,6 +32,11 @@ const ACTION_LABEL: Record<string, string> = {
   supplier_offer_submit: "Supplier offer submitted",
   supplier_offer_decide: "Supplier offer decided",
   purchase_request_generate: "Purchase request generated",
+  pr_workflow_step_create: "PR workflow office added",
+  pr_workflow_step_edit: "PR workflow office edited",
+  pr_workflow_step_delete: "PR workflow office removed",
+  pr_advance: "Purchase request advanced to next office",
+  campus_budget_set: "Campus budget set",
 };
 
 function actionColor(action: string): string {

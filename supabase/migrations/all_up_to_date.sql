@@ -10,9 +10,10 @@
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
 -- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
 -- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
--- 21_faculty_role.sql + 22_purchase_request_records.sql in order. If you've
--- already run some of those individually, running this on top is still
--- safe.
+-- 21_faculty_role.sql + 22_purchase_request_records.sql +
+-- 23_purchase_request_campus.sql + 24_pr_workflow.sql +
+-- 25_campus_budgets.sql in order. If you've already run some of those
+-- individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -426,3 +427,63 @@ create table if not exists purchase_requests (
 create index if not exists purchase_requests_created_at_idx on purchase_requests(created_at desc);
 
 alter table purchase_requests enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 23: attribute each Purchase Request to a campus, for Monitoring's
+-- per-campus grouping and budget-vs-spent comparison.
+-- ---------------------------------------------------------------------------
+alter table purchase_requests add column if not exists campus text default '';
+alter table purchase_requests add column if not exists campus_id bigint references campuses(id) on delete set null;
+
+create index if not exists purchase_requests_campus_id_idx on purchase_requests(campus_id);
+
+-- ---------------------------------------------------------------------------
+-- 24: admin-configurable PR approval workflow (offices a PR passes
+-- through) + per-PR current-step tracking + step history, so Monitoring
+-- can flag a PR pending 15+ days in the same office.
+-- ---------------------------------------------------------------------------
+create table if not exists pr_workflow_steps (
+  id bigserial primary key,
+  seq int not null unique,
+  office_name text not null,
+  created_at timestamptz default now()
+);
+
+alter table purchase_requests add column if not exists current_step_seq int;
+alter table purchase_requests add column if not exists step_entered_at timestamptz default now();
+alter table purchase_requests add column if not exists status text not null default 'in_progress';
+alter table purchase_requests drop constraint if exists purchase_requests_status_check;
+alter table purchase_requests add constraint purchase_requests_status_check
+  check (status in ('in_progress', 'completed'));
+alter table purchase_requests add column if not exists completed_at timestamptz;
+
+create table if not exists pr_step_history (
+  id bigserial primary key,
+  purchase_request_id bigint not null references purchase_requests(id) on delete cascade,
+  seq int not null,
+  office_name text not null,
+  entered_at timestamptz not null default now(),
+  left_at timestamptz,
+  moved_by text default '',
+  notes text default ''
+);
+create index if not exists pr_step_history_pr_idx on pr_step_history(purchase_request_id);
+
+alter table pr_workflow_steps enable row level security;
+alter table pr_step_history enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 25: per-campus budget tracking. "Spent" is computed on read from
+-- purchase_requests.total_amount, not stored here.
+-- ---------------------------------------------------------------------------
+create table if not exists campus_budgets (
+  id bigserial primary key,
+  campus_id bigint not null references campuses(id) on delete cascade,
+  period text not null,
+  amount numeric not null default 0,
+  updated_at timestamptz default now(),
+  updated_by text default ''
+);
+create unique index if not exists campus_budgets_unique on campus_budgets(campus_id, period);
+
+alter table campus_budgets enable row level security;

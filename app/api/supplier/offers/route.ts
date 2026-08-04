@@ -23,6 +23,7 @@ export type SupplierOfferRow = {
   batch_id: string | null;
   batch_size?: number;
   subject_label?: string;
+  program?: string;
 };
 
 /** GET /api/supplier/offers -- suppliers see only their own submissions;
@@ -46,9 +47,19 @@ export async function GET(req: Request) {
 
     const subjectIds = Array.from(new Set((data ?? []).map((o) => o.subject_id).filter((id): id is number => id != null)));
     const labelMap = new Map<number, string>();
+    const programBySubject = new Map<number, string>();
     if (subjectIds.length) {
-      const { data: subs } = await db.from("subjects").select("id, course_code, course_title").in("id", subjectIds);
-      for (const s of subs ?? []) labelMap.set(s.id, [s.course_code, s.course_title].filter(Boolean).join(" — "));
+      const { data: subs } = await db.from("subjects").select("id, course_code, course_title, program_id").in("id", subjectIds);
+      const programIds = Array.from(new Set((subs ?? []).map((s) => s.program_id).filter((id): id is number => id != null)));
+      const programNameById = new Map<number, string>();
+      if (programIds.length) {
+        const { data: progs } = await db.from("programs").select("id, name").in("id", programIds);
+        for (const p of progs ?? []) programNameById.set(p.id, p.name);
+      }
+      for (const s of subs ?? []) {
+        labelMap.set(s.id, [s.course_code, s.course_title].filter(Boolean).join(" — "));
+        if (s.program_id != null) programBySubject.set(s.id, programNameById.get(s.program_id) ?? "");
+      }
     }
 
     const batchSizes = new Map<string, number>();
@@ -59,6 +70,7 @@ export async function GET(req: Request) {
     const rows: SupplierOfferRow[] = (data ?? []).map((o) => ({
       ...o,
       subject_label: o.subject_id != null ? labelMap.get(o.subject_id) ?? "" : "",
+      program: o.subject_id != null ? programBySubject.get(o.subject_id) ?? "" : "",
       batch_size: o.batch_id ? batchSizes.get(o.batch_id) : undefined,
     }));
     return NextResponse.json({ rows });

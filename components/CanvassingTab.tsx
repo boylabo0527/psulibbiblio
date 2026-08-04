@@ -2,9 +2,18 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { groupRows } from "@/lib/group-rows";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
+
+function yearOf(iso: string): string {
+  return iso ? String(new Date(iso).getFullYear()) : "";
+}
+
+function money(n: number): string {
+  return n.toLocaleString("en-PH", { minimumFractionDigits: 2 });
+}
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
@@ -99,6 +108,7 @@ export default function CanvassingTab() {
   // pending assignments: canvassing id → selected subject_id (string for select)
   const [assignments, setAssignments] = useState<Map<number, string>>(new Map());
   const [saving, setSaving] = useState(false);
+  const [assignedGroupBy, setAssignedGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
 
   function reload() {
     setLoading(true); setErr(null);
@@ -229,6 +239,13 @@ export default function CanvassingTab() {
   const assigned = useMemo(() => rows.filter(r => r.subject_id), [rows]);
   const unassigned = useMemo(() => rows.filter(r => !r.subject_id), [rows]);
   const totalCost = assigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
+
+  const assignedGroups = useMemo(() => groupRows(assigned, assignedGroupBy, (r) => {
+    if (assignedGroupBy === "program") return r.program;
+    if (assignedGroupBy === "supplier") return r.supplier;
+    if (assignedGroupBy === "year") return yearOf(r.canvass_date || r.created_at);
+    return "";
+  }), [assigned, assignedGroupBy]);
 
   // Gap subjects grouped by program for the dropdown.
   // Computed unconditionally (before the needsMigration early return below) so
@@ -392,6 +409,15 @@ export default function CanvassingTab() {
               <h2 className="text-psu font-semibold">Matched & Ready for Purchase Request</h2>
               <p className="text-xs text-slate-500 mt-0.5">{assigned.length} titles matched to subject gaps · Total: ₱{totalCost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</p>
             </div>
+            <label className="text-xs text-slate-500 flex items-center gap-1.5">
+              Group by:
+              <select className="input text-xs py-1" value={assignedGroupBy} onChange={e => setAssignedGroupBy(e.target.value as typeof assignedGroupBy)}>
+                <option value="none">None</option>
+                <option value="program">Program</option>
+                <option value="supplier">Supplier</option>
+                <option value="year">Year</option>
+              </select>
+            </label>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -409,22 +435,31 @@ export default function CanvassingTab() {
                 </tr>
               </thead>
               <tbody>
-                {assigned.map(r => (
-                  <tr key={r.id} className="border-b border-slate-100 hover:bg-green-50">
-                    <td className="py-1.5 pr-2 font-medium">{r.title}</td>
-                    <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
-                    <td className="py-1.5 pr-2 text-psu font-medium">{r.subject_label}</td>
-                    <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
-                    <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
-                    <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-                    <td className="py-1.5 px-2 text-right tabular-nums">{r.quantity}</td>
-                    <td className="py-1.5 px-2 text-right font-semibold tabular-nums">₱{(r.unit_cost * r.quantity).toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
-                    <td className="py-1.5 pl-2">
-                      <button className="text-amber-600 text-[11px] underline mr-2" onClick={() => unassign(r.id)}>Unmatch</button>
-                      <button className="text-red-500 text-[11px] underline" onClick={() => del(r.id)}>Delete</button>
-                    </td>
-                  </tr>
-                ))}
+                {assignedGroups.flatMap(([label, groupItems]) => [
+                  ...(assignedGroupBy !== "none" ? [
+                    <tr key={`g-${label}`} className="bg-slate-50">
+                      <td colSpan={9} className="py-1 px-2 font-semibold text-slate-600">
+                        {label} · {groupItems.length} · ₱{money(groupItems.reduce((s, r) => s + r.unit_cost * r.quantity, 0))}
+                      </td>
+                    </tr>,
+                  ] : []),
+                  ...groupItems.map(r => (
+                    <tr key={r.id} className="border-b border-slate-100 hover:bg-green-50">
+                      <td className="py-1.5 pr-2 font-medium">{r.title}</td>
+                      <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
+                      <td className="py-1.5 pr-2 text-psu font-medium">{r.subject_label}</td>
+                      <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
+                      <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">{r.quantity}</td>
+                      <td className="py-1.5 px-2 text-right font-semibold tabular-nums">₱{(r.unit_cost * r.quantity).toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                      <td className="py-1.5 pl-2">
+                        <button className="text-amber-600 text-[11px] underline mr-2" onClick={() => unassign(r.id)}>Unmatch</button>
+                        <button className="text-red-500 text-[11px] underline" onClick={() => del(r.id)}>Delete</button>
+                      </td>
+                    </tr>
+                  )),
+                ])}
               </tbody>
             </table>
           </div>
@@ -454,6 +489,7 @@ function SupplierOffersReview() {
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [groupBy, setGroupBy] = useState<"none" | "program" | "supplier" | "year">("none");
 
   function load() {
     setLoading(true);
@@ -486,16 +522,33 @@ function SupplierOffersReview() {
   }
 
   const displayed = showAll ? offers : offers.filter((o) => o.status === "pending");
+  const groups = groupRows(displayed, groupBy, (o) => {
+    if (groupBy === "program") return o.program ?? "";
+    if (groupBy === "supplier") return o.supplier_email;
+    if (groupBy === "year") return yearOf(o.created_at);
+    return "";
+  });
   if (loading || (offers.length === 0 && !err)) return null;
 
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-psu font-semibold">Supplier Offers</h2>
-        <label className="flex items-center gap-1.5 text-xs text-slate-600">
-          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
-          Show accepted/declined too
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-slate-500 flex items-center gap-1.5">
+            Group by:
+            <select className="input text-xs py-1" value={groupBy} onChange={(e) => setGroupBy(e.target.value as typeof groupBy)}>
+              <option value="none">None</option>
+              <option value="program">Program</option>
+              <option value="supplier">Supplier</option>
+              <option value="year">Year</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+            Show accepted/declined too
+          </label>
+        </div>
       </div>
       {err && <p className="text-red-700 text-sm mb-2">{err}</p>}
       {displayed.length === 0 && <p className="text-slate-500 text-sm">No pending offers.</p>}
@@ -513,7 +566,13 @@ function SupplierOffersReview() {
             </tr>
           </thead>
           <tbody>
-            {displayed.map((o) => (
+            {groups.flatMap(([label, groupItems]) => [
+              ...(groupBy !== "none" ? [
+                <tr key={`g-${label}`} className="bg-slate-50">
+                  <td colSpan={7} className="py-1 px-2 font-semibold text-slate-600">{label} · {groupItems.length}</td>
+                </tr>,
+              ] : []),
+              ...groupItems.map((o) => (
               <tr key={o.id} className="border-b border-slate-100">
                 <td className="py-1.5 pr-2 text-slate-500">{o.supplier_email}</td>
                 <td className="py-1.5 pr-2 text-slate-500">{o.subject_label || "—"}</td>
@@ -534,7 +593,8 @@ function SupplierOffersReview() {
                   )}
                 </td>
               </tr>
-            ))}
+              )),
+            ])}
           </tbody>
         </table>
       )}

@@ -117,11 +117,13 @@ export default function PurchaseRequestTab() {
     if (selectedItems.length === 0) return;
     setGenerating(true); setErr(null);
     try {
+      const campusId = campus ? campuses.find(c => c.name === campus)?.id ?? null : null;
       const body = {
         entityName: "PALAWAN STATE UNIVERSITY",
         office, fundCluster, prNo,
         date: new Date(date + "T00:00:00").toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" }),
         rcCode, purpose, requestedBy, approvedBy,
+        campus, campus_id: campusId,
         items: selectedItems.map((i, idx) => ({
           stock_prop_no: i.stock_prop_no || String(idx + 1),
           unit: i.unit,
@@ -135,6 +137,8 @@ export default function PurchaseRequestTab() {
           ].filter(Boolean).join(", "),
           quantity: i.draftQty,
           unit_cost: i.unit_cost,
+          supplier: i.supplier || "",
+          program: i.program || "",
         })),
       };
       const res = await apiFetch("/api/purchase-request", {

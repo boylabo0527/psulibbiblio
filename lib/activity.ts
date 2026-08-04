@@ -11,7 +11,9 @@ export type ActivityAction =
   | "role_create" | "role_delete" | "role_permission_edit"
   | "user_role_assign" | "user_role_remove" | "user_campus_scope_edit"
   | "supplier_offer_submit" | "supplier_offer_decide"
-  | "purchase_request_generate";
+  | "purchase_request_generate"
+  | "pr_workflow_step_create" | "pr_workflow_step_edit" | "pr_workflow_step_delete"
+  | "pr_advance" | "campus_budget_set";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed
