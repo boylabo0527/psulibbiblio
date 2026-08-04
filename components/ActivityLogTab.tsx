@@ -9,6 +9,7 @@ const ACTION_LABEL: Record<string, string> = {
   sync_destiny: "Synced from Destiny",
   match_run: "Match run",
   bulk_delete: "Bulk delete",
+  hostinger_migrate: "Migrated to Hostinger",
   program_create: "Program created",
   program_rename: "Program renamed",
   program_delete: "Program deleted",

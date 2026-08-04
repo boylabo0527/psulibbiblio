@@ -8,9 +8,9 @@
 -- 09_institutional_repository.sql + 10_subject_lock.sql + 11_activity_log.sql +
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
--- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql
--- in order. If you've already run some of those individually, running this
--- on top is still safe.
+-- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
+-- 19_unmatched_titles_function.sql in order. If you've already run some of
+-- those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -351,3 +351,31 @@ alter table titles add constraint titles_format_check check (format in (
 ));
 
 alter table titles add column if not exists provider text default '';
+
+-- ---------------------------------------------------------------------------
+-- 19: unmatched_titles_batch() helper for migrating never-matched titles
+-- ---------------------------------------------------------------------------
+create or replace function unmatched_titles_batch(p_format text, batch_size int)
+returns table (
+  id bigint, title text, author text, publisher text, year text,
+  isbn text, url text, subjects text, provider text
+)
+language sql stable
+as $$
+  select t.id, t.title, t.author, t.publisher, t.year, t.isbn, t.url, t.subjects, t.provider
+  from titles t
+  where t.format = p_format
+    and not exists (select 1 from assignments a where a.title_id = t.id)
+  order by t.id
+  limit batch_size;
+$$;
+
+create or replace function unmatched_titles_count(p_format text)
+returns bigint
+language sql stable
+as $$
+  select count(*)
+  from titles t
+  where t.format = p_format
+    and not exists (select 1 from assignments a where a.title_id = t.id);
+$$;

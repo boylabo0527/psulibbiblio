@@ -12,6 +12,7 @@ import CampusValidationTab from "@/components/CampusValidationTab";
 import ActivityLogTab from "@/components/ActivityLogTab";
 import UserManagementTab from "@/components/UserManagementTab";
 import SupplierViewTab from "@/components/SupplierViewTab";
+import PerlegoCatalogTab from "@/components/PerlegoCatalogTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
@@ -28,6 +29,7 @@ const tabs = [
   { id: "activity",         label: "Activity Log",        publicTab: false },
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
   { id: "cleanup",          label: "Cleanup",             publicTab: false },
+  { id: "perlego-catalog",  label: "Perlego Catalog",     publicTab: false },
   { id: "user-management",  label: "User Management",     publicTab: false },
 ] as const;
 type TabId = (typeof tabs)[number]["id"];
@@ -41,14 +43,16 @@ export default function Home() {
   const needsAuth = currentTab && !currentTab.publicTab && !user;
 
   // A tab is visible if it's public, or the signed-in user's role can view
-  // it -- "user-management" and "cleanup" are special-cased to admins only:
-  // user-management configures role permissions themselves, and cleanup
-  // (merging duplicate programs/titles catalog-wide) is a power tool that
-  // predates the per-tab permission system, not yet wired into it.
+  // it -- "user-management", "cleanup", and "perlego-catalog" are
+  // special-cased to admins only: user-management configures role
+  // permissions themselves, cleanup (merging duplicate programs/titles
+  // catalog-wide) is a power tool that predates the per-tab permission
+  // system, and perlego-catalog reads from org-wide Hostinger credentials
+  // rather than anything scoped per-tab.
   const visibleTabs = tabs.filter((t) => {
     if (t.publicTab) return true;
     if (!user) return false;
-    if (t.id === "user-management" || t.id === "cleanup") return perms.isAdmin;
+    if (t.id === "user-management" || t.id === "cleanup" || t.id === "perlego-catalog") return perms.isAdmin;
     return canView(perms, t.id);
   });
 
@@ -138,6 +142,8 @@ export default function Home() {
           <UserManagementTab />
         ) : tab === "cleanup" ? (
           <CleanupTab />
+        ) : tab === "perlego-catalog" ? (
+          <PerlegoCatalogTab />
         ) : null}
       </section>
 
