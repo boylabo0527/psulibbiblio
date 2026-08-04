@@ -5,7 +5,6 @@ import { getUserPermissions } from "@/lib/permissions";
 import { insertPerlegoTitles } from "@/lib/hostinger-mysql";
 import { getSyncJob, markSyncJobError } from "@/lib/sync-jobs";
 import { errorMessage } from "@/lib/errors";
-import { jobKind } from "@/app/api/admin/migrate-to-hostinger/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
