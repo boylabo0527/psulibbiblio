@@ -8,6 +8,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import type { DestinyDiagnostics } from "@/lib/destiny";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 import DedupeBarcodesAdmin from "@/components/DedupeBarcodesAdmin";
+import MigrateToHostingerAdmin from "@/components/MigrateToHostingerAdmin";
 
 // A Destiny catalog sync can involve tens of thousands of rows -- far more
 // than fits in one Vercel function call on the Hobby (free) plan, which
@@ -655,6 +656,7 @@ export default function UploadTab() {
       />
       <BulkDeleteAdmin />
       <DedupeBarcodesAdmin />
+      <MigrateToHostingerAdmin />
     </>
   );
 }
