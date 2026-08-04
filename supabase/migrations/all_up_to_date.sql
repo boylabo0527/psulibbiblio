@@ -9,9 +9,10 @@
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
 -- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
--- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql in
--- order. If you've already run some of those individually, running this on
--- top is still safe.
+-- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
+-- 21_faculty_role.sql + 22_purchase_request_records.sql in order. If you've
+-- already run some of those individually, running this on top is still
+-- safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -390,3 +391,38 @@ as $$
      join titles t on t.id = a.title_id
      where t.format = p_format);
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 21: "Faculty Member" role, auto-granted on first Google SSO sign-in from
+-- the university's domain -- see app/api/auth/provision-google. No default
+-- tab permissions: starts at zero access like any unassigned email, until
+-- an admin grants specific tabs from User Management.
+-- ---------------------------------------------------------------------------
+insert into roles (name, is_admin) values
+  ('Faculty Member', false)
+on conflict (name) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 22: persisted Purchase Request records, so the Monitoring tab can list
+-- them. /api/purchase-request still also streams back the .xlsx download.
+-- ---------------------------------------------------------------------------
+create table if not exists purchase_requests (
+  id bigserial primary key,
+  pr_no text not null default '',
+  submitted_by text not null default '',
+  entity_name text default '',
+  office text default '',
+  fund_cluster text default '',
+  rc_code text default '',
+  purpose text default '',
+  requested_by text default '',
+  approved_by text default '',
+  pr_date text default '',
+  items jsonb not null default '[]'::jsonb,
+  total_amount numeric not null default 0,
+  created_at timestamptz default now()
+);
+
+create index if not exists purchase_requests_created_at_idx on purchase_requests(created_at desc);
+
+alter table purchase_requests enable row level security;

@@ -22,6 +22,7 @@ const TAB_LABELS: Record<string, string> = {
   "purchase-request": "Purchase Request",
   activity: "Activity Log",
   "supplier-view": "Supplier View",
+  monitoring: "Monitoring",
 };
 const TAB_IDS = Object.keys(TAB_LABELS);
 

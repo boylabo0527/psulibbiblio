@@ -13,6 +13,7 @@ import ActivityLogTab from "@/components/ActivityLogTab";
 import UserManagementTab from "@/components/UserManagementTab";
 import SupplierViewTab from "@/components/SupplierViewTab";
 import PerlegoCatalogTab from "@/components/PerlegoCatalogTab";
+import MonitoringTab from "@/components/MonitoringTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
@@ -28,6 +29,7 @@ const tabs = [
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
   { id: "activity",         label: "Activity Log",        publicTab: false },
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
+  { id: "monitoring",       label: "Monitoring",          publicTab: false },
   { id: "cleanup",          label: "Cleanup",             publicTab: false },
   { id: "perlego-catalog",  label: "Perlego Catalog",     publicTab: false },
   { id: "user-management",  label: "User Management",     publicTab: false },
@@ -138,6 +140,8 @@ export default function Home() {
           <ActivityLogTab />
         ) : tab === "supplier-view" ? (
           <SupplierViewTab />
+        ) : tab === "monitoring" ? (
+          <MonitoringTab />
         ) : tab === "user-management" ? (
           <UserManagementTab />
         ) : tab === "cleanup" ? (
