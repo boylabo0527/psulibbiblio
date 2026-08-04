@@ -19,6 +19,13 @@ export async function middleware(req: NextRequest) {
   if (!pathname.startsWith("/api/")) {
     return NextResponse.next();
   }
+  // Vercel Cron has no Supabase user to sign in as -- it authenticates via
+  // CRON_SECRET instead (checked in the route itself), sent as a plain
+  // Bearer token that would otherwise fail Supabase JWT verification below
+  // and 401 before the route ever got a chance to check it.
+  if (pathname.startsWith("/api/cron/")) {
+    return NextResponse.next();
+  }
   // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
   // paths still require a signed-in user, even though anyone can read them.
   const isPublicGet = isPublic(pathname) && req.method === "GET";
