@@ -6,5 +6,8 @@
     "app/api/upload/printed/route.ts": { "maxDuration": 300 },
     "app/api/upload/subjects/route.ts": { "maxDuration": 300 },
     "app/api/export/route.ts": { "maxDuration": 60 }
-  }
+  },
+  "crons": [
+    { "path": "/api/cron/keepalive", "schedule": "0 3 * * *" }
+  ]
 }
