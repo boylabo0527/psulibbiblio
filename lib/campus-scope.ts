@@ -15,6 +15,32 @@ export async function getAllowedProgramIds(
   return new Set((data ?? []).map((r) => r.program_id as number));
 }
 
+/** Whether a single program_id is within the caller's campus scope --
+ *  for mutation/detail endpoints acting on one existing row (a canvassing
+ *  entry, a subject, ...) rather than filtering a list. A null program_id
+ *  (not yet assigned/triaged) is always allowed, matching the "unknown
+ *  campus isn't hidden" policy used when filtering lists of these rows. */
+export async function isProgramInScope(
+  db: ReturnType<typeof serviceClient>,
+  perms: UserPermissions,
+  programId: number | null,
+): Promise<boolean> {
+  if (perms.campusIds === null) return true;
+  if (programId == null) return true;
+  const allowed = await getAllowedProgramIds(db, perms.campusIds);
+  return allowed.has(programId);
+}
+
+/** Like isProgramInScope, but for rows that carry a campus_id directly
+ *  (purchase_requests, campus_budgets) instead of a program_id to resolve
+ *  through program_campuses. A null campus_id (university-wide/digital,
+ *  not tied to one physical campus) is always allowed. */
+export function isCampusInScope(perms: UserPermissions, campusId: number | null): boolean {
+  if (perms.campusIds === null) return true;
+  if (campusId == null) return true;
+  return perms.campusIds.includes(campusId);
+}
+
 /** Narrows a requested program_id against the caller's campus scope.
  *  Returns { ok: true, programIds: null } when unrestricted (no filtering
  *  needed), { ok: true, programIds: Set } when restricted and the request

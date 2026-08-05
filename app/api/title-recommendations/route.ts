@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds, isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -50,10 +51,18 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "You don't have access to this." }, { status: 403 });
     }
 
-    const { data, error } = await db.from("title_recommendations")
+    const { data: rawData, error } = await db.from("title_recommendations")
       .select("*, subjects(course_code, course_title, program_id), canvassing(supplier, unit_cost)")
       .order("created_at", { ascending: false });
     if (error) throw error;
+
+    const allowedProgramIds = perms.campusIds !== null ? await getAllowedProgramIds(db, perms.campusIds) : null;
+    const data = allowedProgramIds
+      ? (rawData ?? []).filter((r) => {
+          const pid = (r.subjects as unknown as { program_id?: number } | null)?.program_id;
+          return pid == null || allowedProgramIds.has(pid);
+        })
+      : rawData;
 
     const programIds = Array.from(new Set((data ?? [])
       .map((r) => (r.subjects as unknown as { program_id?: number } | null)?.program_id)
@@ -108,6 +117,12 @@ export async function POST(req: Request) {
     const inputs = (body.titles ?? []).filter((t) => (t.title ?? "").trim());
     if (!Number.isFinite(subjectId) || !inputs.length) {
       return NextResponse.json({ error: "subject_id and at least one title are required." }, { status: 400 });
+    }
+
+    const { data: subject } = await db.from("subjects").select("program_id").eq("id", subjectId as number).maybeSingle();
+    if (!subject) return NextResponse.json({ error: "Course not found." }, { status: 404 });
+    if (!(await isProgramInScope(db, perms, subject.program_id))) {
+      return NextResponse.json({ error: "That course isn't in your assigned campus(es)." }, { status: 403 });
     }
 
     const insertRows = inputs.map((t) => ({

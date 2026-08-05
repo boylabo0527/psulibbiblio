@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -28,14 +29,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "canvassing_id and subject_id are required." }, { status: 400 });
     }
 
-    const { data: entry } = await db.from("canvassing").select("id, title, subject_id").eq("id", canvassingId).maybeSingle();
+    const { data: entry } = await db.from("canvassing").select("id, title, subject_id, program_id").eq("id", canvassingId).maybeSingle();
     if (!entry) return NextResponse.json({ error: "Canvassing entry not found." }, { status: 404 });
     if (!entry.subject_id) {
       return NextResponse.json({ error: "Assign this title to a primary course first." }, { status: 400 });
     }
 
-    const { data: subject } = await db.from("subjects").select("course_code, course_title").eq("id", subjectId).maybeSingle();
+    const { data: subject } = await db.from("subjects").select("course_code, course_title, program_id").eq("id", subjectId).maybeSingle();
     if (!subject) return NextResponse.json({ error: "Course not found." }, { status: 404 });
+    if (!(await isProgramInScope(db, perms, entry.program_id)) || !(await isProgramInScope(db, perms, subject.program_id))) {
+      return NextResponse.json({ error: "That course isn't in your assigned campus(es)." }, { status: 403 });
+    }
 
     const { error } = await db.from("canvassing_subjects")
       .insert({ canvassing_id: canvassingId, subject_id: subjectId });
@@ -71,9 +75,12 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "canvassing_id and subject_id are required." }, { status: 400 });
     }
 
-    const { data: entry } = await db.from("canvassing").select("subject_id").eq("id", canvassingId).maybeSingle();
+    const { data: entry } = await db.from("canvassing").select("subject_id, program_id").eq("id", canvassingId).maybeSingle();
     if (entry?.subject_id === subjectId) {
       return NextResponse.json({ error: "Can't unlink the primary course -- reassign it instead." }, { status: 400 });
+    }
+    if (entry && !(await isProgramInScope(db, perms, entry.program_id))) {
+      return NextResponse.json({ error: "This entry isn't in your assigned campus(es)." }, { status: 403 });
     }
 
     const { error } = await db.from("canvassing_subjects").delete()

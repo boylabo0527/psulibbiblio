@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds, isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -39,10 +40,17 @@ export type CanvassingRow = {
 
 export async function GET(req: Request) {
   try {
+    const db = serviceClient();
+    const email = userEmailFromRequest(req);
+    const perms = await getUserPermissions(db, email);
+    if (!perms.isAdmin && !perms.tabs["canvassing"]?.can_view && !perms.tabs["faculty-recommendations"]?.can_view) {
+      return NextResponse.json({ error: "You don't have access to this." }, { status: 403 });
+    }
+    const allowedProgramIds = perms.campusIds !== null ? await getAllowedProgramIds(db, perms.campusIds) : null;
+
     const u = new URL(req.url);
     const programId = u.searchParams.get("program_id");
     const subjectId = u.searchParams.get("subject_id");
-    const db = serviceClient();
 
     let q = db.from("canvassing")
       .select("*, subjects(course_code, course_title, program_id), programs(name, college)")
@@ -51,8 +59,14 @@ export async function GET(req: Request) {
     if (subjectId) q = q.eq("subject_id", Number(subjectId));
     else if (programId) q = q.eq("program_id", Number(programId));
 
-    const { data, error } = await q;
+    const { data: rawData, error } = await q;
     if (error) throw error;
+    // Unassigned entries (no program yet) stay visible to every campus-
+    // restricted canvassing editor -- they're the still-needs-triage queue,
+    // and which campus one belongs to isn't knowable until it's assigned.
+    const data = allowedProgramIds
+      ? (rawData ?? []).filter((r) => r.program_id == null || allowedProgramIds.has(r.program_id as number))
+      : rawData;
 
     const { data: programRows } = await db.from("programs").select("id, name, college");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
@@ -140,8 +154,11 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "A valid unit_cost is required." }, { status: 400 });
     }
 
-    const { data: existing } = await db.from("canvassing").select("id, title, unit_cost").eq("id", id).maybeSingle();
+    const { data: existing } = await db.from("canvassing").select("id, title, unit_cost, program_id").eq("id", id).maybeSingle();
     if (!existing) return NextResponse.json({ error: "Canvassing entry not found." }, { status: 404 });
+    if (!(await isProgramInScope(db, perms, existing.program_id))) {
+      return NextResponse.json({ error: "This entry isn't in your assigned campus(es)." }, { status: 403 });
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     const { error } = await db.from("canvassing").update({ unit_cost: newCost, canvass_date: today }).eq("id", id);
@@ -168,6 +185,11 @@ export async function DELETE(req: Request) {
     const u = new URL(req.url);
     const id = Number(u.searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+    const { data: existing } = await db.from("canvassing").select("id, program_id").eq("id", id).maybeSingle();
+    if (!existing) return NextResponse.json({ error: "Canvassing entry not found." }, { status: 404 });
+    if (!(await isProgramInScope(db, perms, existing.program_id))) {
+      return NextResponse.json({ error: "This entry isn't in your assigned campus(es)." }, { status: 403 });
+    }
     const { error } = await db.from("canvassing").delete().eq("id", id);
     if (error) throw error;
     return NextResponse.json({ ok: true });

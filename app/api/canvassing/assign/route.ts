@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -15,6 +16,14 @@ export async function POST(req: Request) {
     }
     const { id, subject_id, program_id } = await req.json();
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+
+    const { data: existing } = await db.from("canvassing").select("id, program_id").eq("id", Number(id)).maybeSingle();
+    if (!existing) return NextResponse.json({ error: "Canvassing entry not found." }, { status: 404 });
+    const targetProgramId = program_id != null ? Number(program_id) : null;
+    if (!(await isProgramInScope(db, perms, existing.program_id)) || !(await isProgramInScope(db, perms, targetProgramId))) {
+      return NextResponse.json({ error: "That course isn't in your assigned campus(es)." }, { status: 403 });
+    }
+
     const { error } = await db.from("canvassing")
       .update({ subject_id: subject_id ?? null, program_id: program_id ?? null })
       .eq("id", Number(id));

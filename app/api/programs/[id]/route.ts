@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { logActivity, userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
+import { isProgramInScope } from "@/lib/campus-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
     const db = serviceClient();
     const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!(await isProgramInScope(db, perms, id))) {
+      return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
+    }
     const body = await req.json() as { name?: string; cost_per_title?: number | null; college?: string };
     const patch: Record<string, unknown> = {};
     let name: string | undefined;
@@ -97,6 +101,9 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const perms = await getUserPermissions(db, userEmailFromRequest(req));
     if (!perms.isAdmin && !perms.tabs["campus-validation"]?.can_edit) {
       return NextResponse.json({ error: "Your account doesn't have permission to delete programs." }, { status: 403 });
+    }
+    if (!(await isProgramInScope(db, perms, id))) {
+      return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
     }
 
     const { count, error: countErr } = await db.from("subjects")

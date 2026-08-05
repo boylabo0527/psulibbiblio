@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -22,9 +23,13 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const email = userEmailFromRequest(req);
     const perms = await getUserPermissions(db, email);
 
-    const { data: rec, error: recErr } = await db.from("title_recommendations").select("id, recommended_by, title, status").eq("id", id).maybeSingle();
+    const { data: rec, error: recErr } = await db.from("title_recommendations").select("id, recommended_by, title, status, subjects(program_id)").eq("id", id).maybeSingle();
     if (recErr) throw recErr;
     if (!rec) return NextResponse.json({ error: "Recommendation not found." }, { status: 404 });
+    const recProgramId = (rec.subjects as unknown as { program_id?: number } | null)?.program_id ?? null;
+    if (!(await isProgramInScope(db, perms, recProgramId))) {
+      return NextResponse.json({ error: "This recommendation isn't in your assigned campus(es)." }, { status: 403 });
+    }
 
     const body = await req.json() as {
       status?: string; title?: string; author?: string; publisher?: string;
@@ -83,9 +88,13 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const email = userEmailFromRequest(req);
     const perms = await getUserPermissions(db, email);
 
-    const { data: rec, error: recErr } = await db.from("title_recommendations").select("id, recommended_by, title, status").eq("id", id).maybeSingle();
+    const { data: rec, error: recErr } = await db.from("title_recommendations").select("id, recommended_by, title, status, subjects(program_id)").eq("id", id).maybeSingle();
     if (recErr) throw recErr;
     if (!rec) return NextResponse.json({ error: "Recommendation not found." }, { status: 404 });
+    const recProgramId = (rec.subjects as unknown as { program_id?: number } | null)?.program_id ?? null;
+    if (!(await isProgramInScope(db, perms, recProgramId))) {
+      return NextResponse.json({ error: "This recommendation isn't in your assigned campus(es)." }, { status: 403 });
+    }
 
     const isReviewer = perms.isAdmin || !!perms.tabs["canvassing"]?.can_edit;
     const isOwnerPending = rec.recommended_by === email && rec.status === "pending";

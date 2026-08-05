@@ -82,14 +82,30 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "You don't have access to this." }, { status: 403 });
     }
 
+    // Campus-restricted users only see Purchase Requests / budgets for
+    // their own campus(es) -- university-wide rows (campus_id null, e.g.
+    // ebook-only requests not tied to one physical campus) stay visible to
+    // everyone, same as an unassigned canvassing entry does elsewhere.
+    // Purchase Orders aren't filtered here: they're per-supplier documents
+    // consolidated across every campus's PRs by design, not owned by one.
+    let prQuery = db.from("purchase_requests")
+      .select("id, pr_no, submitted_by, office, purpose, items, total_amount, campus, campus_id, current_step_seq, step_entered_at, status, created_at")
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    if (perms.campusIds !== null) {
+      prQuery = prQuery.or(`campus_id.is.null,campus_id.in.(${perms.campusIds.join(",") || "-1"})`);
+    }
+
+    let budgetsQuery = db.from("campus_budgets").select("id, campus_id, period, amount, updated_at, updated_by");
+    if (perms.campusIds !== null) {
+      budgetsQuery = budgetsQuery.or(`campus_id.is.null,campus_id.in.(${perms.campusIds.join(",") || "-1"})`);
+    }
+
     const [prRes, offersRes, stepsRes, budgetsRes, campusesRes, posRes] = await Promise.all([
-      db.from("purchase_requests")
-        .select("id, pr_no, submitted_by, office, purpose, items, total_amount, campus, campus_id, current_step_seq, step_entered_at, status, created_at")
-        .order("created_at", { ascending: false })
-        .limit(1000),
+      prQuery,
       db.from("supplier_offers").select("*").order("created_at", { ascending: false }).limit(500),
       db.from("pr_workflow_steps").select("id, seq, office_name").order("seq"),
-      db.from("campus_budgets").select("id, campus_id, period, amount, updated_at, updated_by"),
+      budgetsQuery,
       db.from("campuses").select("id, name"),
       db.from("purchase_orders")
         .select("id, po_no, supplier, items, total_amount, generated_by, created_at, status")

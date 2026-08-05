@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { isCampusInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
@@ -29,9 +30,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     const { data: pr, error: prErr } = await db.from("purchase_requests")
-      .select("id, pr_no, current_step_seq, status").eq("id", id).maybeSingle();
+      .select("id, pr_no, current_step_seq, status, campus_id").eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
+    if (!isCampusInScope(perms, pr.campus_id)) {
+      return NextResponse.json({ error: "This purchase request isn't in your assigned campus(es)." }, { status: 403 });
+    }
     if (pr.status === "cancelled") {
       return NextResponse.json({ error: "This purchase request is cancelled -- generate a new one instead." }, { status: 400 });
     }

@@ -1,14 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-/** Routes that anyone (signed in or not) may call. Everything else under
- *  /api/* requires a valid Supabase access token in the Authorization
- *  header. The Dashboard tab on the public homepage is wired to the
- *  endpoints listed below. */
-const PUBLIC_API = ["/api/health", "/api/dashboard", "/api/export", "/api/programs", "/api/campuses", "/api/program-campuses"];
+/** Routes that anyone (signed in or not) may call, matching the path and
+ *  any of its sub-paths (e.g. "/api/dashboard" also covers
+ *  "/api/dashboard/subjects"). The Dashboard tab on the public homepage is
+ *  wired to the endpoints listed below. */
+const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api/campuses", "/api/program-campuses"];
+
+/** Public, but ONLY that exact path -- not sub-paths. "/api/programs" (the
+ *  bare program list) is genuinely public for the Dashboard's filter
+ *  dropdown, but "/api/programs/:id/bibliography" (full title-level detail
+ *  for one program), "/api/programs/:id" (rename/delete), "/api/programs/
+ *  duplicates", and "/api/programs/merge" are not -- a prefix match here
+ *  previously left all of those open to anyone, signed in or not, with no
+ *  campus-scope check at all. */
+const PUBLIC_API_EXACT = ["/api/programs"];
 
 function isPublic(pathname: string): boolean {
-  for (const p of PUBLIC_API) {
+  if (PUBLIC_API_EXACT.includes(pathname)) return true;
+  for (const p of PUBLIC_API_PREFIX) {
     if (pathname === p || pathname.startsWith(p + "/")) return true;
   }
   return false;

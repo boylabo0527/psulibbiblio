@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { isCampusInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import type { PersistedPRItem } from "@/lib/purchase-request-items";
 
@@ -24,6 +25,9 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const { data, error } = await db.from("purchase_requests").select("*").eq("id", id).maybeSingle();
     if (error) throw error;
     if (!data) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
+    if (!isCampusInScope(perms, data.campus_id)) {
+      return NextResponse.json({ error: "This purchase request isn't in your assigned campus(es)." }, { status: 403 });
+    }
     return NextResponse.json({ pr: data });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
@@ -52,9 +56,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Your account doesn't have permission to modify purchase requests." }, { status: 403 });
     }
 
-    const { data: pr, error: prErr } = await db.from("purchase_requests").select("id, pr_no, items, status").eq("id", id).maybeSingle();
+    const { data: pr, error: prErr } = await db.from("purchase_requests").select("id, pr_no, items, status, campus_id").eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
+    if (!isCampusInScope(perms, pr.campus_id)) {
+      return NextResponse.json({ error: "This purchase request isn't in your assigned campus(es)." }, { status: 403 });
+    }
     if (pr.status !== "in_progress") {
       return NextResponse.json({ error: `Can't modify a purchase request that's ${pr.status}.` }, { status: 400 });
     }

@@ -37,8 +37,16 @@ export async function GET(req: Request) {
     const supplier = (new URL(req.url).searchParams.get("supplier") ?? "").trim();
     if (!supplier) return NextResponse.json({ error: "supplier is required" }, { status: 400 });
 
+    // A campus-restricted user consolidating into a PO should only pull in
+    // their own campus's (plus university-wide) Purchase Requests -- same
+    // scope as the Monitoring list, so they can't fold another campus's
+    // items into a PO they generate.
+    let prQuery = db.from("purchase_requests").select("pr_no, items, campus_id").neq("status", "cancelled");
+    if (perms.campusIds !== null) {
+      prQuery = prQuery.or(`campus_id.is.null,campus_id.in.(${perms.campusIds.join(",") || "-1"})`);
+    }
     const [{ data, error }, alreadyOnPo] = await Promise.all([
-      db.from("purchase_requests").select("pr_no, items").neq("status", "cancelled"),
+      prQuery,
       getClaimedCanvassingIdsForPO(db),
     ]);
     if (error) throw error;

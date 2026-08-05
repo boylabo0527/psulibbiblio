@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
+import { getAllowedProgramIds, isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import { errorMessage } from "@/lib/errors";
 
@@ -44,8 +45,16 @@ export async function GET(req: Request) {
       .order("subject_id").order("title");
     if (subjectId) q = q.eq("subject_id", Number(subjectId));
 
-    const { data, error } = await q;
+    const { data: rawData, error } = await q;
     if (error) throw error;
+
+    const allowedProgramIds = perms.campusIds !== null ? await getAllowedProgramIds(db, perms.campusIds) : null;
+    const data = allowedProgramIds
+      ? (rawData ?? []).filter((r) => {
+          const pid = (r.subjects as unknown as { program_id?: number } | null)?.program_id;
+          return pid == null || allowedProgramIds.has(pid);
+        })
+      : rawData;
 
     const programIds = Array.from(new Set((data ?? [])
       .map((r) => (r.subjects as unknown as { program_id?: number } | null)?.program_id)
@@ -87,8 +96,12 @@ export async function DELETE(req: Request) {
     const id = Number(new URL(req.url).searchParams.get("id"));
     if (!Number.isFinite(id)) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-    const { data: existing } = await db.from("standard_titles").select("id, title").eq("id", id).maybeSingle();
+    const { data: existing } = await db.from("standard_titles").select("id, title, subjects(program_id)").eq("id", id).maybeSingle();
     if (!existing) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    const existingProgramId = (existing.subjects as unknown as { program_id?: number } | null)?.program_id ?? null;
+    if (!(await isProgramInScope(db, perms, existingProgramId))) {
+      return NextResponse.json({ error: "This entry isn't in your assigned campus(es)." }, { status: 403 });
+    }
 
     const { error } = await db.from("standard_titles").delete().eq("id", id);
     if (error) throw error;
