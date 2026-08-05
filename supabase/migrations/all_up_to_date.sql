@@ -612,3 +612,27 @@ create index if not exists title_recommendations_canvassing_idx on title_recomme
 -- ---------------------------------------------------------------------------
 alter table programs add column if not exists college text default '';
 create index if not exists programs_college_idx on programs (college);
+
+-- ---------------------------------------------------------------------------
+-- 32: the library committee's authoritative "standard titles" list per
+-- course, set/uploaded in bulk by an admin -- compared against the actual
+-- catalog by the Standard Titles tab so staff can see which are missing.
+-- ---------------------------------------------------------------------------
+create table if not exists standard_titles (
+  id          bigserial primary key,
+  subject_id  bigint not null references subjects(id) on delete cascade,
+  title       text not null,
+  author      text default '',
+  publisher   text default '',
+  year        text default '',
+  isbn        text default '',
+  notes       text default '',
+  created_by  text default '',
+  created_at  timestamptz default now()
+);
+create index if not exists standard_titles_subject_idx on standard_titles (subject_id);
+
+alter table standard_titles enable row level security;
+do $$ begin
+  create policy "anon read standard_titles" on standard_titles for select using (true);
+exception when duplicate_object then null; end $$;

@@ -18,6 +18,7 @@ const TAB_LABELS: Record<string, string> = {
   programs: "Programs & Export",
   "campus-validation": "Campus Validation",
   procurement: "Procurement Analysis",
+  "standard-titles": "Standard Titles",
   canvassing: "Market Canvassing",
   "purchase-request": "Purchase Request",
   activity: "Activity Log",
