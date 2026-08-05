@@ -55,6 +55,7 @@ const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
 export default function Home() {
   const [tab, setTab] = useState<TabId>("dashboard");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
   const { user, loading, signOut } = useAuth();
   const { perms, loading: permsLoading } = usePermissions();
@@ -88,19 +89,28 @@ export default function Home() {
 
   return (
     <main>
-      <header className="bg-psu text-white px-8 py-4 flex flex-wrap gap-4 justify-between items-center border-b-4 border-psu-gold">
-        <div>
-          <h1 className="text-xl font-semibold">PSU Bibliography Generator</h1>
-          <p className="text-xs opacity-90 mt-0.5">
-            Per-program subject bibliographies · Dashboard is public · sign in to upload, match, and export.
-          </p>
+      <header className="bg-psu text-white px-4 sm:px-8 py-4 flex flex-wrap gap-4 justify-between items-center border-b-4 border-psu-gold">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            className="sm:hidden shrink-0 border border-white/40 rounded p-2 leading-none"
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            onClick={() => setMobileMenuOpen((v) => !v)}
+          >
+            {mobileMenuOpen ? "✕" : "☰"}
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-semibold truncate">PSU Bibliography Generator</h1>
+            <p className="text-xs opacity-90 mt-0.5 hidden sm:block">
+              Per-program subject bibliographies · Dashboard is public · sign in to upload, match, and export.
+            </p>
+          </div>
         </div>
         <div className="text-sm flex items-center gap-3">
           {loading ? (
             <span className="opacity-70 text-xs">…</span>
           ) : user ? (
             <>
-              <span className="opacity-90 text-xs sm:text-sm">
+              <span className="opacity-90 text-xs sm:text-sm hidden sm:inline">
                 {user.email}{perms.role && <span className="opacity-70"> · {perms.role}</span>}
               </span>
               <button
@@ -121,7 +131,10 @@ export default function Home() {
         </div>
       </header>
 
-      <nav ref={navRef} className="bg-white border-b border-slate-200 px-8 flex gap-1 overflow-visible relative">
+      {/* Desktop nav: horizontal bar of dropdown groups -- hidden below sm,
+          where it has no room and would force the whole page to scroll
+          sideways (px-8 padding alone eats most of a 375px viewport). */}
+      <nav ref={navRef} className="hidden sm:flex bg-white border-b border-slate-200 px-8 gap-1 overflow-visible relative">
         {visibleTabs.filter((t) => t.id === "dashboard").map((t) => (
           <button
             key={t.id}
@@ -179,7 +192,51 @@ export default function Home() {
         })}
       </nav>
 
-      <section className="px-8 py-6 max-w-7xl mx-auto">
+      {/* Mobile nav: full-width stacked menu triggered by the hamburger
+          button above, grouped the same way as the desktop dropdowns so
+          the two stay in sync without a separate tab list to maintain. */}
+      {mobileMenuOpen && (
+        <nav className="sm:hidden bg-white border-b border-slate-200 max-h-[70vh] overflow-y-auto">
+          {visibleTabs.filter((t) => t.id === "dashboard").map((t) => (
+            <button
+              key={t.id}
+              onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
+              className={
+                "block w-full text-left px-4 py-3 text-sm border-b border-slate-100 " +
+                (tab === t.id ? "text-psu font-semibold bg-psu-light/40" : "text-slate-700")
+              }
+            >
+              {t.label}
+            </button>
+          ))}
+          {NAV_GROUPS.map((g) => {
+            const items = visibleTabs.filter((t) => (g.tabIds as readonly string[]).includes(t.id));
+            if (items.length === 0) return null;
+            return (
+              <div key={g.id} className="border-b border-slate-100">
+                <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{g.label}</div>
+                {items.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
+                    className={
+                      "block w-full text-left px-4 py-2.5 text-sm " +
+                      (tab === t.id ? "text-psu font-semibold bg-psu-light/40" : "text-slate-600")
+                    }
+                  >
+                    {t.label}
+                    {!t.publicTab && !user && (
+                      <span className="ml-1 text-xs" title="Sign in required">🔒</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </nav>
+      )}
+
+      <section className="px-4 sm:px-8 py-6 max-w-7xl mx-auto">
         {needsAuth ? (
           <LoginScreen />
         ) : user && !permsLoading && currentTab && !currentTab.publicTab && !visibleTabs.some((t) => t.id === tab) ? (
