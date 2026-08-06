@@ -28,6 +28,17 @@ export type PurchaseRequestRow = {
 
 export type WorkflowStep = { id: number; seq: number; office_name: string };
 
+/** One office-step visit for a Purchase Request -- the raw material for
+ *  the Gantt chart in Monitoring (time spent in each office). left_at is
+ *  null while it's still the PR's current step. */
+export type PrStepHistoryRow = {
+  purchase_request_id: number;
+  seq: number;
+  office_name: string;
+  entered_at: string;
+  left_at: string | null;
+};
+
 export type SupplierSummaryRow = {
   supplier: string;
   item_count: number;
@@ -126,6 +137,21 @@ export async function GET(req: Request) {
     const campusNameById = new Map((campusesRes.data ?? []).map((c) => [c.id as number, c.name as string]));
 
     const prRows = prRes.data ?? [];
+
+    // Gantt chart material -- capped to the 50 most-recently-active
+    // in_progress PRs (prRows is already newest-first) so the chart stays
+    // legible; a completed/cancelled PR's timeline isn't what "where is
+    // this stuck" is asking about.
+    const inProgressIds = prRows.filter((r) => r.status === "in_progress").map((r) => r.id).slice(0, 50);
+    let prStepHistory: PrStepHistoryRow[] = [];
+    if (inProgressIds.length) {
+      const { data: histData, error: histErr } = await db.from("pr_step_history")
+        .select("purchase_request_id, seq, office_name, entered_at, left_at")
+        .in("purchase_request_id", inProgressIds)
+        .order("entered_at");
+      if (histErr) throw histErr;
+      prStepHistory = histData ?? [];
+    }
     const now = Date.now();
     const purchaseRequests: PurchaseRequestRow[] = prRows.map((r) => {
       const daysInStep = r.step_entered_at ? Math.floor((now - new Date(r.step_entered_at).getTime()) / 86400000) : null;
@@ -236,6 +262,7 @@ export async function GET(req: Request) {
       purchaseRequests, proposals, workflowSteps: steps,
       supplierSummary, programSummary, campusBudgets, purchaseOrders,
       campuses: campusesRes.data ?? [],
+      prStepHistory,
     });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });

@@ -18,6 +18,11 @@ export type SupplierNeedRow = {
   current_digital: number;
   gap: number; // additional titles (printed or ebook) still needed for accreditation
   needs_printed: boolean; // true if a recent printed book specifically is still missing
+  /** Which campus(es) offer this subject's program, via program_campuses --
+   *  a program can be offered at more than one campus. Empty when no
+   *  mapping is configured yet (treated as "not campus-specific" rather
+   *  than hidden, same policy used everywhere else campus scope is read). */
+  campuses: string[];
   /** Faculty-suggested titles for this course, if any -- full detail (not
    *  just title/author) so a supplier can tell whether they can supply the
    *  exact title requested or need to propose an alternative. */
@@ -56,6 +61,19 @@ export async function GET(req: Request) {
 
     const { data: programRows } = await db.from("programs").select("id, name");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
+
+    const programIds = Array.from(new Set(subjects.map((s) => s.program_id)));
+    const campusesByProgram = new Map<number, string[]>();
+    if (programIds.length) {
+      const { data: mappings } = await db.from("program_campuses")
+        .select("program_id, campuses(name)").in("program_id", programIds);
+      for (const m of (mappings ?? []) as { program_id: number; campuses: { name?: string } | null }[]) {
+        const name = m.campuses?.name;
+        if (!name) continue;
+        if (!campusesByProgram.has(m.program_id)) campusesByProgram.set(m.program_id, []);
+        campusesByProgram.get(m.program_id)!.push(name);
+      }
+    }
 
     type AssignRow = { subject_id: number; titles: { format: string; year: string | null } | null };
     const subjectIds = subjects.map((s) => s.id);
@@ -115,6 +133,7 @@ export async function GET(req: Request) {
           current_digital: digitalMap.get(s.id) ?? 0,
           gap,
           needs_printed: recentPrinted < 1,
+          campuses: campusesByProgram.get(s.program_id) ?? [],
           recommended_titles: recsBySubject.get(s.id) ?? [],
         };
       })

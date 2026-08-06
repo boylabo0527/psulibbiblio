@@ -5,7 +5,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { groupRows } from "@/lib/group-rows";
 import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import type {
-  PurchaseRequestRow, WorkflowStep, SupplierSummaryRow, ProgramSummaryRow, CampusBudgetRow, PurchaseOrderRow,
+  PurchaseRequestRow, WorkflowStep, SupplierSummaryRow, ProgramSummaryRow, CampusBudgetRow, PurchaseOrderRow, PrStepHistoryRow,
 } from "@/app/api/monitoring/route";
 import type { SupplierOfferRow } from "@/app/api/supplier/offers/route";
 import type { PersistedPRItem } from "@/lib/purchase-request-items";
@@ -82,6 +82,7 @@ export default function MonitoringTab() {
   const [programSummary, setProgramSummary] = useState<ProgramSummaryRow[]>([]);
   const [campusBudgets, setCampusBudgets] = useState<CampusBudgetRow[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRow[]>([]);
+  const [prStepHistory, setPrStepHistory] = useState<PrStepHistoryRow[]>([]);
   const [campuses, setCampuses] = useState<CampusOpt[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -113,6 +114,7 @@ export default function MonitoringTab() {
       setProgramSummary(j.programSummary ?? []);
       setCampusBudgets(j.campusBudgets ?? []);
       setPurchaseOrders(j.purchaseOrders ?? []);
+      setPrStepHistory(j.prStepHistory ?? []);
       setCampuses(j.campuses ?? []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -166,6 +168,47 @@ export default function MonitoringTab() {
     for (const po of active) counts[po.delivery_status] = (counts[po.delivery_status] ?? 0) + 1;
     return { counts, total: active.length };
   }, [purchaseOrders]);
+
+  // Gantt data: one row per in-progress PR, one segment per office visit.
+  // Domain spans from the earliest entered_at to now, so a segment's left
+  // offset/width are both plain percentages of that shared timeline --
+  // segments across different PRs stay comparable to each other.
+  const OFFICE_COLORS = ["#1e40af", "#0891b2", "#7c3aed", "#c026d3", "#d97706", "#059669", "#dc2626", "#64748b"];
+  const ganttData = useMemo(() => {
+    if (prStepHistory.length === 0) return null;
+    const prNoById = new Map(purchaseRequests.map((p) => [p.id, p.pr_no || "(draft)"]));
+    const officeColor = new Map<string, string>();
+    let colorIdx = 0;
+    for (const h of prStepHistory) {
+      if (!officeColor.has(h.office_name)) officeColor.set(h.office_name, OFFICE_COLORS[colorIdx++ % OFFICE_COLORS.length]);
+    }
+    const now = Date.now();
+    const domainStart = Math.min(...prStepHistory.map((h) => new Date(h.entered_at).getTime()));
+    const domainEnd = now;
+    const span = Math.max(1, domainEnd - domainStart);
+
+    const byPr = new Map<number, PrStepHistoryRow[]>();
+    for (const h of prStepHistory) {
+      if (!byPr.has(h.purchase_request_id)) byPr.set(h.purchase_request_id, []);
+      byPr.get(h.purchase_request_id)!.push(h);
+    }
+    const rows = Array.from(byPr.entries()).map(([prId, history]) => ({
+      prId, label: prNoById.get(prId) ?? `PR #${prId}`,
+      segments: history.map((h) => {
+        const start = new Date(h.entered_at).getTime();
+        const end = h.left_at ? new Date(h.left_at).getTime() : now;
+        return {
+          office: h.office_name,
+          color: officeColor.get(h.office_name)!,
+          leftPct: ((start - domainStart) / span) * 100,
+          widthPct: Math.max(0.5, ((end - start) / span) * 100),
+          days: Math.max(0, Math.round((end - start) / 86400000)),
+          ongoing: !h.left_at,
+        };
+      }),
+    }));
+    return { rows, officeColor: Array.from(officeColor.entries()), domainStart, domainEnd };
+  }, [prStepHistory, purchaseRequests]);
 
   async function setPrStatus(prId: number, body: { current_step_seq: number } | { status: "completed" }) {
     setStatusBusyId(prId);
@@ -515,6 +558,41 @@ export default function MonitoringTab() {
               </table>
             </div>
           </div>
+
+          {ganttData && ganttData.rows.length > 0 && (
+            <div className="card">
+              <h2 className="text-psu font-semibold mb-1">PR Workflow Timeline</h2>
+              <p className="text-xs text-slate-500 mb-3">
+                Time each in-progress purchase request has spent in each office (up to the {ganttData.rows.length} most
+                recently active). A segment reaching the right edge is where it currently sits.
+              </p>
+              <div className="flex flex-wrap gap-3 mb-3 text-[11px]">
+                {ganttData.officeColor.map(([office, color]) => (
+                  <span key={office} className="flex items-center gap-1.5">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
+                    {office}
+                  </span>
+                ))}
+              </div>
+              <div className="space-y-2">
+                {ganttData.rows.map((r) => (
+                  <div key={r.prId} className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 w-24 shrink-0 truncate" title={r.label}>{r.label}</span>
+                    <div className="flex-1 relative h-4 bg-slate-100 rounded overflow-hidden">
+                      {r.segments.map((s, i) => (
+                        <div
+                          key={i}
+                          className="absolute top-0 h-full"
+                          style={{ left: `${s.leftPct}%`, width: `${s.widthPct}%`, backgroundColor: s.color }}
+                          title={`${s.office} -- ${s.days} day${s.days === 1 ? "" : "s"}${s.ongoing ? " (current)" : ""}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="card">
             <div className="flex items-center justify-between mb-1 flex-wrap gap-2">

@@ -81,6 +81,21 @@ export default function SupplierViewTab() {
     return sorted;
   }, [rows, programFilter, sortBy]);
 
+  // Needed titles by campus -- a subject whose program is offered at more
+  // than one campus counts toward each of them (the title is genuinely
+  // needed at every campus that runs that program), not split fractionally.
+  // Rows with no campus mapping configured yet fall into "Unspecified"
+  // rather than disappearing from the summary.
+  const campusSummary = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const campuses = r.campuses.length > 0 ? r.campuses : ["Unspecified"];
+      for (const c of campuses) counts.set(c, (counts.get(c) ?? 0) + r.gap);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [rows]);
+  const maxCampusGap = campusSummary.length > 0 ? campusSummary[0][1] : 0;
+
   // The export doubles as the bulk-upload template: a supplier downloads
   // this, fills in Offer Title/Author/Format/Price/Notes on whichever rows
   // they can supply -- adding extra rows with the same Code to offer more
@@ -131,6 +146,27 @@ export default function SupplierViewTab() {
 
   return (
     <div className="space-y-4">
+      {campusSummary.length > 0 && (
+        <div className="card">
+          <h2 className="text-psu font-semibold mb-1">Needs by Campus</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            How many more titles are needed at each campus -- a program offered at more than one campus counts
+            toward each of them.
+          </p>
+          <div className="space-y-2">
+            {campusSummary.map(([campus, count]) => (
+              <div key={campus} className="flex items-center gap-3">
+                <span className="text-xs text-slate-600 w-40 shrink-0 truncate" title={campus}>{campus}</span>
+                <div className="flex-1 bg-slate-100 rounded-full h-3 overflow-hidden">
+                  <div className="h-3 rounded-full bg-psu transition-all" style={{ width: `${maxCampusGap > 0 ? (count / maxCampusGap) * 100 : 0}%` }} />
+                </div>
+                <span className="text-xs text-slate-600 w-10 text-right tabular-nums">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="flex items-start justify-between gap-3 mb-1">
           <h2 className="text-psu font-semibold">Titles We Need</h2>
@@ -207,6 +243,7 @@ export default function SupplierViewTab() {
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500 text-left">
                   <th className="py-1 pr-2">Program</th>
+                  <th className="py-1 pr-2">Campus</th>
                   <th className="py-1 pr-2 w-24">Code</th>
                   <th className="py-1 pr-2">Subject</th>
                   <th className="py-1 px-2 text-right">Have (Printed)</th>
@@ -221,6 +258,7 @@ export default function SupplierViewTab() {
                 {displayedRows.map((r, i) => (
                   <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="py-1.5 pr-2 text-slate-500">{r.program}</td>
+                    <td className="py-1.5 pr-2 text-slate-500">{r.campuses.length > 0 ? r.campuses.join(", ") : "—"}</td>
                     <td className="py-1.5 pr-2 text-slate-500">{r.course_code}</td>
                     <td className="py-1.5 pr-2">{r.course_title}</td>
                     <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.current_printed}</td>
