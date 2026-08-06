@@ -636,3 +636,10 @@ alter table standard_titles enable row level security;
 do $$ begin
   create policy "anon read standard_titles" on standard_titles for select using (true);
 exception when duplicate_object then null; end $$;
+
+-- ---------------------------------------------------------------------------
+-- 33: faculty can suggest a ballpark price alongside a title
+-- recommendation -- gives Procurement Analysis's cost estimate something
+-- to go on even before the title has been through Market Canvassing.
+-- ---------------------------------------------------------------------------
+alter table title_recommendations add column if not exists price_estimate numeric;

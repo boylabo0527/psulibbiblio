@@ -28,6 +28,9 @@ export type TitleRecommendationRow = {
   canvassing_id: number | null;
   supplier: string;
   unit_cost: number | null;
+  /** Faculty's own ballpark price suggestion, independent of canvassing_id
+   *  -- useful even when no supplier has priced the title yet. */
+  price_estimate: number | null;
 };
 
 /** Anyone who does canvassing (or is admin) counts as a "reviewer" here --
@@ -86,6 +89,7 @@ export async function GET(req: Request) {
         canvassing_id: r.canvassing_id ?? null,
         supplier: canv?.supplier ?? "",
         unit_cost: canv?.unit_cost ?? null,
+        price_estimate: r.price_estimate ?? null,
       };
     });
     return NextResponse.json({ rows });
@@ -94,7 +98,10 @@ export async function GET(req: Request) {
   }
 }
 
-type TitleInput = { title?: string; author?: string; publisher?: string; year?: string; isbn?: string; format_preference?: string; notes?: string; canvassing_id?: number | null };
+type TitleInput = {
+  title?: string; author?: string; publisher?: string; year?: string; isbn?: string;
+  format_preference?: string; notes?: string; canvassing_id?: number | null; price_estimate?: number | null;
+};
 
 /** POST /api/title-recommendations -- a faculty member (or admin) suggests
  *  one or more titles for a single subject in one submission (e.g.
@@ -131,6 +138,7 @@ export async function POST(req: Request) {
       year: (t.year ?? "").trim(), isbn: (t.isbn ?? "").trim(),
       format_preference: (t.format_preference ?? "").trim(), notes: (t.notes ?? "").trim(),
       canvassing_id: Number.isFinite(t.canvassing_id) ? t.canvassing_id : null,
+      price_estimate: Number.isFinite(t.price_estimate) ? t.price_estimate : null,
     }));
 
     const { data, error } = await db.from("title_recommendations").insert(insertRows).select("id");

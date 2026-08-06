@@ -50,6 +50,8 @@ const ACTION_LABEL: Record<string, string> = {
   title_recommendation_submit: "Faculty title recommendation submitted",
   title_recommendation_status: "Faculty title recommendation status changed",
   title_recommendation_delete: "Faculty title recommendation removed",
+  title_recommendation_reassign: "Faculty title recommendation reassigned to another course",
+  title_recommendation_bulk_upload: "Faculty title recommendations bulk-uploaded",
   standard_title_bulk_upload: "Standard titles uploaded",
   standard_title_delete: "Standard title removed",
 };

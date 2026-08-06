@@ -9,6 +9,7 @@ import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 import { groupRows } from "@/lib/group-rows";
+import { isSpreadsheet, parseSheetRows } from "@/lib/parse-client";
 
 const STATUS_COLOR: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -31,7 +32,7 @@ function formatWhen(iso: string): string {
 
 type DraftTitle = {
   title: string; author: string; publisher: string; year: string; isbn: string;
-  format_preference: string; notes: string;
+  format_preference: string; notes: string; price_estimate: string;
   /** Set when this row was added from the "browse what's already been
    *  canvassed" cart below instead of typed in -- it already has a real
    *  supplier and price, so it's a much faster path to an actual purchase
@@ -40,10 +41,50 @@ type DraftTitle = {
   supplier?: string; unit_cost?: number; canvass_date?: string;
 };
 function emptyDraftTitle(): DraftTitle {
-  return { title: "", author: "", publisher: "", year: "", isbn: "", format_preference: "", notes: "", canvassing_id: null };
+  return { title: "", author: "", publisher: "", year: "", isbn: "", format_preference: "", notes: "", price_estimate: "", canvassing_id: null };
 }
 function isEmptyDraft(t: DraftTitle): boolean {
   return !t.title && !t.author && !t.publisher && !t.year && !t.isbn && !t.notes && t.canvassing_id == null;
+}
+
+type BulkRow = {
+  program: string; course_code: string; title: string; author: string; publisher: string;
+  year: string; isbn: string; format_preference: string; price_estimate: string; notes: string;
+};
+function mapBulkRow(raw: Record<string, string>): BulkRow {
+  const get = (...keys: string[]) => {
+    for (const k of keys) {
+      const found = Object.entries(raw).find(([rk]) => rk.toLowerCase() === k.toLowerCase());
+      if (found && found[1] !== "") return found[1];
+    }
+    return "";
+  };
+  return {
+    program: get("program"),
+    course_code: get("course code", "course_code", "code"),
+    title: get("title", "book title"),
+    author: get("author", "authors"),
+    publisher: get("publisher"),
+    year: get("year"),
+    isbn: get("isbn"),
+    format_preference: get("format preference", "format_preference", "format"),
+    price_estimate: get("price estimate", "price_estimate", "price", "estimated cost"),
+    notes: get("notes", "remarks"),
+  };
+}
+async function downloadBulkTemplate(fmt: "xlsx" | "csv") {
+  const XLSX = await import("xlsx");
+  const headers = ["Program", "Course Code", "Title", "Author", "Publisher", "Year", "ISBN", "Format Preference", "Price Estimate", "Notes"];
+  const example = ["BA Political Science", "PSM 1", "Introduction to Philosophy", "Popkin, Richard", "Cengage", "2020", "978-0-123456-78-9", "printed", "850", ""];
+  const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+  ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Recommendations");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });
+  const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `recommendations_template.${fmt}`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
 }
 
 /** Lets a faculty member recommend one or more specific titles for a
@@ -74,6 +115,15 @@ export default function FacultyRecommendationsTab() {
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogSort, setCatalogSort] = useState<"title_asc" | "price_asc" | "price_desc" | "newest">("title_asc");
   const [catalogCollege, setCatalogCollege] = useState("");
+
+  const [parsed, setParsed] = useState<BulkRow[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ inserted: number; errors: { row: number; reason: string }[] } | null>(null);
+
+  const [reassigning, setReassigning] = useState<number | null>(null);
+  const [reassignTarget, setReassignTarget] = useState<Record<number, string>>({});
 
   function load() {
     setLoading(true);
@@ -150,7 +200,7 @@ export default function FacultyRecommendationsTab() {
     if (cartIds.has(c.id)) return;
     const drafted: DraftTitle = {
       title: c.title, author: c.author, publisher: c.publisher, year: c.year, isbn: c.isbn,
-      format_preference: "", notes: "",
+      format_preference: "", notes: "", price_estimate: c.unit_cost ? String(c.unit_cost) : "",
       canvassing_id: c.id, supplier: c.supplier, unit_cost: c.unit_cost, canvass_date: c.canvass_date || c.created_at,
     };
     setTitles((prev) => {
@@ -174,6 +224,7 @@ export default function FacultyRecommendationsTab() {
           titles: validTitles.map((t) => ({
             title: t.title, author: t.author, publisher: t.publisher, year: t.year, isbn: t.isbn,
             format_preference: t.format_preference, notes: t.notes, canvassing_id: t.canvassing_id,
+            price_estimate: t.price_estimate.trim() ? Number(t.price_estimate) : null,
           })),
         }),
       });
@@ -219,6 +270,58 @@ export default function FacultyRecommendationsTab() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function handleFile(file: File) {
+    if (!isSpreadsheet(file)) { setUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
+    setParsing(true); setUploadErr(null); setUploadResult(null); setParsed([]);
+    try {
+      const rawRows = await parseSheetRows(file);
+      const mapped = rawRows.map(mapBulkRow).filter((r) => r.title.trim() !== "");
+      if (mapped.length === 0) { setUploadErr("No valid rows found. Ensure the file has Program, Course Code, and Title columns."); return; }
+      setParsed(mapped);
+    } catch (e) {
+      setUploadErr(e instanceof Error ? e.message : String(e));
+    } finally { setParsing(false); }
+  }
+
+  async function importParsed() {
+    if (parsed.length === 0) return;
+    setUploading(true); setUploadErr(null); setUploadResult(null);
+    try {
+      const res = await apiFetch("/api/title-recommendations/bulk", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: parsed }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) { setUploadErr(j.error || `HTTP ${res.status}`); return; }
+      setUploadResult({ inserted: j.inserted ?? 0, errors: j.errors ?? [] });
+      setParsed([]);
+      load();
+    } catch (e) {
+      setUploadErr(e instanceof Error ? e.message : String(e));
+    } finally { setUploading(false); }
+  }
+
+  async function reassign(id: number) {
+    const subjectId = reassignTarget[id];
+    if (!subjectId) return;
+    setReassigning(id);
+    setErr(null);
+    try {
+      const res = await apiFetch(`/api/title-recommendations/${id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject_id: Number(subjectId) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setReassignTarget((prev) => { const next = { ...prev }; delete next[id]; return next; });
+      load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReassigning(null);
     }
   }
 
@@ -374,6 +477,10 @@ export default function FacultyRecommendationsTab() {
                         <option value="ebook">eBook preferred</option>
                       </select>
                     </label>
+                    <label className="label flex-col items-start gap-1">
+                      <span className="text-xs">Price estimate (₱)</span>
+                      <input type="number" min="0" step="0.01" className="input w-full" value={t.price_estimate} onChange={(e) => setTitleField(i, "price_estimate", e.target.value)} placeholder="Optional ballpark cost" />
+                    </label>
                   </div>
                   <label className="label flex-col items-start gap-1 mt-3">
                     <span className="text-xs">Notes</span>
@@ -391,6 +498,74 @@ export default function FacultyRecommendationsTab() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {perms.tabs["faculty-recommendations"]?.can_edit && (
+        <div className="card">
+          <h2 className="text-psu font-semibold mb-1">Bulk Upload by File</h2>
+          <p className="text-xs text-slate-500 mb-1">
+            Recommend titles for several courses at once -- each row names its own Program and Course Code, so a
+            single file can cover your whole load instead of one course at a time. Program and Course Code must
+            exactly match an existing program/course; a row that doesn't match is reported back instead of guessed at.
+          </p>
+          <div className="flex gap-2 mb-4 text-xs">
+            <span className="text-slate-400">Download template:</span>
+            <button className="text-psu underline" onClick={() => downloadBulkTemplate("xlsx")}>XLSX</button>
+            <button className="text-psu underline" onClick={() => downloadBulkTemplate("csv")}>CSV</button>
+          </div>
+          <label className="label flex-col items-start gap-1 mb-3">
+            <span>Recommendations file</span>
+            <input type="file" accept=".xlsx,.xls,.csv" className="text-xs"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }} />
+          </label>
+          {parsing && <p className="text-slate-500 text-sm">Parsing file…</p>}
+          {uploadErr && <p className="text-red-700 text-sm mb-2">{uploadErr}</p>}
+          {uploadResult && (
+            <div className="text-sm mb-2">
+              <p className="text-emerald-700">{uploadResult.inserted} recommendation(s) added.</p>
+              {uploadResult.errors.length > 0 && (
+                <div className="text-amber-700 text-xs mt-1">
+                  {uploadResult.errors.length} row(s) skipped:
+                  <ul className="list-disc list-inside">
+                    {uploadResult.errors.slice(0, 10).map((e, i) => <li key={i}>Row {e.row}: {e.reason}</li>)}
+                    {uploadResult.errors.length > 10 && <li>…and {uploadResult.errors.length - 10} more.</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {parsed.length > 0 && (
+            <>
+              <div className="overflow-x-auto mb-3 max-h-64 overflow-y-auto border border-slate-200 rounded">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-white">
+                    <tr className="text-left text-slate-500 border-b border-slate-200">
+                      <th className="py-1 px-2">Program</th>
+                      <th className="py-1 px-2">Course</th>
+                      <th className="py-1 px-2">Title</th>
+                      <th className="py-1 px-2">Author</th>
+                      <th className="py-1 px-2">Price est.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsed.map((r, i) => (
+                      <tr key={i} className="border-b border-slate-100">
+                        <td className="py-1 px-2">{r.program}</td>
+                        <td className="py-1 px-2">{r.course_code}</td>
+                        <td className="py-1 px-2">{r.title}</td>
+                        <td className="py-1 px-2">{r.author}</td>
+                        <td className="py-1 px-2">{r.price_estimate}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button className="btn text-sm" disabled={uploading} onClick={importParsed}>
+                {uploading ? "Uploading…" : `Upload ${parsed.length} row(s)`}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -428,6 +603,7 @@ export default function FacultyRecommendationsTab() {
                   <th className="py-1 pr-2">Title</th>
                   <th className="py-1 pr-2">Author</th>
                   <th className="py-1 pr-2">Format</th>
+                  <th className="py-1 pr-2">Price est.</th>
                   <th className="py-1 pr-2">Recommended by</th>
                   <th className="py-1 pr-2">Status</th>
                   <th className="py-1 pl-2">When</th>
@@ -451,6 +627,9 @@ export default function FacultyRecommendationsTab() {
                       </td>
                       <td className="py-1.5 pr-2 text-slate-600">{r.author}</td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.format_preference || "—"}</td>
+                      <td className="py-1.5 pr-2 text-slate-500 whitespace-nowrap">
+                        {r.price_estimate != null ? `₱${r.price_estimate.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
+                      </td>
                       <td className="py-1.5 pr-2 text-slate-500">{r.recommended_by}</td>
                       <td className="py-1.5 pr-2">
                         {canReview ? (
@@ -471,15 +650,35 @@ export default function FacultyRecommendationsTab() {
                         {formatWhen(r.created_at)}
                       </td>
                       <td className="py-1.5 pl-2 text-right">
-                        {(canReview || isOwnerPending) && (
-                          <button className="text-red-600 text-[11px] underline" disabled={busyId === r.id} onClick={() => remove(r)}>Remove</button>
-                        )}
+                        <div className="flex items-center justify-end gap-2 flex-wrap">
+                          {canReview && (
+                            <div className="flex items-center gap-1">
+                              <SearchableSelect
+                                value={reassignTarget[r.id] ?? ""}
+                                onChange={(v) => setReassignTarget((prev) => ({ ...prev, [r.id]: v }))}
+                                groups={courseGroups}
+                                placeholder="Reassign to…"
+                                className="input text-[11px] py-0.5 w-36"
+                              />
+                              <button
+                                className="text-psu text-[11px] underline disabled:opacity-40"
+                                disabled={!reassignTarget[r.id] || reassigning === r.id}
+                                onClick={() => reassign(r.id)}
+                              >
+                                Move
+                              </button>
+                            </div>
+                          )}
+                          {(canReview || isOwnerPending) && (
+                            <button className="text-red-600 text-[11px] underline" disabled={busyId === r.id} onClick={() => remove(r)}>Remove</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
                 {displayed.length === 0 && (
-                  <tr><td colSpan={9} className="py-3 text-slate-400">No recommendations yet.</td></tr>
+                  <tr><td colSpan={10} className="py-3 text-slate-400">No recommendations yet.</td></tr>
                 )}
               </tbody>
             </table>

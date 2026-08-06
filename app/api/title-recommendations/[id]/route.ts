@@ -7,13 +7,13 @@ import { userEmailFromRequest, logActivity } from "@/lib/activity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** PATCH /api/title-recommendations/:id -- either a status change
- *  (pending/sourced/declined), which is a canvassing-staff decision, or an
- *  edit to the recommendation's own content (title/author/etc.), which
- *  only the original submitter can do and only while it's still pending
- *  (once staff has acted on it, editing out from under them would be
- *  confusing). Body: { status } or { title, author?, publisher?, year?,
- *  isbn?, format_preference?, notes? }. */
+/** PATCH /api/title-recommendations/:id -- a status change or course
+ *  reassignment (both a canvassing-staff decision), or an edit to the
+ *  recommendation's own content (title/author/etc.), which only the
+ *  original submitter can do and only while it's still pending (once staff
+ *  has acted on it, editing out from under them would be confusing).
+ *  Body: { status } or { subject_id } or { title, author?, publisher?,
+ *  year?, isbn?, format_preference?, notes?, price_estimate? }. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
@@ -32,12 +32,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     const body = await req.json() as {
-      status?: string; title?: string; author?: string; publisher?: string;
-      year?: string; isbn?: string; format_preference?: string; notes?: string;
+      status?: string; subject_id?: number; title?: string; author?: string; publisher?: string;
+      year?: string; isbn?: string; format_preference?: string; notes?: string; price_estimate?: number | null;
     };
+    const isReviewer = perms.isAdmin || !!perms.tabs["canvassing"]?.can_edit;
 
     if (body.status !== undefined) {
-      const isReviewer = perms.isAdmin || !!perms.tabs["canvassing"]?.can_edit;
       if (!isReviewer) {
         return NextResponse.json({ error: "Only Market Canvassing staff can change a recommendation's status." }, { status: 403 });
       }
@@ -54,6 +54,27 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ ok: true });
     }
 
+    if (body.subject_id !== undefined) {
+      if (!isReviewer) {
+        return NextResponse.json({ error: "Only Market Canvassing staff can reassign a recommendation to a different course." }, { status: 403 });
+      }
+      const newSubjectId = Number(body.subject_id);
+      if (!Number.isFinite(newSubjectId)) return NextResponse.json({ error: "subject_id is required." }, { status: 400 });
+      const { data: newSubject } = await db.from("subjects").select("id, course_code, course_title, program_id").eq("id", newSubjectId).maybeSingle();
+      if (!newSubject) return NextResponse.json({ error: "Course not found." }, { status: 404 });
+      if (!(await isProgramInScope(db, perms, newSubject.program_id))) {
+        return NextResponse.json({ error: "That course isn't in your assigned campus(es)." }, { status: 403 });
+      }
+      const { error } = await db.from("title_recommendations").update({ subject_id: newSubjectId }).eq("id", id);
+      if (error) throw error;
+      await logActivity(db, {
+        userEmail: email, action: "title_recommendation_reassign",
+        summary: `${email} reassigned recommendation "${rec.title}" to ${[newSubject.course_code, newSubject.course_title].filter(Boolean).join(" — ")}`,
+        detail: { recommendation_id: id, subject_id: newSubjectId },
+      });
+      return NextResponse.json({ ok: true });
+    }
+
     const isOwner = rec.recommended_by === email;
     if (!isOwner || rec.status !== "pending") {
       return NextResponse.json({ error: "Only the original submitter can edit a recommendation, and only while it's still pending." }, { status: 403 });
@@ -66,6 +87,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (body.isbn !== undefined) update.isbn = body.isbn.trim();
     if (body.format_preference !== undefined) update.format_preference = body.format_preference.trim();
     if (body.notes !== undefined) update.notes = body.notes.trim();
+    if (body.price_estimate !== undefined) update.price_estimate = Number.isFinite(body.price_estimate) ? body.price_estimate : null;
     if (Object.keys(update).length === 0) return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
 
     const { error } = await db.from("title_recommendations").update(update).eq("id", id);
