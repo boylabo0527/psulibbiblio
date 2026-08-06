@@ -19,7 +19,8 @@ export type ActivityAction =
   | "title_recommendation_submit" | "title_recommendation_status" | "title_recommendation_delete" | "title_recommendation_reassign" | "title_recommendation_bulk_upload"
   | "standard_title_bulk_upload" | "standard_title_delete"
   | "supplier_create" | "supplier_edit" | "supplier_delete"
-  | "purchase_order_delivery_status";
+  | "purchase_order_delivery_status"
+  | "pr_overdue_reminder_sent";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed

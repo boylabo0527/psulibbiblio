@@ -2,11 +2,10 @@ import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest } from "@/lib/activity";
+import { OVERDUE_DAYS } from "@/lib/pr-workflow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const OVERDUE_DAYS = 15;
 
 export type PurchaseRequestRow = {
   id: number;

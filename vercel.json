@@ -8,6 +8,7 @@
     "app/api/export/route.ts": { "maxDuration": 60 }
   },
   "crons": [
-    { "path": "/api/cron/keepalive", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/keepalive", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/pr-reminders", "schedule": "0 4 * * *" }
   ]
 }
