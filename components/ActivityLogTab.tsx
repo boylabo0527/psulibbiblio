@@ -59,6 +59,7 @@ const ACTION_LABEL: Record<string, string> = {
   supplier_delete: "Supplier removed",
   purchase_order_delivery_status: "Purchase order delivery status updated",
   pr_overdue_reminder_sent: "Overdue PR reminder emailed",
+  tor_generate: "Terms of Reference generated",
 };
 
 function actionColor(action: string): string {

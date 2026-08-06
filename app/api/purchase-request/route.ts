@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 // generatePurchaseRequestXlsx only reads the PRItem fields (extra
 // properties are just ignored there); the extras are what let Monitoring
 // consolidate by supplier/program and what the duplicate check below keys on.
-type IncomingPRData = Omit<PRData, "items"> & { items: PersistedPRItem[]; campus?: string; campus_id?: number | null };
+type IncomingPRData = Omit<PRData, "items"> & { items: PersistedPRItem[]; campus?: string; campus_id?: number | null; fundSource?: string };
 
 export async function POST(req: Request) {
   try {
@@ -73,6 +73,7 @@ export async function POST(req: Request) {
         approved_by: data.approvedBy || "", pr_date: data.date || "",
         items: data.items ?? [], total_amount: totalAmount,
         campus: data.campus || "", campus_id: data.campus_id ?? null,
+        fund_source: data.fundSource || "",
         current_step_seq: firstStep?.seq ?? null,
       }).select("id").single();
       let firstHistoryId: number | null = null;

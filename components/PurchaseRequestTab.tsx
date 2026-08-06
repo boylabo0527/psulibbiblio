@@ -42,6 +42,7 @@ export default function PurchaseRequestTab() {
   const [date, setDate] = useState(today());
   const [office, setOffice] = useState("");
   const [fundCluster, setFundCluster] = useState("101");
+  const [fundSource, setFundSource] = useState("");
   const [rcCode, setRcCode] = useState("");
   const [purpose, setPurpose] = useState("Procurement of library books for accreditation requirements");
   const [requestedBy, setRequestedBy] = useState("");
@@ -145,7 +146,7 @@ export default function PurchaseRequestTab() {
       const campusId = campus ? campuses.find(c => c.name === campus)?.id ?? null : null;
       const body = {
         entityName: "PALAWAN STATE UNIVERSITY",
-        office, fundCluster, prNo,
+        office, fundCluster, fundSource, prNo,
         date: new Date(date + "T00:00:00").toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" }),
         rcCode, purpose, requestedBy, approvedBy,
         campus, campus_id: campusId,
@@ -243,6 +244,10 @@ export default function PurchaseRequestTab() {
             <label className="label flex-col items-start gap-1">
               <span className="text-xs">Fund Cluster</span>
               <input className="input w-full" value={fundCluster} onChange={e => setFundCluster(e.target.value)} />
+            </label>
+            <label className="label flex-col items-start gap-1">
+              <span className="text-xs">Fund Source</span>
+              <input className="input w-full" placeholder="e.g. MOOE, Capital Outlay" value={fundSource} onChange={e => setFundSource(e.target.value)} />
             </label>
             <label className="label flex-col items-start gap-1 sm:col-span-2">
               <span className="text-xs">Office / Section</span>

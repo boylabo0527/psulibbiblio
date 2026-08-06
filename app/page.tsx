@@ -16,6 +16,7 @@ import MonitoringTab from "@/components/MonitoringTab";
 import FacultyRecommendationsTab from "@/components/FacultyRecommendationsTab";
 import StandardTitlesTab from "@/components/StandardTitlesTab";
 import SupplierDirectoryTab from "@/components/SupplierDirectoryTab";
+import TorGeneratorTab from "@/components/TorGeneratorTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
@@ -30,6 +31,7 @@ const tabs = [
   { id: "standard-titles",  label: "Standard Titles",      publicTab: false },
   { id: "canvassing",       label: "Market Canvassing",   publicTab: false },
   { id: "purchase-request", label: "Purchase Request",    publicTab: false },
+  { id: "tor",              label: "Terms of Reference",  publicTab: false },
   { id: "faculty-recommendations", label: "Faculty Recommendations", publicTab: false },
   { id: "activity",         label: "Activity Log",        publicTab: false },
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
@@ -50,7 +52,7 @@ const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
   { id: "catalog", label: "Catalog", tabIds: ["upload", "match", "campus-validation"] },
   { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "standard-titles", "canvassing", "purchase-request", "faculty-recommendations"] },
   { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view", "supplier-directory", "faculty-recommendations"] },
-  { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring"] },
+  { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring", "tor"] },
   { id: "admin", label: "Admin", tabIds: ["cleanup", "user-management"] },
 ];
 
@@ -273,6 +275,8 @@ export default function Home() {
           <SupplierDirectoryTab />
         ) : tab === "monitoring" ? (
           <MonitoringTab />
+        ) : tab === "tor" ? (
+          <TorGeneratorTab />
         ) : tab === "user-management" ? (
           <UserManagementTab />
         ) : tab === "cleanup" ? (

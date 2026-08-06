@@ -36,7 +36,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 }
 
 type PatchBody = {
-  pr_no?: string; office?: string; purpose?: string; requested_by?: string; approved_by?: string;
+  pr_no?: string; office?: string; purpose?: string; requested_by?: string; approved_by?: string; fund_source?: string;
   items?: { quantity: number; unit_cost: number }[]; // positional -- same length/order as the stored items
 };
 
@@ -58,7 +58,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     const { data: pr, error: prErr } = await db.from("purchase_requests")
-      .select("id, pr_no, office, purpose, requested_by, approved_by, items, total_amount, status, campus_id")
+      .select("id, pr_no, office, purpose, requested_by, approved_by, fund_source, items, total_amount, status, campus_id")
       .eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
@@ -76,6 +76,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (body.purpose !== undefined) update.purpose = body.purpose;
     if (body.requested_by !== undefined) update.requested_by = body.requested_by;
     if (body.approved_by !== undefined) update.approved_by = body.approved_by;
+    if (body.fund_source !== undefined) update.fund_source = body.fund_source.trim();
 
     if (body.pr_no !== undefined && body.pr_no.trim()) {
       const { data: dupe } = await db.from("purchase_requests")
@@ -111,7 +112,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     // to this same PR shouldn't be blocked by a partial snapshot.
     const before = {
       pr_no: pr.pr_no, office: pr.office, purpose: pr.purpose,
-      requested_by: pr.requested_by, approved_by: pr.approved_by,
+      requested_by: pr.requested_by, approved_by: pr.approved_by, fund_source: pr.fund_source,
       items: pr.items, total_amount: pr.total_amount,
     };
 
