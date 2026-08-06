@@ -654,3 +654,55 @@ alter table title_recommendations add column if not exists price_estimate numeri
 alter table supplier_offers add column if not exists recommendation_id bigint references title_recommendations(id) on delete set null;
 alter table supplier_offers add column if not exists match_type text check (match_type in ('exact', 'alternative'));
 create index if not exists supplier_offers_recommendation_idx on supplier_offers (recommendation_id);
+
+-- ---------------------------------------------------------------------------
+-- 35: lets Market Canvassing carry journals/periodicals alongside books --
+-- a periodical is quoted differently (a subject area and issue instead of
+-- an author/publisher, and a Manila price vs a Provincial price instead of
+-- one flat unit cost, since PSU as a provincial campus actually pays the
+-- provincial price while Manila stays a reference figure). Book rows are
+-- unaffected: item_type defaults to 'book' and the new columns stay blank.
+-- ---------------------------------------------------------------------------
+alter table canvassing add column if not exists item_type text not null default 'book' check (item_type in ('book', 'journal'));
+alter table canvassing add column if not exists subject_area text default '';
+alter table canvassing add column if not exists issue text default '';
+alter table canvassing add column if not exists manila_price numeric;
+alter table canvassing add column if not exists provincial_price numeric;
+create index if not exists canvassing_item_type_idx on canvassing (item_type);
+
+-- ---------------------------------------------------------------------------
+-- 36: a directory of known suppliers (address, contact person, phone,
+-- email, TIN) -- previously that info only ever existed as free-typed text
+-- on canvassing rows and Purchase Order header fields, retyped from
+-- scratch every time. This is a reference list for account
+-- creation/coordination and to autofill a new PO's address/TIN.
+-- ---------------------------------------------------------------------------
+create table if not exists suppliers (
+  id              bigserial primary key,
+  name            text not null,
+  address         text default '',
+  contact_person  text default '',
+  phone           text default '',
+  email           text default '',
+  tin             text default '',
+  notes           text default '',
+  created_by      text default '',
+  created_at      timestamptz default now()
+);
+create unique index if not exists suppliers_name_unique on suppliers (lower(name));
+
+alter table suppliers enable row level security;
+do $$ begin
+  create policy "anon read suppliers" on suppliers for select using (true);
+exception when duplicate_object then null; end $$;
+
+-- ---------------------------------------------------------------------------
+-- 37: tags a Purchase Order's delivery status (not yet delivered /
+-- partially delivered / delivered) instead of only tracking whether the PO
+-- document itself was generated -- Monitoring previously had no way to
+-- record that a supplier had actually fulfilled an order.
+-- ---------------------------------------------------------------------------
+alter table purchase_orders add column if not exists delivery_status text not null default 'pending' check (delivery_status in ('pending', 'partial', 'delivered'));
+alter table purchase_orders add column if not exists delivered_at timestamptz;
+alter table purchase_orders add column if not exists delivery_notes text default '';
+create index if not exists purchase_orders_delivery_status_idx on purchase_orders (delivery_status);

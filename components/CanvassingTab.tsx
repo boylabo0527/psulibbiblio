@@ -67,18 +67,24 @@ function relevanceScore(canvTitle: string, subject: ProcurementRow): number {
   return ratio + codeBonus;
 }
 
-async function downloadTemplate(fmt: "xlsx" | "csv") {
+type UploadItemType = "book" | "journal";
+
+async function downloadTemplate(fmt: "xlsx" | "csv", type: UploadItemType) {
   const XLSX = await import("xlsx");
-  const headers = ["Title", "Author", "Publisher", "Year", "ISBN", "Supplier", "Price", "Unit", "Quantity", "Stock No", "Notes"];
-  const example = ["Introduction to Philosophy", "Popkin, Richard", "Cengage", "2020", "978-0-123456-78-9", "National Book Store", "850.00", "copy", "1", "", ""];
+  const headers = type === "journal"
+    ? ["Subject Area", "Title", "Issue", "Year", "Supplier", "Manila Price", "Provincial Price", "Unit", "Quantity", "Stock No", "Notes"]
+    : ["Title", "Author", "Publisher", "Year", "ISBN", "Supplier", "Price", "Unit", "Quantity", "Stock No", "Notes"];
+  const example = type === "journal"
+    ? ["Business Administration", "Harvard Business Review", "Vol. 102 No. 3", "2024", "National Book Store", "450.00", "520.00", "copy", "1", "", ""]
+    : ["Introduction to Philosophy", "Popkin, Richard", "Cengage", "2020", "978-0-123456-78-9", "National Book Store", "850.00", "copy", "1", "", ""];
   const ws = XLSX.utils.aoa_to_sheet([headers, example]);
   ws["!cols"] = headers.map(h => ({ wch: Math.max(h.length + 2, 14) }));
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Canvassing");
+  XLSX.utils.book_append_sheet(wb, ws, type === "journal" ? "Periodicals" : "Canvassing");
   const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });
   const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = `canvassing_template.${fmt}`;
+  a.href = URL.createObjectURL(blob); a.download = `${type === "journal" ? "periodicals" : "canvassing"}_template.${fmt}`;
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
 }
 
@@ -86,9 +92,11 @@ type ParsedRow = {
   title: string; author: string; publisher: string; year: string; isbn: string;
   supplier: string; unit: string; stock_prop_no: string;
   unit_cost: number; quantity: number; notes: string;
+  item_type: UploadItemType; subject_area: string; issue: string;
+  manila_price: number | null; provincial_price: number | null;
 };
 
-function mapRow(raw: Record<string, string>): ParsedRow {
+function mapRow(raw: Record<string, string>, type: UploadItemType): ParsedRow {
   const get = (...keys: string[]) => {
     for (const k of keys) {
       const found = Object.entries(raw).find(([rk]) => rk.toLowerCase() === k.toLowerCase());
@@ -96,6 +104,8 @@ function mapRow(raw: Record<string, string>): ParsedRow {
     }
     return "";
   };
+  const manilaPrice = parseFloat(get("manila price", "manila") || "");
+  const provincialPrice = parseFloat(get("provincial price", "provincial") || "");
   return {
     title: get("title", "book title", "name"),
     author: get("author", "authors"),
@@ -105,9 +115,19 @@ function mapRow(raw: Record<string, string>): ParsedRow {
     supplier: get("supplier", "vendor", "store"),
     unit: get("unit") || "copy",
     stock_prop_no: get("stock no", "prop no", "stock/prop no", "stock_prop_no"),
-    unit_cost: parseFloat(get("price", "unit cost", "cost", "amount") || "0") || 0,
+    // For a journal, unit_cost is a display-only fallback -- the bulk API
+    // always recomputes it from provincial_price server-side (see
+    // /api/canvassing/bulk), so this only matters for the preview table.
+    unit_cost: type === "journal"
+      ? (Number.isFinite(provincialPrice) ? provincialPrice : 0)
+      : (parseFloat(get("price", "unit cost", "cost", "amount") || "0") || 0),
     quantity: parseInt(get("quantity", "qty") || "1") || 1,
     notes: get("notes", "remarks"),
+    item_type: type,
+    subject_area: type === "journal" ? get("subject area", "subject") : "",
+    issue: type === "journal" ? get("issue", "volume") : "",
+    manila_price: type === "journal" && Number.isFinite(manilaPrice) ? manilaPrice : null,
+    provincial_price: type === "journal" && Number.isFinite(provincialPrice) ? provincialPrice : null,
   };
 }
 
@@ -135,6 +155,7 @@ export default function CanvassingTab() {
 
   // Upload
   const [canvassDate, setCanvassDate] = useState(todayStr());
+  const [uploadType, setUploadType] = useState<UploadItemType>("book");
   const [parsed, setParsed] = useState<ParsedRow[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
@@ -243,7 +264,7 @@ export default function CanvassingTab() {
     setParsing(true); setUploadErr(null); setParsed([]);
     try {
       const rawRows = await parseSheetRows(file);
-      const mapped = rawRows.map(mapRow).filter(r => r.title.trim() !== "");
+      const mapped = rawRows.map(r => mapRow(r, uploadType)).filter(r => r.title.trim() !== "");
       if (mapped.length === 0) { setUploadErr("No valid rows found. Ensure the file has a Title column."); return; }
       setParsed(mapped);
     } catch (e) {
@@ -516,15 +537,30 @@ export default function CanvassingTab() {
       {/* Upload */}
       <div className="card">
         <h2 className="text-psu font-semibold mb-1">Upload Canvassing File</h2>
-        <p className="text-xs text-slate-500 mb-1">
+        <p className="text-xs text-slate-500 mb-2">
           Upload an Excel or CSV of market-canvassed titles. After import, assign each title to the subject gap it addresses.
-          Expected columns: <span className="font-medium">Title, Author, Publisher, Year, Price, Supplier</span>
-          &nbsp;(+ optional: ISBN, Unit, Quantity, Stock No, Notes)
+        </p>
+        <div className="flex items-center gap-4 mb-2 text-xs">
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="upload-type" checked={uploadType === "book"} onChange={() => { setUploadType("book"); setParsed([]); }} />
+            Books
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="upload-type" checked={uploadType === "journal"} onChange={() => { setUploadType("journal"); setParsed([]); }} />
+            Journals &amp; Periodicals
+          </label>
+        </div>
+        <p className="text-xs text-slate-500 mb-1">
+          Expected columns: {uploadType === "journal"
+            ? <span className="font-medium">Subject Area, Title, Issue, Year, Manila Price, Provincial Price, Supplier</span>
+            : <span className="font-medium">Title, Author, Publisher, Year, Price, Supplier</span>}
+          &nbsp;(+ optional: Unit, Quantity, Stock No, Notes{uploadType === "book" ? ", ISBN" : ""})
+          {uploadType === "journal" && " -- the Provincial Price becomes the working unit cost used on Purchase Requests/Orders; Manila Price is kept as a reference only."}
         </p>
         <div className="flex gap-2 mb-4 text-xs">
           <span className="text-slate-400">Download template:</span>
-          <button className="text-psu underline" onClick={() => downloadTemplate("xlsx")}>XLSX</button>
-          <button className="text-psu underline" onClick={() => downloadTemplate("csv")}>CSV</button>
+          <button className="text-psu underline" onClick={() => downloadTemplate("xlsx", uploadType)}>XLSX</button>
+          <button className="text-psu underline" onClick={() => downloadTemplate("csv", uploadType)}>CSV</button>
         </div>
         <div className="flex flex-wrap gap-3 mb-3">
           <label className="label flex-col items-start gap-1">
@@ -542,25 +578,45 @@ export default function CanvassingTab() {
         {parsed.length > 0 && (
           <>
             <div className="overflow-x-auto mb-3">
-              <p className="text-sm text-slate-600 mb-1"><span className="font-semibold">{parsed.length} titles</span> parsed — preview (first 5):</p>
+              <p className="text-sm text-slate-600 mb-1"><span className="font-semibold">{parsed.length} {uploadType === "journal" ? "periodicals" : "titles"}</span> parsed — preview (first 5):</p>
               <table className="w-full text-xs">
-                <thead><tr className="border-b border-slate-200 text-slate-500 text-left">
-                  <th className="py-1 pr-2">Title</th><th className="py-1 pr-2">Author</th>
-                  <th className="py-1 pr-2">Supplier</th><th className="py-1 px-2 text-right">Price</th>
-                </tr></thead>
-                <tbody>{parsed.slice(0, 5).map((r, i) => (
-                  <tr key={i} className="border-b border-slate-100">
-                    <td className="py-1 pr-2 font-medium">{r.title}</td>
-                    <td className="py-1 pr-2 text-slate-600">{r.author}</td>
-                    <td className="py-1 pr-2 text-slate-600">{r.supplier}</td>
-                    <td className="py-1 px-2 text-right tabular-nums">₱{r.unit_cost.toFixed(2)}</td>
-                  </tr>
-                ))}</tbody>
+                {uploadType === "journal" ? (
+                  <>
+                    <thead><tr className="border-b border-slate-200 text-slate-500 text-left">
+                      <th className="py-1 pr-2">Subject Area</th><th className="py-1 pr-2">Title</th><th className="py-1 pr-2">Issue</th>
+                      <th className="py-1 px-2 text-right">Manila</th><th className="py-1 px-2 text-right">Provincial</th>
+                    </tr></thead>
+                    <tbody>{parsed.slice(0, 5).map((r, i) => (
+                      <tr key={i} className="border-b border-slate-100">
+                        <td className="py-1 pr-2 text-slate-600">{r.subject_area}</td>
+                        <td className="py-1 pr-2 font-medium">{r.title}</td>
+                        <td className="py-1 pr-2 text-slate-600">{r.issue}</td>
+                        <td className="py-1 px-2 text-right tabular-nums">{r.manila_price != null ? `₱${r.manila_price.toFixed(2)}` : "—"}</td>
+                        <td className="py-1 px-2 text-right tabular-nums font-medium">{r.provincial_price != null ? `₱${r.provincial_price.toFixed(2)}` : "—"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </>
+                ) : (
+                  <>
+                    <thead><tr className="border-b border-slate-200 text-slate-500 text-left">
+                      <th className="py-1 pr-2">Title</th><th className="py-1 pr-2">Author</th>
+                      <th className="py-1 pr-2">Supplier</th><th className="py-1 px-2 text-right">Price</th>
+                    </tr></thead>
+                    <tbody>{parsed.slice(0, 5).map((r, i) => (
+                      <tr key={i} className="border-b border-slate-100">
+                        <td className="py-1 pr-2 font-medium">{r.title}</td>
+                        <td className="py-1 pr-2 text-slate-600">{r.author}</td>
+                        <td className="py-1 pr-2 text-slate-600">{r.supplier}</td>
+                        <td className="py-1 px-2 text-right tabular-nums">₱{r.unit_cost.toFixed(2)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </>
+                )}
               </table>
             </div>
             <div className="flex gap-2">
               <button className="btn-outline text-sm" disabled={uploading} onClick={importParsed}>
-                {uploading ? "Importing…" : `Import all ${parsed.length} titles`}
+                {uploading ? "Importing…" : `Import all ${parsed.length} ${uploadType === "journal" ? "periodicals" : "titles"}`}
               </button>
               <button className="text-sm text-slate-500 hover:text-slate-700" onClick={() => setParsed([])}>Cancel</button>
             </div>
@@ -602,8 +658,15 @@ export default function CanvassingTab() {
               <tbody>
                 {unassigned.map(r => (
                   <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="py-1.5 pr-2 font-medium">{r.title}</td>
-                    <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
+                    <td className="py-1.5 pr-2 font-medium">
+                      {r.title}
+                      {r.item_type === "journal" && (
+                        <span className="ml-1.5 inline-block bg-purple-100 text-purple-700 rounded px-1.5 py-0.5 text-[10px] font-normal" title={r.subject_area ? `Subject area: ${r.subject_area}` : undefined}>
+                          Journal{r.issue ? ` · ${r.issue}` : ""}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-2 text-slate-600">{r.item_type === "journal" ? r.subject_area : `${r.author}${r.year ? `, ${r.year}` : ""}`}</td>
                     <td className="py-1.5 pr-2 text-slate-600">{r.supplier}</td>
                     <td className="py-1.5 px-2 text-right tabular-nums">₱{r.unit_cost.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
                     <td className="py-1.5 pl-2">
@@ -708,8 +771,15 @@ export default function CanvassingTab() {
                     const stale = isPriceStale(priceDate);
                     return (
                     <tr key={r.id} className={"border-b border-slate-100 " + (stale ? "bg-amber-50/40 hover:bg-amber-50" : "hover:bg-green-50")}>
-                      <td className="py-1.5 pr-2 font-medium">{r.title}</td>
-                      <td className="py-1.5 pr-2 text-slate-600">{r.author}{r.year ? `, ${r.year}` : ""}</td>
+                      <td className="py-1.5 pr-2 font-medium">
+                        {r.title}
+                        {r.item_type === "journal" && (
+                          <span className="ml-1.5 inline-block bg-purple-100 text-purple-700 rounded px-1.5 py-0.5 text-[10px] font-normal" title={r.subject_area ? `Subject area: ${r.subject_area}` : undefined}>
+                            Journal{r.issue ? ` · ${r.issue}` : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-2 text-slate-600">{r.item_type === "journal" ? r.subject_area : `${r.author}${r.year ? `, ${r.year}` : ""}`}</td>
                       <td className="py-1.5 pr-2 text-psu font-medium">
                         <div>{r.subject_label}</div>
                         {r.additional_subjects.length > 0 && (

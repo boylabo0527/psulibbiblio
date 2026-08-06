@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses } from "@/lib/use-campuses";
+import { usePermissions } from "@/lib/use-permissions";
 import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
 
@@ -22,6 +23,19 @@ export default function PurchaseRequestTab() {
   const [supplierFilter, setSupplierFilter] = useState("");
   const [itemSortBy, setItemSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc">("none");
   const campuses = useCampuses();
+  const { perms } = usePermissions();
+  // A campus-restricted user can only generate PRs for their own campus(es)
+  // -- narrows the dropdown to match what the server will actually accept
+  // (see isCampusInScope in the POST handler), instead of letting them pick
+  // any campus and only finding out it's rejected after filling the form.
+  const selectableCampuses = perms.campusIds === null ? campuses : campuses.filter((c) => perms.campusNames.includes(c.name));
+
+  useEffect(() => {
+    if (!campus && perms.campusIds !== null && selectableCampuses.length === 1) {
+      setCampus(selectableCampuses[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableCampuses]);
 
   // PR header
   const [prNo, setPrNo] = useState("");
@@ -185,8 +199,8 @@ export default function PurchaseRequestTab() {
           <label className="label">
             Campus
             <select className="input ml-1 min-w-[180px]" value={campus} onChange={e => setCampus(e.target.value)}>
-              <option value="">All campuses / not campus-specific</option>
-              {campuses.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              <option value="">University-wide / not campus-specific</option>
+              {selectableCampuses.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </label>
           <label className="label">

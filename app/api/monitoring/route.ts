@@ -52,6 +52,8 @@ export type PurchaseOrderRow = {
   generated_by: string;
   created_at: string;
   status: "active" | "cancelled";
+  delivery_status: "pending" | "partial" | "delivered";
+  delivered_at: string | null;
 };
 
 export type CampusBudgetRow = {
@@ -108,7 +110,7 @@ export async function GET(req: Request) {
       budgetsQuery,
       db.from("campuses").select("id, name"),
       db.from("purchase_orders")
-        .select("id, po_no, supplier, items, total_amount, generated_by, created_at, status")
+        .select("id, po_no, supplier, items, total_amount, generated_by, created_at, status, delivery_status, delivered_at")
         .order("created_at", { ascending: false })
         .limit(500),
     ]);
@@ -226,6 +228,8 @@ export async function GET(req: Request) {
       item_count: Array.isArray(r.items) ? r.items.length : 0,
       total_amount: Number(r.total_amount ?? 0), generated_by: r.generated_by, created_at: r.created_at,
       status: r.status,
+      delivery_status: r.delivery_status ?? "pending",
+      delivered_at: r.delivered_at ?? null,
     }));
 
     return NextResponse.json({

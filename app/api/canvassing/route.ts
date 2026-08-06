@@ -16,6 +16,17 @@ export type CanvassingRow = {
   publisher: string;
   year: string;
   isbn: string;
+  /** 'book' (default) or 'journal' -- a periodical is quoted with a
+   *  subject area/issue and separate Manila/Provincial prices instead of
+   *  author/publisher/one flat unit cost (see subject_area, issue,
+   *  manila_price, provincial_price below). */
+  item_type: "book" | "journal";
+  subject_area: string;
+  issue: string;
+  /** Reference only -- unit_cost (the working price used downstream in
+   *  PRs/POs) is always provincial_price for a journal row. */
+  manila_price: number | null;
+  provincial_price: number | null;
   subject_id: number | null;
   subject_label: string;
   program_id: number | null;
@@ -104,6 +115,11 @@ export async function GET(req: Request) {
         publisher: (r.publisher as string) ?? "",
         year: (r.year as string) ?? "",
         isbn: (r.isbn as string) ?? "",
+        item_type: (r.item_type as string) === "journal" ? "journal" : "book",
+        subject_area: (r.subject_area as string) ?? "",
+        issue: (r.issue as string) ?? "",
+        manila_price: r.manila_price != null ? Number(r.manila_price) : null,
+        provincial_price: r.provincial_price != null ? Number(r.provincial_price) : null,
         subject_id: primarySubjectId,
         subject_label: sub ? [sub.course_code, sub.course_title].filter(Boolean).join(" — ") : "",
         program_id: (r.program_id as number | null),

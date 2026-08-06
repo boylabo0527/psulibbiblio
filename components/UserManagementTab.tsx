@@ -23,6 +23,7 @@ const TAB_LABELS: Record<string, string> = {
   "purchase-request": "Purchase Request",
   activity: "Activity Log",
   "supplier-view": "Supplier View",
+  "supplier-directory": "Supplier Directory",
   monitoring: "Monitoring",
   "faculty-recommendations": "Faculty Recommendations",
 };

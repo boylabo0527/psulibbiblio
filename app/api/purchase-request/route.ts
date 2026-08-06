@@ -4,6 +4,7 @@ import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import { getClaimedCanvassingIds, type PersistedPRItem } from "@/lib/purchase-request-items";
+import { isCampusInScope } from "@/lib/campus-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +27,12 @@ export async function POST(req: Request) {
       });
     }
     const data: IncomingPRData = await req.json();
+
+    if (!isCampusInScope(perms, data.campus_id ?? null)) {
+      return new Response(JSON.stringify({ error: "You can only generate purchase requests for your assigned campus(es)." }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
 
     // Duplicate prevention -- checked before anything is generated or
     // saved, so a rejected request never produces a half-done download.

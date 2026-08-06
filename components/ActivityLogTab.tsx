@@ -54,6 +54,10 @@ const ACTION_LABEL: Record<string, string> = {
   title_recommendation_bulk_upload: "Faculty title recommendations bulk-uploaded",
   standard_title_bulk_upload: "Standard titles uploaded",
   standard_title_delete: "Standard title removed",
+  supplier_create: "Supplier added",
+  supplier_edit: "Supplier edited",
+  supplier_delete: "Supplier removed",
+  purchase_order_delivery_status: "Purchase order delivery status updated",
 };
 
 function actionColor(action: string): string {
