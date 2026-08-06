@@ -4,6 +4,7 @@ import { getUserPermissions } from "@/lib/permissions";
 import { isCampusInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import type { PersistedPRItem } from "@/lib/purchase-request-items";
+import { detectPriceAnomalies } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,7 +57,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Your account doesn't have permission to modify purchase requests." }, { status: 403 });
     }
 
-    const { data: pr, error: prErr } = await db.from("purchase_requests").select("id, pr_no, items, status, campus_id").eq("id", id).maybeSingle();
+    const { data: pr, error: prErr } = await db.from("purchase_requests")
+      .select("id, pr_no, office, purpose, requested_by, approved_by, items, total_amount, status, campus_id")
+      .eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
     if (!isCampusInScope(perms, pr.campus_id)) {
@@ -81,6 +84,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     let totalAmount: number | undefined;
+    let anomalies: ReturnType<typeof detectPriceAnomalies> = [];
     if (body.items) {
       const existing = (Array.isArray(pr.items) ? pr.items : []) as PersistedPRItem[];
       if (body.items.length !== existing.length) {
@@ -91,6 +95,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         quantity: Math.max(1, Number(body.items![i].quantity) || 1),
         unit_cost: Math.max(0, Number(body.items![i].unit_cost) || 0),
       }));
+      anomalies = detectPriceAnomalies(existing, merged);
       update.items = merged;
       totalAmount = merged.reduce((s, i) => s + i.quantity * i.unit_cost, 0);
       update.total_amount = totalAmount;
@@ -100,13 +105,24 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
     }
 
+    // Snapshot of every field this edit could touch, so a mistaken edit
+    // (e.g. a fat-fingered price) can be reverted from Activity Log --
+    // not just the fields actually changed this time, since a future edit
+    // to this same PR shouldn't be blocked by a partial snapshot.
+    const before = {
+      pr_no: pr.pr_no, office: pr.office, purpose: pr.purpose,
+      requested_by: pr.requested_by, approved_by: pr.approved_by,
+      items: pr.items, total_amount: pr.total_amount,
+    };
+
     const { error: updErr } = await db.from("purchase_requests").update(update).eq("id", id);
     if (updErr) throw updErr;
 
     await logActivity(db, {
       userEmail: email, action: "purchase_request_edit",
       summary: `${email} edited purchase request ${pr.pr_no || "(draft)"}`,
-      detail: { purchase_request_id: id, fields: Object.keys(update) },
+      detail: { purchase_request_id: id, fields: Object.keys(update), before, ...(anomalies.length ? { anomalies } : {}) },
+      revertible: true,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

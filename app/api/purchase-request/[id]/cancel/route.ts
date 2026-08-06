@@ -25,7 +25,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "Your account doesn't have permission to cancel purchase requests." }, { status: 403 });
     }
 
-    const { data: pr, error: prErr } = await db.from("purchase_requests").select("id, pr_no, status, current_step_seq, campus_id").eq("id", id).maybeSingle();
+    const { data: pr, error: prErr } = await db.from("purchase_requests")
+      .select("id, pr_no, status, current_step_seq, step_entered_at, campus_id")
+      .eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
     if (!isCampusInScope(perms, pr.campus_id)) {
@@ -38,16 +40,23 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       .update({ status: "cancelled", cancelled_at: now }).eq("id", id);
     if (updErr) throw updErr;
 
+    let historyId: number | null = null;
     if (pr.current_step_seq != null) {
-      await db.from("pr_step_history")
+      const { data: histRows } = await db.from("pr_step_history")
         .update({ left_at: now })
-        .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null);
+        .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null)
+        .select("id");
+      historyId = histRows?.[0]?.id ?? null;
     }
 
     await logActivity(db, {
       userEmail: email, action: "purchase_request_cancel",
       summary: `${email} cancelled purchase request ${pr.pr_no || "(draft)"}`,
-      detail: { purchase_request_id: id },
+      detail: {
+        purchase_request_id: id,
+        before: { status: pr.status, current_step_seq: pr.current_step_seq, step_entered_at: pr.step_entered_at, history_id: historyId },
+      },
+      revertible: true,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

@@ -68,16 +68,22 @@ export async function POST(req: Request) {
         campus: data.campus || "", campus_id: data.campus_id ?? null,
         current_step_seq: firstStep?.seq ?? null,
       }).select("id").single();
+      let firstHistoryId: number | null = null;
       if (inserted && firstStep) {
-        await db.from("pr_step_history").insert({
+        const { data: histRow } = await db.from("pr_step_history").insert({
           purchase_request_id: inserted.id, seq: firstStep.seq,
           office_name: firstStep.office_name, moved_by: email,
-        });
+        }).select("id").single();
+        firstHistoryId = histRow?.id ?? null;
       }
       await logActivity(db, {
         userEmail: email, action: "purchase_request_generate",
         summary: `${email} generated purchase request ${data.prNo || "(draft)"} — ${(data.items ?? []).length} item(s), ${totalAmount.toLocaleString()}`,
-        detail: { pr_no: data.prNo ?? "", item_count: (data.items ?? []).length, total_amount: totalAmount },
+        detail: {
+          pr_no: data.prNo ?? "", item_count: (data.items ?? []).length, total_amount: totalAmount,
+          purchase_request_id: inserted?.id ?? null, history_id: firstHistoryId,
+        },
+        revertible: !!inserted,
       });
     } catch (logErr) {
       console.error("Failed to record purchase_requests row:", logErr);

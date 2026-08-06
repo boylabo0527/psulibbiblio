@@ -34,7 +34,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     await logActivity(db, {
       userEmail: email, action: "purchase_order_cancel",
       summary: `${email} cancelled purchase order ${po.po_no || "(draft)"}`,
-      detail: { purchase_order_id: id },
+      detail: { purchase_order_id: id, before: { status: po.status } },
+      revertible: true,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

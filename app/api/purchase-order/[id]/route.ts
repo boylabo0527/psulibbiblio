@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import type { PersistedPOItem } from "@/lib/purchase-order-items";
+import { detectPriceAnomalies } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +53,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Your account doesn't have permission to modify purchase orders." }, { status: 403 });
     }
 
-    const { data: po, error: poErr } = await db.from("purchase_orders").select("id, po_no, items, status").eq("id", id).maybeSingle();
+    const { data: po, error: poErr } = await db.from("purchase_orders")
+      .select("id, po_no, address, tin, mode_of_procurement, place_of_delivery, delivery_term, date_of_delivery, payment_term, fund_cluster, ors_burs_no, date_of_ors_burs, items, total_amount, status")
+      .eq("id", id).maybeSingle();
     if (poErr) throw poErr;
     if (!po) return NextResponse.json({ error: "Purchase order not found." }, { status: 404 });
     if (po.status !== "active") {
@@ -70,6 +73,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     let totalAmount: number | undefined;
+    let anomalies: ReturnType<typeof detectPriceAnomalies> = [];
     if (body.items) {
       const existing = (Array.isArray(po.items) ? po.items : []) as PersistedPOItem[];
       if (body.items.length !== existing.length) {
@@ -80,6 +84,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         quantity: Math.max(1, Number(body.items![i].quantity) || 1),
         unit_cost: Math.max(0, Number(body.items![i].unit_cost) || 0),
       }));
+      anomalies = detectPriceAnomalies(existing, merged);
       update.items = merged;
       totalAmount = merged.reduce((s, i) => s + i.quantity * i.unit_cost, 0);
       update.total_amount = totalAmount;
@@ -89,13 +94,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
     }
 
+    const before = {
+      po_no: po.po_no, address: po.address, tin: po.tin, mode_of_procurement: po.mode_of_procurement,
+      place_of_delivery: po.place_of_delivery, delivery_term: po.delivery_term, date_of_delivery: po.date_of_delivery,
+      payment_term: po.payment_term, fund_cluster: po.fund_cluster, ors_burs_no: po.ors_burs_no,
+      date_of_ors_burs: po.date_of_ors_burs, items: po.items, total_amount: po.total_amount,
+    };
+
     const { error: updErr } = await db.from("purchase_orders").update(update).eq("id", id);
     if (updErr) throw updErr;
 
     await logActivity(db, {
       userEmail: email, action: "purchase_order_edit",
       summary: `${email} edited purchase order ${po.po_no || "(draft)"}`,
-      detail: { purchase_order_id: id, fields: Object.keys(update) },
+      detail: { purchase_order_id: id, fields: Object.keys(update), before, ...(anomalies.length ? { anomalies } : {}) },
+      revertible: true,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

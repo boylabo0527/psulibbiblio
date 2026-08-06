@@ -64,6 +64,17 @@ function actionColor(action: string): string {
   return "bg-slate-100 text-slate-700";
 }
 
+type PriceAnomaly = { title: string; before: number; after: number; pct_change: number };
+
+/** Purchase Request/Order edits stash a list of line-item price swings
+ *  >=30% on `detail.anomalies` (see lib/audit.ts) -- surfaced here as a
+ *  warning badge so a fat-fingered price gets a second look instead of
+ *  quietly shipping. */
+function anomaliesOf(detail: Record<string, unknown>): PriceAnomaly[] {
+  const a = detail?.anomalies;
+  return Array.isArray(a) ? (a as PriceAnomaly[]) : [];
+}
+
 function formatWhen(iso: string): string {
   const d = new Date(iso);
   const diffMs = Date.now() - d.getTime();
@@ -118,7 +129,7 @@ export default function ActivityLogTab() {
   }
 
   async function revert(row: ActivityRow) {
-    if (!confirm(`Revert this upload? This deletes everything it added:\n\n"${row.summary}"\n\nThis can't be undone.`)) return;
+    if (!confirm(`Revert this action?\n\n"${row.summary}"\n\nThis restores it to how it was before -- can't be undone.`)) return;
     setReverting(row.id);
     setErr(null);
     try {
@@ -146,8 +157,10 @@ export default function ActivityLogTab() {
     <div className="card">
       <h2 className="text-psu font-semibold mb-1">Activity Log</h2>
       <p className="text-xs text-slate-500 mb-4">
-        Recent uploads and changes across the app, newest first. Uploads that added new rows can be reverted —
-        this deletes exactly what that upload added and nothing else.
+        Recent uploads and changes across the app, newest first. Revertible entries (uploads, and Purchase
+        Request/Order generation, edits, cancellations, and status changes) can be undone with one click — a
+        yellow-flagged edit is one where a line item's price swung more than 30%, worth a second look before
+        anything is printed or sent out.
       </p>
 
       {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
@@ -156,7 +169,9 @@ export default function ActivityLogTab() {
 
       {!loading && rows.length > 0 && (
         <div className="space-y-2">
-          {rows.map((r) => (
+          {rows.map((r) => {
+            const anomalies = anomaliesOf(r.detail);
+            return (
             <div key={r.id} className="border border-slate-200 rounded p-2.5 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -167,6 +182,14 @@ export default function ActivityLogTab() {
                   {r.user_email && <span className="text-xs text-slate-400">· {r.user_email}</span>}
                   {r.reverted_at && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-slate-200 text-slate-600">Reverted</span>
+                  )}
+                  {anomalies.length > 0 && (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700"
+                      title={anomalies.map((a) => `${a.title}: ₱${a.before.toLocaleString("en-PH", { minimumFractionDigits: 2 })} → ₱${a.after.toLocaleString("en-PH", { minimumFractionDigits: 2 })} (${a.pct_change > 0 ? "+" : ""}${Math.round(a.pct_change * 100)}%)`).join("\n")}
+                    >
+                      ⚠ {anomalies.length} unusual price change{anomalies.length === 1 ? "" : "s"}
+                    </span>
                   )}
                 </div>
                 <p className="text-sm text-slate-700 break-words">{r.summary}</p>
@@ -181,7 +204,8 @@ export default function ActivityLogTab() {
                 </button>
               )}
             </div>
-          ))}
+            );
+          })}
           {hasMore && (
             <div className="text-center pt-2">
               <button className="btn-outline text-xs" disabled={loadingMore} onClick={loadMore}>

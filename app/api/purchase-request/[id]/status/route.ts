@@ -30,7 +30,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     const { data: pr, error: prErr } = await db.from("purchase_requests")
-      .select("id, pr_no, current_step_seq, status, campus_id").eq("id", id).maybeSingle();
+      .select("id, pr_no, current_step_seq, step_entered_at, status, campus_id").eq("id", id).maybeSingle();
     if (prErr) throw prErr;
     if (!pr) return NextResponse.json({ error: "Purchase request not found." }, { status: 404 });
     if (!isCampusInScope(perms, pr.campus_id)) {
@@ -44,16 +44,23 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const now = new Date().toISOString();
 
     if (body.status === "completed") {
+      let historyId: number | null = null;
       if (pr.current_step_seq != null) {
-        await db.from("pr_step_history")
+        const { data: histRows } = await db.from("pr_step_history")
           .update({ left_at: now })
-          .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null);
+          .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null)
+          .select("id");
+        historyId = histRows?.[0]?.id ?? null;
       }
       await db.from("purchase_requests").update({ status: "completed", completed_at: now }).eq("id", id);
       await logActivity(db, {
         userEmail: email, action: "pr_advance",
         summary: `${pr.pr_no || "PR"} marked completed`,
-        detail: { purchase_request_id: id },
+        detail: {
+          purchase_request_id: id,
+          before: { status: pr.status, current_step_seq: pr.current_step_seq, step_entered_at: pr.step_entered_at, history_id: historyId },
+        },
+        revertible: true,
       });
       return NextResponse.json({ ok: true, status: "completed" });
     }
@@ -64,14 +71,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const { data: step } = await db.from("pr_workflow_steps").select("seq, office_name").eq("seq", body.current_step_seq as number).maybeSingle();
     if (!step) return NextResponse.json({ error: "That office isn't in the configured workflow." }, { status: 400 });
 
+    let prevHistoryId: number | null = null;
     if (pr.current_step_seq != null) {
-      await db.from("pr_step_history")
+      const { data: histRows } = await db.from("pr_step_history")
         .update({ left_at: now })
-        .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null);
+        .eq("purchase_request_id", id).eq("seq", pr.current_step_seq).is("left_at", null)
+        .select("id");
+      prevHistoryId = histRows?.[0]?.id ?? null;
     }
-    await db.from("pr_step_history").insert({
+    const { data: newHist } = await db.from("pr_step_history").insert({
       purchase_request_id: id, seq: step.seq, office_name: step.office_name, entered_at: now, moved_by: email,
-    });
+    }).select("id").single();
     await db.from("purchase_requests").update({
       current_step_seq: step.seq, step_entered_at: now, status: "in_progress",
     }).eq("id", id);
@@ -79,7 +89,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     await logActivity(db, {
       userEmail: email, action: "pr_advance",
       summary: `${pr.pr_no || "PR"} status set to "${step.office_name}"`,
-      detail: { purchase_request_id: id, seq: step.seq },
+      detail: {
+        purchase_request_id: id, seq: step.seq,
+        before: { status: pr.status, current_step_seq: pr.current_step_seq, step_entered_at: pr.step_entered_at, history_id: prevHistoryId, new_history_id: newHist?.id ?? null },
+      },
+      revertible: true,
     });
     return NextResponse.json({ ok: true, current_step_seq: step.seq, office_name: step.office_name, status: "in_progress" });
   } catch (err) {

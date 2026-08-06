@@ -52,7 +52,7 @@ export async function POST(req: Request) {
 
     try {
       const totalAmount = data.items.reduce((s, i) => s + i.quantity * i.unit_cost, 0);
-      await db.from("purchase_orders").insert({
+      const { data: inserted } = await db.from("purchase_orders").insert({
         po_no: data.poNo || "", trans_no: data.transNo || "", philgeps_ref_no: data.philgepsRefNo || "",
         supplier: data.supplier || "", address: data.address || "", tin: data.tin || "",
         mode_of_procurement: data.modeOfProcurement || "", place_of_delivery: data.placeOfDelivery || "",
@@ -60,11 +60,12 @@ export async function POST(req: Request) {
         payment_term: data.paymentTerm || "", fund_cluster: data.fundCluster || "",
         ors_burs_no: data.orsBursNo || "", date_of_ors_burs: data.dateOfOrsBurs || "", po_date: data.date || "",
         items: data.items, total_amount: totalAmount, generated_by: email,
-      });
+      }).select("id").single();
       await logActivity(db, {
         userEmail: email, action: "purchase_order_generate",
         summary: `${email} generated purchase order ${data.poNo || "(draft)"} for ${data.supplier} — ${data.items.length} item(s), ${totalAmount.toLocaleString()}`,
-        detail: { po_no: data.poNo ?? "", supplier: data.supplier, item_count: data.items.length, total_amount: totalAmount },
+        detail: { po_no: data.poNo ?? "", supplier: data.supplier, item_count: data.items.length, total_amount: totalAmount, purchase_order_id: inserted?.id ?? null },
+        revertible: !!inserted,
       });
     } catch (logErr) {
       console.error("Failed to record purchase_orders row:", logErr);
