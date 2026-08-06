@@ -24,6 +24,13 @@ export type SupplierOfferRow = {
   batch_size?: number;
   subject_label?: string;
   program?: string;
+  /** Which faculty recommendation this offer responds to, if any, and
+   *  whether it's the exact title requested or an alternative -- lets
+   *  staff (and the supplier's own submitted-offers list) see that at a
+   *  glance instead of having to compare titles by eye. */
+  recommendation_id: number | null;
+  match_type: "exact" | "alternative" | null;
+  recommendation_title?: string;
 };
 
 /** GET /api/supplier/offers -- suppliers see only their own submissions;
@@ -62,6 +69,13 @@ export async function GET(req: Request) {
       }
     }
 
+    const recommendationIds = Array.from(new Set((data ?? []).map((o) => o.recommendation_id).filter((id): id is number => id != null)));
+    const recTitleById = new Map<number, string>();
+    if (recommendationIds.length) {
+      const { data: recs } = await db.from("title_recommendations").select("id, title").in("id", recommendationIds);
+      for (const r of recs ?? []) recTitleById.set(r.id, r.title);
+    }
+
     const batchSizes = new Map<string, number>();
     for (const o of data ?? []) {
       if (!o.batch_id) continue;
@@ -72,6 +86,7 @@ export async function GET(req: Request) {
       subject_label: o.subject_id != null ? labelMap.get(o.subject_id) ?? "" : "",
       program: o.subject_id != null ? programBySubject.get(o.subject_id) ?? "" : "",
       batch_size: o.batch_id ? batchSizes.get(o.batch_id) : undefined,
+      recommendation_title: o.recommendation_id != null ? recTitleById.get(o.recommendation_id) ?? "" : undefined,
     }));
     return NextResponse.json({ rows });
   } catch (err) {
@@ -79,13 +94,19 @@ export async function GET(req: Request) {
   }
 }
 
-type OfferInput = { title?: string; author?: string; format?: string; price?: number; notes?: string };
+type OfferInput = {
+  title?: string; author?: string; format?: string; price?: number; notes?: string;
+  recommendation_id?: number | null; match_type?: "exact" | "alternative" | null;
+};
 
 /** POST /api/supplier/offers -- a supplier offers one or more titles against
  *  a need in one submission (e.g. a course short 3 titles). Body:
- *  { subject_id, offers: [{ title, author, format, price, notes }, ...] }.
- *  A single-title offer is just an `offers` array of length 1 -- there's no
- *  separate single-offer shape to keep in sync. */
+ *  { subject_id, offers: [{ title, author, format, price, notes,
+ *  recommendation_id?, match_type? }, ...] }. recommendation_id/match_type
+ *  are optional -- set only when the supplier is responding to a specific
+ *  faculty-suggested title, to say whether they're offering that exact
+ *  title or an alternative. A single-title offer is just an `offers` array
+ *  of length 1 -- there's no separate single-offer shape to keep in sync. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -98,17 +119,30 @@ export async function POST(req: Request) {
     const inputs = (body.offers ?? []).filter((o) => (o.title ?? "").trim());
     if (!inputs.length) return NextResponse.json({ error: "At least one title is required." }, { status: 400 });
 
+    // recommendation_id is only trusted if it actually belongs to this
+    // subject -- otherwise a stale/tampered id would silently link the
+    // offer to the wrong faculty request.
+    const { data: validRecs } = body.subject_id != null
+      ? await db.from("title_recommendations").select("id").eq("subject_id", body.subject_id)
+      : { data: [] as { id: number }[] };
+    const validRecIds = new Set((validRecs ?? []).map((r) => r.id));
+
     const batchId = inputs.length > 1 ? randomUUID() : null;
-    const insertRows = inputs.map((o) => ({
-      subject_id: body.subject_id ?? null,
-      supplier_email: email,
-      title: (o.title ?? "").trim(),
-      author: (o.author ?? "").trim(),
-      format: (o.format ?? "").trim(),
-      price: o.price ?? null,
-      notes: (o.notes ?? "").trim(),
-      batch_id: batchId,
-    }));
+    const insertRows = inputs.map((o) => {
+      const recommendationId = o.recommendation_id != null && validRecIds.has(o.recommendation_id) ? o.recommendation_id : null;
+      return {
+        subject_id: body.subject_id ?? null,
+        supplier_email: email,
+        title: (o.title ?? "").trim(),
+        author: (o.author ?? "").trim(),
+        format: (o.format ?? "").trim(),
+        price: o.price ?? null,
+        notes: (o.notes ?? "").trim(),
+        batch_id: batchId,
+        recommendation_id: recommendationId,
+        match_type: recommendationId != null && (o.match_type === "exact" || o.match_type === "alternative") ? o.match_type : null,
+      };
+    });
 
     const { data, error } = await db.from("supplier_offers").insert(insertRows).select();
     if (error) throw error;

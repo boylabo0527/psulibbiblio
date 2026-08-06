@@ -880,6 +880,7 @@ function SupplierOffersReview() {
               <th className="py-1 pr-2">Subject</th>
               <th className="py-1 pr-2">Title</th>
               <th className="py-1 px-2">Format</th>
+              <th className="py-1 px-2">Faculty request</th>
               <th className="py-1 px-2 text-right">Price</th>
               <th className="py-1 px-2">Notes</th>
               <th className="py-1 pl-2 text-right">Status</th>
@@ -889,7 +890,7 @@ function SupplierOffersReview() {
             {groups.flatMap(([label, groupItems]) => [
               ...(groupBy !== "none" ? [
                 <tr key={`g-${label}`} className="bg-slate-50">
-                  <td colSpan={7} className="py-1 px-2 font-semibold text-slate-600">{label} · {groupItems.length}</td>
+                  <td colSpan={8} className="py-1 px-2 font-semibold text-slate-600">{label} · {groupItems.length}</td>
                 </tr>,
               ] : []),
               ...groupItems.map((o) => (
@@ -898,6 +899,16 @@ function SupplierOffersReview() {
                 <td className="py-1.5 pr-2 text-slate-500">{o.subject_label || "—"}</td>
                 <td className="py-1.5 pr-2">{o.title}{o.author && <span className="text-slate-400"> — {o.author}</span>}</td>
                 <td className="py-1.5 px-2 text-slate-500">{o.format || "—"}</td>
+                <td className="py-1.5 px-2 text-slate-500">
+                  {o.recommendation_id != null ? (
+                    <span
+                      className={"inline-block rounded px-1.5 py-0.5 text-[10px] font-medium " + (o.match_type === "alternative" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}
+                      title={o.recommendation_title ? `Faculty requested: ${o.recommendation_title}` : undefined}
+                    >
+                      {o.match_type === "alternative" ? "Alternative" : "Exact title"}
+                    </span>
+                  ) : "—"}
+                </td>
                 <td className="py-1.5 px-2 text-right tabular-nums">{o.price != null ? o.price.toLocaleString() : "—"}</td>
                 <td className="py-1.5 px-2 text-slate-500">{o.notes || "—"}</td>
                 <td className="py-1.5 pl-2 text-right">

@@ -651,13 +651,13 @@ export default function FacultyRecommendationsTab() {
                       </td>
                       <td className="py-1.5 pl-2 text-right">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
-                          {canReview && (
+                          {(canReview || isOwnerPending) && (
                             <div className="flex items-center gap-1">
                               <SearchableSelect
                                 value={reassignTarget[r.id] ?? ""}
                                 onChange={(v) => setReassignTarget((prev) => ({ ...prev, [r.id]: v }))}
                                 groups={courseGroups}
-                                placeholder="Reassign to…"
+                                placeholder="Move to course…"
                                 className="input text-[11px] py-0.5 w-36"
                               />
                               <button

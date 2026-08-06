@@ -7,13 +7,16 @@ import { userEmailFromRequest, logActivity } from "@/lib/activity";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** PATCH /api/title-recommendations/:id -- a status change or course
- *  reassignment (both a canvassing-staff decision), or an edit to the
- *  recommendation's own content (title/author/etc.), which only the
- *  original submitter can do and only while it's still pending (once staff
- *  has acted on it, editing out from under them would be confusing).
- *  Body: { status } or { subject_id } or { title, author?, publisher?,
- *  year?, isbn?, format_preference?, notes?, price_estimate? }. */
+/** PATCH /api/title-recommendations/:id -- a status change (canvassing-staff
+ *  decision only), a course reassignment (canvassing staff any time, or the
+ *  original submitter while it's still pending -- faculty sometimes pick
+ *  the wrong course or need to move a suggestion once they realize it fits
+ *  a different one better), or an edit to the recommendation's own content
+ *  (title/author/etc.), which only the original submitter can do and only
+ *  while it's still pending (once staff has acted on it, editing out from
+ *  under them would be confusing). Body: { status } or { subject_id } or
+ *  { title, author?, publisher?, year?, isbn?, format_preference?, notes?,
+ *  price_estimate? }. */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
     const id = parseInt(params.id, 10);
@@ -36,6 +39,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       year?: string; isbn?: string; format_preference?: string; notes?: string; price_estimate?: number | null;
     };
     const isReviewer = perms.isAdmin || !!perms.tabs["canvassing"]?.can_edit;
+    const isOwnerPending = rec.recommended_by === email && rec.status === "pending";
 
     if (body.status !== undefined) {
       if (!isReviewer) {
@@ -55,8 +59,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     if (body.subject_id !== undefined) {
-      if (!isReviewer) {
-        return NextResponse.json({ error: "Only Market Canvassing staff can reassign a recommendation to a different course." }, { status: 403 });
+      if (!isReviewer && !isOwnerPending) {
+        return NextResponse.json({ error: "Only Market Canvassing staff can reassign a recommendation once it's been reviewed. You can still move your own recommendation while it's pending." }, { status: 403 });
       }
       const newSubjectId = Number(body.subject_id);
       if (!Number.isFinite(newSubjectId)) return NextResponse.json({ error: "subject_id is required." }, { status: 400 });
@@ -75,8 +79,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ ok: true });
     }
 
-    const isOwner = rec.recommended_by === email;
-    if (!isOwner || rec.status !== "pending") {
+    if (!isOwnerPending) {
       return NextResponse.json({ error: "Only the original submitter can edit a recommendation, and only while it's still pending." }, { status: 403 });
     }
     const update: Record<string, unknown> = {};

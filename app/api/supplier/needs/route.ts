@@ -18,7 +18,13 @@ export type SupplierNeedRow = {
   current_digital: number;
   gap: number; // additional titles (printed or ebook) still needed for accreditation
   needs_printed: boolean; // true if a recent printed book specifically is still missing
-  recommended_titles: { title: string; author: string; format_preference: string }[]; // faculty-suggested titles for this course, if any
+  /** Faculty-suggested titles for this course, if any -- full detail (not
+   *  just title/author) so a supplier can tell whether they can supply the
+   *  exact title requested or need to propose an alternative. */
+  recommended_titles: {
+    id: number; title: string; author: string; publisher: string; year: string; isbn: string;
+    format_preference: string; notes: string; price_estimate: number | null;
+  }[];
 };
 
 /** GET /api/supplier/needs -- read-only, no cost figures: which subjects
@@ -84,12 +90,15 @@ export async function GET(req: Request) {
     }
 
     const { data: recs } = await db.from("title_recommendations")
-      .select("subject_id, title, author, format_preference")
+      .select("id, subject_id, title, author, publisher, year, isbn, format_preference, notes, price_estimate")
       .in("subject_id", subjectIds).in("status", ["pending", "sourced"]);
-    const recsBySubject = new Map<number, { title: string; author: string; format_preference: string }[]>();
+    const recsBySubject = new Map<number, SupplierNeedRow["recommended_titles"]>();
     for (const r of recs ?? []) {
       if (!recsBySubject.has(r.subject_id)) recsBySubject.set(r.subject_id, []);
-      recsBySubject.get(r.subject_id)!.push({ title: r.title, author: r.author, format_preference: r.format_preference });
+      recsBySubject.get(r.subject_id)!.push({
+        id: r.id, title: r.title, author: r.author, publisher: r.publisher, year: r.year, isbn: r.isbn,
+        format_preference: r.format_preference, notes: r.notes, price_estimate: r.price_estimate ?? null,
+      });
     }
 
     const rows: SupplierNeedRow[] = subjects

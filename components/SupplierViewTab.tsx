@@ -235,7 +235,12 @@ export default function SupplierViewTab() {
                     </td>
                     <td className="py-1.5 px-2 text-slate-600 max-w-[220px]">
                       {r.recommended_titles.length > 0 && (
-                        <span title={r.recommended_titles.map(t => `${t.title}${t.author ? ` — ${t.author}` : ""}`).join("\n")}>
+                        <span title={r.recommended_titles.map(t =>
+                          `${t.title}${t.author ? ` — ${t.author}` : ""}${t.year ? ` (${t.year})` : ""}`
+                          + `${t.publisher ? `\nPublisher: ${t.publisher}` : ""}${t.isbn ? `\nISBN: ${t.isbn}` : ""}`
+                          + `${t.format_preference ? `\nFormat: ${t.format_preference}` : ""}${t.price_estimate != null ? `\nEst. price: ₱${t.price_estimate.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : ""}`
+                          + `${t.notes ? `\nNotes: ${t.notes}` : ""}`,
+                        ).join("\n\n")}>
                           {r.recommended_titles.slice(0, 2).map(t => t.title).join("; ")}
                           {r.recommended_titles.length > 2 ? ` +${r.recommended_titles.length - 2} more` : ""}
                         </span>
@@ -269,6 +274,7 @@ export default function SupplierViewTab() {
                 <th className="py-1 pr-2">Subject</th>
                 <th className="py-1 pr-2">Title</th>
                 <th className="py-1 px-2">Format</th>
+                <th className="py-1 px-2">Faculty request</th>
                 <th className="py-1 px-2 text-right">Price</th>
                 <th className="py-1 pl-2 text-right">Status</th>
               </tr>
@@ -286,6 +292,16 @@ export default function SupplierViewTab() {
                   </td>
                   <td className="py-1.5 pr-2">{o.title}</td>
                   <td className="py-1.5 px-2 text-slate-500">{o.format || "—"}</td>
+                  <td className="py-1.5 px-2 text-slate-500">
+                    {o.recommendation_id != null ? (
+                      <span
+                        className={"inline-block rounded px-1.5 py-0.5 text-[10px] font-medium " + (o.match_type === "alternative" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}
+                        title={o.recommendation_title ? `Faculty requested: ${o.recommendation_title}` : undefined}
+                      >
+                        {o.match_type === "alternative" ? "Alternative" : "Exact title"}
+                      </span>
+                    ) : "—"}
+                  </td>
                   <td className="py-1.5 px-2 text-right tabular-nums">{o.price != null ? o.price.toLocaleString() : "—"}</td>
                   <td className="py-1.5 pl-2 text-right">
                     <span className={"inline-block rounded px-1.5 py-0.5 text-[10px] font-medium " + STATUS_COLOR[o.status]}>
@@ -302,10 +318,13 @@ export default function SupplierViewTab() {
   );
 }
 
-type OfferRowInput = { title: string; author: string; format: string; price: string; notes: string };
+type OfferRowInput = {
+  title: string; author: string; format: string; price: string; notes: string;
+  recommendation_id: number | null; match_type: "exact" | "alternative" | null;
+};
 
 function emptyOfferRow(): OfferRowInput {
-  return { title: "", author: "", format: "", price: "", notes: "" };
+  return { title: "", author: "", format: "", price: "", notes: "", recommendation_id: null, match_type: null };
 }
 
 function OfferForm({
@@ -315,11 +334,20 @@ function OfferForm({
   onClose: () => void;
   onSubmitted: () => void;
 }) {
-  // Seeded with one row per title still needed (capped so a huge gap
-  // doesn't dump 50 blank rows on the supplier) -- they can add or remove
-  // rows freely from there.
-  const seedCount = Math.max(1, Math.min(need.gap || 1, 10));
-  const [items, setItems] = useState<OfferRowInput[]>(() => Array.from({ length: seedCount }, emptyOfferRow));
+  // Seeded with one row per faculty-recommended title (pre-tied to that
+  // recommendation, defaulted to "exact title") plus blank rows to round
+  // out the remaining gap -- capped so a huge gap doesn't dump 50 blank
+  // rows on the supplier. They can add/remove rows and retarget/retype
+  // freely from there.
+  const [items, setItems] = useState<OfferRowInput[]>(() => {
+    const seeded: OfferRowInput[] = need.recommended_titles.map((rt) => ({
+      title: rt.title, author: rt.author, format: rt.format_preference || "", price: "", notes: "",
+      recommendation_id: rt.id, match_type: "exact",
+    }));
+    const target = Math.max(seeded.length || 1, Math.min(need.gap || 1, 10));
+    const blanks = Array.from({ length: Math.max(0, target - seeded.length) }, emptyOfferRow);
+    return [...seeded, ...blanks];
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -347,6 +375,7 @@ function OfferForm({
           offers: filled.map((it) => ({
             title: it.title, author: it.author, format: it.format,
             price: it.price.trim() === "" ? null : Number(it.price), notes: it.notes,
+            recommendation_id: it.recommendation_id, match_type: it.recommendation_id != null ? it.match_type : null,
           })),
         }),
       });
@@ -367,6 +396,45 @@ function OfferForm({
         {need.program} · {need.course_code} · needs {need.gap} more title{need.gap === 1 ? "" : "s"}
       </p>
 
+      {need.recommended_titles.length > 0 && (
+        <div className="border border-slate-200 rounded p-2.5 mb-3 bg-slate-50/60">
+          <p className="text-xs font-semibold text-slate-700 mb-1.5">Faculty-requested titles for this course</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-slate-500">
+                  <th className="py-1 pr-2">Title</th>
+                  <th className="py-1 pr-2">Author</th>
+                  <th className="py-1 pr-2">Publisher</th>
+                  <th className="py-1 pr-2">Year</th>
+                  <th className="py-1 pr-2">ISBN</th>
+                  <th className="py-1 pr-2">Format</th>
+                  <th className="py-1 pr-2 text-right">Est. price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {need.recommended_titles.map((rt) => (
+                  <tr key={rt.id} className="border-t border-slate-200">
+                    <td className="py-1 pr-2 font-medium">{rt.title}</td>
+                    <td className="py-1 pr-2">{rt.author || "—"}</td>
+                    <td className="py-1 pr-2">{rt.publisher || "—"}</td>
+                    <td className="py-1 pr-2">{rt.year || "—"}</td>
+                    <td className="py-1 pr-2">{rt.isbn || "—"}</td>
+                    <td className="py-1 pr-2">{rt.format_preference || "either"}</td>
+                    <td className="py-1 pr-2 text-right tabular-nums">{rt.price_estimate != null ? `₱${rt.price_estimate.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1.5">
+            If you can supply one of these exactly, tie your offer to it below and mark it &quot;Exact title requested.&quot;
+            If you can only offer something different (another edition, a substitute text, etc.), tie it to the request
+            anyway but mark it &quot;Alternative&quot; so staff know it&apos;s not the exact title asked for.
+          </p>
+        </div>
+      )}
+
       <div className="space-y-3 mb-3">
         {items.map((it, i) => (
           <div key={i} className="border border-slate-200 rounded p-2.5">
@@ -376,6 +444,38 @@ function OfferForm({
                 <button className="text-red-600 text-[11px] underline" onClick={() => removeRow(i)}>Remove</button>
               )}
             </div>
+            {need.recommended_titles.length > 0 && (
+              <div className="flex flex-wrap items-center gap-3 mb-2 bg-slate-50 rounded p-2">
+                <label className="label flex-col items-start">
+                  Faculty request
+                  <select
+                    className="input"
+                    value={it.recommendation_id ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value ? Number(e.target.value) : null;
+                      updateItem(i, { recommendation_id: v, match_type: v != null ? (it.match_type ?? "exact") : null });
+                    }}
+                  >
+                    <option value="">— Not tied to a specific request —</option>
+                    {need.recommended_titles.map((rt) => (
+                      <option key={rt.id} value={rt.id}>{rt.title}{rt.author ? ` — ${rt.author}` : ""}</option>
+                    ))}
+                  </select>
+                </label>
+                {it.recommendation_id != null && (
+                  <div className="flex items-center gap-3 text-xs">
+                    <label className="flex items-center gap-1">
+                      <input type="radio" name={`match-${i}`} checked={it.match_type === "exact"} onChange={() => updateItem(i, { match_type: "exact" })} />
+                      Exact title requested
+                    </label>
+                    <label className="flex items-center gap-1">
+                      <input type="radio" name={`match-${i}`} checked={it.match_type === "alternative"} onChange={() => updateItem(i, { match_type: "alternative" })} />
+                      Alternative
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <label className="label flex-col items-start">
                 Title
