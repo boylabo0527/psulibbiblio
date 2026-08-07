@@ -17,6 +17,7 @@ import FacultyRecommendationsTab from "@/components/FacultyRecommendationsTab";
 import StandardTitlesTab from "@/components/StandardTitlesTab";
 import SupplierDirectoryTab from "@/components/SupplierDirectoryTab";
 import TorGeneratorTab from "@/components/TorGeneratorTab";
+import CustomReportsTab from "@/components/CustomReportsTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
@@ -37,6 +38,7 @@ const tabs = [
   { id: "supplier-view",    label: "Supplier View",       publicTab: false },
   { id: "supplier-directory", label: "Supplier Directory", publicTab: false },
   { id: "monitoring",       label: "Monitoring",          publicTab: false },
+  { id: "reports",          label: "Custom Reports",      publicTab: false },
   { id: "cleanup",          label: "Cleanup",             publicTab: false },
   { id: "user-management",  label: "User Management",     publicTab: false },
 ] as const;
@@ -53,7 +55,7 @@ const NAV_GROUPS: { id: string; label: string; tabIds: TabId[] }[] = [
   { id: "acquisitions", label: "Acquisitions", tabIds: ["programs", "procurement", "standard-titles", "canvassing", "purchase-request", "faculty-recommendations"] },
   { id: "suppliers", label: "Suppliers", tabIds: ["canvassing", "supplier-view", "supplier-directory", "faculty-recommendations"] },
   { id: "oversight", label: "Oversight", tabIds: ["activity", "monitoring", "tor"] },
-  { id: "admin", label: "Admin", tabIds: ["cleanup", "user-management"] },
+  { id: "admin", label: "Admin", tabIds: ["reports", "cleanup", "user-management"] },
 ];
 
 export default function Home() {
@@ -277,6 +279,8 @@ export default function Home() {
           <MonitoringTab />
         ) : tab === "tor" ? (
           <TorGeneratorTab />
+        ) : tab === "reports" ? (
+          <CustomReportsTab />
         ) : tab === "user-management" ? (
           <UserManagementTab />
         ) : tab === "cleanup" ? (

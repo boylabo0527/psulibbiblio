@@ -22,6 +22,7 @@ const TAB_LABELS: Record<string, string> = {
   canvassing: "Market Canvassing",
   "purchase-request": "Purchase Request",
   tor: "Terms of Reference",
+  reports: "Custom Reports",
   activity: "Activity Log",
   "supplier-view": "Supplier View",
   "supplier-directory": "Supplier Directory",

@@ -21,6 +21,7 @@ export default function PurchaseRequestTab() {
   const [loaded, setLoaded] = useState(false);
   const [excludedCount, setExcludedCount] = useState(0);
   const [supplierFilter, setSupplierFilter] = useState("");
+  const [programFilter, setProgramFilter] = useState("");
   const [itemSortBy, setItemSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc">("none");
   const campuses = useCampuses();
   const { perms } = usePermissions();
@@ -116,15 +117,26 @@ export default function PurchaseRequestTab() {
     return tags.filter(Boolean);
   }
 
-  // Group selected items by supplier -- suppliers are the actual
-  // procurement-relevant grouping (one PO per supplier downstream), and
-  // unlike program, every item has exactly one. Program filtering isn't
-  // used here anymore: a title can now be linked to courses across more
-  // than one program, so gating by program either hid it from a program it
-  // also applies to, or forced loading the same title's PR more than once.
+  /** Every program a title counts toward (primary + any additional linked
+   *  courses' programs) -- a title can span more than one program, so the
+   *  program filter below matches if ANY of them equal the selection. */
+  function itemPrograms(item: DraftItem): string[] {
+    return [item.program, ...item.additional_subjects.map(a => a.program)].filter(Boolean);
+  }
+
+  const programOptions = useMemo(() => Array.from(new Set(Array.from(draft.values()).flatMap(itemPrograms))).sort(), [draft]);
+
+  // Grouped by supplier -- suppliers are the actual procurement-relevant
+  // grouping (one PO per supplier downstream). Built from every loaded
+  // item, not just the selected ones, so unchecking an item dims it in
+  // place instead of making the row vanish (it used to filter to
+  // selectedItems first, which meant a deselected row disappeared and
+  // could only be brought back by reloading -- exactly what made "clear
+  // this supplier" too risky to add before).
   const grouped = useMemo(() => {
-    let list = selectedItems;
+    let list = Array.from(draft.values());
     if (supplierFilter) list = list.filter(i => i.supplier === supplierFilter);
+    if (programFilter) list = list.filter(i => itemPrograms(i).includes(programFilter));
     const sorted = [...list];
     if (itemSortBy === "price_asc") sorted.sort((a, b) => a.unit_cost - b.unit_cost);
     else if (itemSortBy === "price_desc") sorted.sort((a, b) => b.unit_cost - a.unit_cost);
@@ -137,7 +149,15 @@ export default function PurchaseRequestTab() {
       bySupplier.get(key)!.push(item);
     }
     return Array.from(bySupplier.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [selectedItems, supplierFilter, itemSortBy]);
+  }, [draft, supplierFilter, programFilter, itemSortBy]);
+
+  function setSupplierSelection(supplierItems: DraftItem[], selected: boolean) {
+    setDraft(prev => {
+      const next = new Map(prev);
+      for (const item of supplierItems) next.set(item.id, { ...item, selected });
+      return next;
+    });
+  }
 
   async function generate() {
     if (selectedItems.length === 0) return;
@@ -287,6 +307,13 @@ export default function PurchaseRequestTab() {
                 </select>
               </label>
               <label className="text-slate-500 flex items-center gap-1.5">
+                Program:
+                <select className="input text-xs py-1" value={programFilter} onChange={e => setProgramFilter(e.target.value)}>
+                  <option value="">All programs</option>
+                  {programOptions.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <label className="text-slate-500 flex items-center gap-1.5">
                 Sort:
                 <select className="input text-xs py-1" value={itemSortBy} onChange={e => setItemSortBy(e.target.value as typeof itemSortBy)}>
                   <option value="none">Default</option>
@@ -330,11 +357,19 @@ export default function PurchaseRequestTab() {
           )}
 
           {/* Grouped by supplier */}
-          {grouped.map(([supplierName, items]) => (
+          {grouped.map(([supplierName, items]) => {
+            const selectedInGroup = items.filter(i => i.selected);
+            return (
             <div key={supplierName} className="mb-6">
-              <h3 className="text-sm font-semibold text-psu mb-2 pb-1 border-b border-slate-200">
-                {supplierName} · {items.length} · ₱{items.reduce((s, i) => s + i.unit_cost * i.draftQty, 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}
-              </h3>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-1 border-b border-slate-200">
+                <h3 className="text-sm font-semibold text-psu">
+                  {supplierName} · {selectedInGroup.length} of {items.length} selected · ₱{selectedInGroup.reduce((s, i) => s + i.unit_cost * i.draftQty, 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}
+                </h3>
+                <div className="flex gap-2 text-[11px]">
+                  <button type="button" className="text-psu underline" onClick={() => setSupplierSelection(items, true)}>Select all</button>
+                  <button type="button" className="text-red-600 underline" onClick={() => setSupplierSelection(items, false)}>Clear all</button>
+                </div>
+              </div>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-slate-400 text-left">
@@ -378,7 +413,8 @@ export default function PurchaseRequestTab() {
                 </tbody>
               </table>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
