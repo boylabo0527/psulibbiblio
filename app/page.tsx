@@ -18,12 +18,14 @@ import StandardTitlesTab from "@/components/StandardTitlesTab";
 import SupplierDirectoryTab from "@/components/SupplierDirectoryTab";
 import TorGeneratorTab from "@/components/TorGeneratorTab";
 import CustomReportsTab from "@/components/CustomReportsTab";
+import PublicSuggestTitleTab from "@/components/PublicSuggestTitleTab";
 import LoginScreen from "@/components/LoginScreen";
 import { useAuth } from "@/components/AuthProvider";
 import { usePermissions, canView } from "@/lib/use-permissions";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard",           publicTab: true  },
+  { id: "suggest-title", label: "Suggest a Title", publicTab: true  },
   { id: "upload",    label: "Upload",              publicTab: false },
   { id: "match",     label: "Match",               publicTab: false },
   { id: "programs",    label: "Programs & Export",   publicTab: false },
@@ -141,7 +143,7 @@ export default function Home() {
           where it has no room and would force the whole page to scroll
           sideways (px-8 padding alone eats most of a 375px viewport). */}
       <nav ref={navRef} className="hidden sm:flex bg-white border-b border-slate-200 px-8 gap-1 overflow-visible relative">
-        {visibleTabs.filter((t) => t.id === "dashboard").map((t) => (
+        {visibleTabs.filter((t) => t.publicTab).map((t) => (
           <button
             key={t.id}
             onClick={() => { setTab(t.id); setOpenGroup(null); }}
@@ -203,7 +205,7 @@ export default function Home() {
           the two stay in sync without a separate tab list to maintain. */}
       {mobileMenuOpen && (
         <nav className="sm:hidden bg-white border-b border-slate-200 max-h-[70vh] overflow-y-auto">
-          {visibleTabs.filter((t) => t.id === "dashboard").map((t) => (
+          {visibleTabs.filter((t) => t.publicTab).map((t) => (
             <button
               key={t.id}
               onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
@@ -251,6 +253,8 @@ export default function Home() {
           </p>
         ) : tab === "dashboard" ? (
           <DashboardTab />
+        ) : tab === "suggest-title" ? (
+          <PublicSuggestTitleTab />
         ) : tab === "upload" ? (
           <UploadTab />
         ) : tab === "match" ? (

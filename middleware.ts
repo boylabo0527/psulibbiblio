@@ -16,6 +16,12 @@ const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api
  *  campus-scope check at all. */
 const PUBLIC_API_EXACT = ["/api/programs"];
 
+/** Exact paths where an unauthenticated POST is allowed too, not just GET
+ *  -- kept to a tiny, explicit allowlist (currently just the public title
+ *  suggestion form) rather than folding into PUBLIC_API_EXACT, since every
+ *  other public path is deliberately read-only for anonymous visitors. */
+const PUBLIC_API_POST_EXACT = ["/api/title-recommendations/public"];
+
 function isPublic(pathname: string): boolean {
   if (PUBLIC_API_EXACT.includes(pathname)) return true;
   for (const p of PUBLIC_API_PREFIX) {
@@ -38,14 +44,18 @@ export async function middleware(req: NextRequest) {
   }
   // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
   // paths still require a signed-in user, even though anyone can read them.
+  // The one exception is the tiny explicit POST allowlist above.
   const isPublicGet = isPublic(pathname) && req.method === "GET";
+  const isPublicPost = PUBLIC_API_POST_EXACT.includes(pathname) && req.method === "POST";
+  const isPublicNoAuth = isPublicGet || isPublicPost;
 
   const auth = req.headers.get("authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m) {
     // No token at all on a public route just means an anonymous visitor
-    // (e.g. the public Dashboard) -- let it through unauthenticated.
-    if (isPublicGet) return NextResponse.next();
+    // (e.g. the public Dashboard, or the public title-suggestion form) --
+    // let it through unauthenticated.
+    if (isPublicNoAuth) return NextResponse.next();
     return NextResponse.json(
       { error: "Sign in required to use this endpoint." },
       { status: 401 },
@@ -65,7 +75,7 @@ export async function middleware(req: NextRequest) {
   if (error || !data.user) {
     // A stale/expired token on a public route shouldn't 401 a page that's
     // supposed to work signed-out too -- just fall back to anonymous.
-    if (isPublicGet) return NextResponse.next();
+    if (isPublicNoAuth) return NextResponse.next();
     return NextResponse.json(
       { error: error?.message ?? "Invalid or expired session." },
       { status: 401 },

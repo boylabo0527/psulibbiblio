@@ -630,7 +630,14 @@ export default function FacultyRecommendationsTab() {
                       <td className="py-1.5 pr-2 text-slate-500 whitespace-nowrap">
                         {r.price_estimate != null ? `₱${r.price_estimate.toLocaleString("en-PH", { minimumFractionDigits: 2 })}` : "—"}
                       </td>
-                      <td className="py-1.5 pr-2 text-slate-500">{r.recommended_by}</td>
+                      <td className="py-1.5 pr-2 text-slate-500">
+                        {r.recommended_by}
+                        {r.submitted_publicly && (
+                          <span className="ml-1.5 inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-normal" title="Submitted through the public form, no sign-in -- not a verified PSU account">
+                            Public
+                          </span>
+                        )}
+                      </td>
                       <td className="py-1.5 pr-2">
                         {canReview ? (
                           <select

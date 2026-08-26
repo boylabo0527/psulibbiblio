@@ -31,6 +31,10 @@ export type TitleRecommendationRow = {
   /** Faculty's own ballpark price suggestion, independent of canvassing_id
    *  -- useful even when no supplier has priced the title yet. */
   price_estimate: number | null;
+  /** True when this came in through the public "Suggest a Title" form
+   *  (no sign-in) -- recommended_by is then free-typed text, not a
+   *  verified PSU account, so reviewers should see that distinction. */
+  submitted_publicly: boolean;
 };
 
 /** Anyone who does canvassing (or is admin) counts as a "reviewer" here --
@@ -90,6 +94,7 @@ export async function GET(req: Request) {
         supplier: canv?.supplier ?? "",
         unit_cost: canv?.unit_cost ?? null,
         price_estimate: r.price_estimate ?? null,
+        submitted_publicly: r.submitted_publicly ?? false,
       };
     });
     return NextResponse.json({ rows });
