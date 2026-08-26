@@ -732,3 +732,11 @@ alter table purchase_requests add column if not exists fund_source text default 
 -- visitor, not a verified PSU account, when reviewing the pending queue.
 -- ---------------------------------------------------------------------------
 alter table title_recommendations add column if not exists submitted_publicly boolean not null default false;
+
+-- ---------------------------------------------------------------------------
+-- 41: captures whether the person suggesting a title is Faculty, Student,
+-- Staff, or Other -- asked on the public "Suggest a Title" form (no
+-- sign-in), where recommended_by is otherwise just free-typed text with
+-- no other way to tell who's submitting.
+-- ---------------------------------------------------------------------------
+alter table title_recommendations add column if not exists submitter_role text default '';

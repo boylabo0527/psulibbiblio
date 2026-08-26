@@ -634,7 +634,7 @@ export default function FacultyRecommendationsTab() {
                         {r.recommended_by}
                         {r.submitted_publicly && (
                           <span className="ml-1.5 inline-block bg-amber-100 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-normal" title="Submitted through the public form, no sign-in -- not a verified PSU account">
-                            Public
+                            Public{r.submitter_role ? ` · ${r.submitter_role}` : ""}
                           </span>
                         )}
                       </td>

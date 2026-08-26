@@ -1,21 +1,20 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
-import SearchableSelect from "@/components/SearchableSelect";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
 
 type Draft = {
-  subjectId: string; title: string; author: string; publisher: string; year: string; isbn: string;
+  program: string; subjectId: string; title: string; author: string; publisher: string; year: string; isbn: string;
   format_preference: string; notes: string; price_estimate: string;
-  submitter_name: string; submitter_email: string;
+  submitter_role: string; submitter_name: string; submitter_email: string;
   website: string; // honeypot -- stays empty for a real person
 };
 
 function emptyDraft(): Draft {
   return {
-    subjectId: "", title: "", author: "", publisher: "", year: "", isbn: "",
+    program: "", subjectId: "", title: "", author: "", publisher: "", year: "", isbn: "",
     format_preference: "", notes: "", price_estimate: "",
-    submitter_name: "", submitter_email: "", website: "",
+    submitter_role: "", submitter_name: "", submitter_email: "", website: "",
   };
 }
 
@@ -45,27 +44,30 @@ export default function PublicSuggestTitleTab() {
       .finally(() => setLoading(false));
   }, []);
 
-  const courseGroups = useMemo(() => {
-    const byProgram = new Map<string, SubjectSummaryRow[]>();
-    for (const s of subjects) {
-      if (!byProgram.has(s.program)) byProgram.set(s.program, []);
-      byProgram.get(s.program)!.push(s);
-    }
-    return Array.from(byProgram.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([label, subs]) => ({
-        label,
-        options: subs.map((s) => ({ value: String(s.subject_id), label: `${s.course_code} — ${s.course_title}` })),
-      }));
-  }, [subjects]);
+  // Cascading Program -> Course native <select>s instead of a type-to-
+  // filter dropdown -- on a phone, a real <select> opens the OS's own
+  // large touch-friendly picker instead of a small custom list fighting
+  // the on-screen keyboard, which is what made finding a course here hard
+  // to use on mobile.
+  const programOptions = useMemo(() => Array.from(new Set(subjects.map((s) => s.program))).sort(), [subjects]);
+  const coursesInProgram = useMemo(
+    () => subjects.filter((s) => s.program === draft.program).sort((a, b) => a.sort_order - b.sort_order),
+    [subjects, draft.program],
+  );
 
   function set<K extends keyof Draft>(field: K, value: Draft[K]) {
     setDraft((prev) => ({ ...prev, [field]: value }));
   }
 
+  function setProgram(program: string) {
+    // Changing the program invalidates whatever course was picked before --
+    // it belonged to the old program's list.
+    setDraft((prev) => ({ ...prev, program, subjectId: "" }));
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!draft.subjectId || !draft.title.trim()) return;
+    if (!draft.subjectId || !draft.title.trim() || !draft.submitter_role) return;
     setSubmitting(true);
     setErr(null);
     try {
@@ -76,7 +78,7 @@ export default function PublicSuggestTitleTab() {
           publisher: draft.publisher, year: draft.year, isbn: draft.isbn,
           format_preference: draft.format_preference, notes: draft.notes,
           price_estimate: draft.price_estimate.trim() ? Number(draft.price_estimate) : null,
-          submitter_name: draft.submitter_name, submitter_email: draft.submitter_email,
+          submitter_role: draft.submitter_role, submitter_name: draft.submitter_name, submitter_email: draft.submitter_email,
           website: draft.website,
         }),
       });
@@ -112,16 +114,24 @@ export default function PublicSuggestTitleTab() {
           {loading && <p className="text-slate-500 text-sm">Loading course list…</p>}
           {!loading && (
             <form onSubmit={submit} className="space-y-3">
-              <label className="label flex-col items-start gap-1">
-                <span className="text-xs">Course *</span>
-                <SearchableSelect
-                  value={draft.subjectId}
-                  onChange={(v) => set("subjectId", v)}
-                  groups={courseGroups}
-                  placeholder="Type to search a course…"
-                  className="input w-full"
-                />
-              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="label flex-col items-start gap-1">
+                  <span className="text-xs">Program *</span>
+                  <select className="input w-full" value={draft.program} onChange={(e) => setProgram(e.target.value)}>
+                    <option value="">Select a program…</option>
+                    {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+                <label className="label flex-col items-start gap-1">
+                  <span className="text-xs">Course *</span>
+                  <select className="input w-full" value={draft.subjectId} onChange={(e) => set("subjectId", e.target.value)} disabled={!draft.program}>
+                    <option value="">{draft.program ? "Select a course…" : "Select a program first"}</option>
+                    {coursesInProgram.map((s) => (
+                      <option key={s.subject_id} value={s.subject_id}>{s.course_code} — {s.course_title}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label className="label flex-col items-start gap-1">
@@ -163,7 +173,17 @@ export default function PublicSuggestTitleTab() {
               </label>
 
               <div className="border-t border-slate-200 pt-3">
-                <p className="text-xs text-slate-500 mb-2">Optional -- lets staff follow up with you about this suggestion.</p>
+                <label className="label flex-col items-start gap-1 mb-3">
+                  <span className="text-xs">I am a *</span>
+                  <select className="input w-full sm:w-56" value={draft.submitter_role} onChange={(e) => set("submitter_role", e.target.value)}>
+                    <option value="">Select one…</option>
+                    <option value="Faculty">Faculty</option>
+                    <option value="Student">Student</option>
+                    <option value="Staff">Staff</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </label>
+                <p className="text-xs text-slate-500 mb-2">Name and email are optional -- lets staff follow up with you about this suggestion.</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="label flex-col items-start gap-1">
                     <span className="text-xs">Your name</span>
@@ -186,7 +206,7 @@ export default function PublicSuggestTitleTab() {
               </div>
 
               {err && <p className="text-red-700 text-sm">{err}</p>}
-              <button type="submit" className="btn text-sm" disabled={submitting || !draft.subjectId || !draft.title.trim()}>
+              <button type="submit" className="btn text-sm" disabled={submitting || !draft.subjectId || !draft.title.trim() || !draft.submitter_role}>
                 {submitting ? "Submitting…" : "Submit Suggestion"}
               </button>
             </form>

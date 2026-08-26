@@ -35,6 +35,9 @@ export type TitleRecommendationRow = {
    *  (no sign-in) -- recommended_by is then free-typed text, not a
    *  verified PSU account, so reviewers should see that distinction. */
   submitted_publicly: boolean;
+  /** "Faculty" | "Student" | "Staff" | "Other" | "" -- only ever set on a
+   *  publicly-submitted recommendation (see submitted_publicly above). */
+  submitter_role: string;
 };
 
 /** Anyone who does canvassing (or is admin) counts as a "reviewer" here --
@@ -95,6 +98,7 @@ export async function GET(req: Request) {
         unit_cost: canv?.unit_cost ?? null,
         price_estimate: r.price_estimate ?? null,
         submitted_publicly: r.submitted_publicly ?? false,
+        submitter_role: r.submitter_role ?? "",
       };
     });
     return NextResponse.json({ rows });

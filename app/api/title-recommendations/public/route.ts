@@ -6,11 +6,13 @@ import { errorMessage } from "@/lib/errors";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const SUBMITTER_ROLES = ["Faculty", "Student", "Staff", "Other"];
+
 type PublicTitleInput = {
   subject_id?: number;
   title?: string; author?: string; publisher?: string; year?: string; isbn?: string;
   format_preference?: string; notes?: string; price_estimate?: number | null;
-  submitter_name?: string; submitter_email?: string;
+  submitter_role?: string; submitter_name?: string; submitter_email?: string;
   /** Honeypot -- a real visitor never sees or fills this field (hidden via
    *  CSS in PublicSuggestTitleTab.tsx), so anything in it means a bot
    *  filled every input it found. A non-empty value gets a fake success
@@ -29,9 +31,9 @@ type PublicTitleInput = {
  *  from the same public /api/dashboard/subjects list the Dashboard tab
  *  already exposes to anonymous visitors -- not a secret, so the form can
  *  send it directly instead of re-resolving a program/course-code pair.
- *  Body: { subject_id, title, author?, publisher?, year?, isbn?,
- *  format_preference?, notes?, price_estimate?, submitter_name?,
- *  submitter_email? }. */
+ *  Body: { subject_id, title, submitter_role, author?, publisher?, year?,
+ *  isbn?, format_preference?, notes?, price_estimate?, submitter_name?,
+ *  submitter_email? }. submitter_role must be one of SUBMITTER_ROLES. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -44,8 +46,9 @@ export async function POST(req: Request) {
 
     const subjectId = Number(body.subject_id);
     const title = (body.title ?? "").trim();
-    if (!Number.isFinite(subjectId) || !title) {
-      return NextResponse.json({ error: "Course and Title are required." }, { status: 400 });
+    const submitterRole = SUBMITTER_ROLES.includes(body.submitter_role ?? "") ? (body.submitter_role as string) : "";
+    if (!Number.isFinite(subjectId) || !title || !submitterRole) {
+      return NextResponse.json({ error: "Course, Title, and 'I am a' are required." }, { status: 400 });
     }
 
     const { data: subject } = await db.from("subjects").select("id").eq("id", subjectId).maybeSingle();
@@ -62,14 +65,14 @@ export async function POST(req: Request) {
       year: (body.year ?? "").trim(), isbn: (body.isbn ?? "").trim(),
       format_preference: (body.format_preference ?? "").trim(), notes: (body.notes ?? "").trim(),
       price_estimate: Number.isFinite(priceEstimate) ? priceEstimate : null,
-      submitted_publicly: true,
+      submitted_publicly: true, submitter_role: submitterRole,
     }).select("id").single();
     if (error) throw error;
 
     await logActivity(db, {
       action: "title_recommendation_submit",
-      summary: `${recommendedBy} publicly suggested "${title}"`,
-      detail: { recommendation_id: inserted?.id, subject_id: subject.id, public: true },
+      summary: `${recommendedBy} (${submitterRole}) publicly suggested "${title}"`,
+      detail: { recommendation_id: inserted?.id, subject_id: subject.id, public: true, submitter_role: submitterRole },
     });
 
     return NextResponse.json({ ok: true });
