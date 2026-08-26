@@ -8,10 +8,14 @@ export const dynamic = "force-dynamic";
 
 const SUBMITTER_ROLES = ["Faculty", "Student", "Staff", "Other"];
 
-type PublicTitleInput = {
-  subject_id?: number;
+type TitleInput = {
   title?: string; author?: string; publisher?: string; year?: string; isbn?: string;
   format_preference?: string; notes?: string; price_estimate?: number | null;
+};
+
+type PublicTitleInput = {
+  subject_id?: number;
+  titles?: TitleInput[];
   submitter_role?: string; submitter_name?: string; submitter_email?: string;
   /** Honeypot -- a real visitor never sees or fills this field (hidden via
    *  CSS in PublicSuggestTitleTab.tsx), so anything in it means a bot
@@ -31,9 +35,11 @@ type PublicTitleInput = {
  *  from the same public /api/dashboard/subjects list the Dashboard tab
  *  already exposes to anonymous visitors -- not a secret, so the form can
  *  send it directly instead of re-resolving a program/course-code pair.
- *  Body: { subject_id, title, submitter_role, author?, publisher?, year?,
- *  isbn?, format_preference?, notes?, price_estimate?, submitter_name?,
- *  submitter_email? }. submitter_role must be one of SUBMITTER_ROLES. */
+ *  Body: { subject_id, titles, submitter_role, submitter_name?,
+ *  submitter_email? }, titles: [{ title, author?, publisher?, year?, isbn?,
+ *  format_preference?, notes?, price_estimate? }, ...] -- mirrors POST
+ *  /api/title-recommendations so one course visit can suggest several
+ *  books at once. submitter_role must be one of SUBMITTER_ROLES. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -45,10 +51,10 @@ export async function POST(req: Request) {
     }
 
     const subjectId = Number(body.subject_id);
-    const title = (body.title ?? "").trim();
+    const inputs = (body.titles ?? []).filter((t) => (t.title ?? "").trim());
     const submitterRole = SUBMITTER_ROLES.includes(body.submitter_role ?? "") ? (body.submitter_role as string) : "";
-    if (!Number.isFinite(subjectId) || !title || !submitterRole) {
-      return NextResponse.json({ error: "Course, Title, and 'I am a' are required." }, { status: 400 });
+    if (!Number.isFinite(subjectId) || !inputs.length || !submitterRole) {
+      return NextResponse.json({ error: "Course, at least one Title, and 'I am a' are required." }, { status: 400 });
     }
 
     const { data: subject } = await db.from("subjects").select("id").eq("id", subjectId).maybeSingle();
@@ -58,21 +64,26 @@ export async function POST(req: Request) {
     const submitterEmail = (body.submitter_email ?? "").trim();
     const recommendedBy = [submitterName, submitterEmail && `(${submitterEmail})`].filter(Boolean).join(" ") || "Anonymous (public submission)";
 
-    const priceEstimate = Number(body.price_estimate);
-    const { data: inserted, error } = await db.from("title_recommendations").insert({
-      subject_id: subject.id, recommended_by: recommendedBy, title,
-      author: (body.author ?? "").trim(), publisher: (body.publisher ?? "").trim(),
-      year: (body.year ?? "").trim(), isbn: (body.isbn ?? "").trim(),
-      format_preference: (body.format_preference ?? "").trim(), notes: (body.notes ?? "").trim(),
-      price_estimate: Number.isFinite(priceEstimate) ? priceEstimate : null,
-      submitted_publicly: true, submitter_role: submitterRole,
-    }).select("id").single();
+    const insertRows = inputs.map((t) => {
+      const priceEstimate = Number(t.price_estimate);
+      return {
+        subject_id: subject.id, recommended_by: recommendedBy, title: (t.title ?? "").trim(),
+        author: (t.author ?? "").trim(), publisher: (t.publisher ?? "").trim(),
+        year: (t.year ?? "").trim(), isbn: (t.isbn ?? "").trim(),
+        format_preference: (t.format_preference ?? "").trim(), notes: (t.notes ?? "").trim(),
+        price_estimate: Number.isFinite(priceEstimate) ? priceEstimate : null,
+        submitted_publicly: true, submitter_role: submitterRole,
+      };
+    });
+    const { data: inserted, error } = await db.from("title_recommendations").insert(insertRows).select("id");
     if (error) throw error;
 
     await logActivity(db, {
       action: "title_recommendation_submit",
-      summary: `${recommendedBy} (${submitterRole}) publicly suggested "${title}"`,
-      detail: { recommendation_id: inserted?.id, subject_id: subject.id, public: true, submitter_role: submitterRole },
+      summary: inputs.length === 1
+        ? `${recommendedBy} (${submitterRole}) publicly suggested "${insertRows[0].title}"`
+        : `${recommendedBy} (${submitterRole}) publicly suggested ${inputs.length} titles: ${insertRows.map((r) => `"${r.title}"`).join(", ")}`,
+      detail: { recommendation_ids: (inserted ?? []).map((d) => d.id), subject_id: subject.id, public: true, submitter_role: submitterRole },
     });
 
     return NextResponse.json({ ok: true });
