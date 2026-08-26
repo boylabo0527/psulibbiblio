@@ -252,7 +252,18 @@ export default function Home() {
             Your account doesn&apos;t have access to this tab. Contact your administrator if you think this is wrong.
           </p>
         ) : tab === "dashboard" ? (
-          <DashboardTab />
+          <>
+            <button
+              onClick={() => setTab("suggest-title")}
+              className="w-full mb-4 bg-psu-light/50 border border-psu/30 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left hover:bg-psu-light/70 transition"
+            >
+              <span className="text-sm text-psu font-medium">
+                📚 Know a book your course needs? <span className="font-semibold">Suggest a Title</span> -- no sign-in needed.
+              </span>
+              <span className="text-xs text-psu font-semibold whitespace-nowrap">Suggest now →</span>
+            </button>
+            <DashboardTab />
+          </>
         ) : tab === "suggest-title" ? (
           <PublicSuggestTitleTab />
         ) : tab === "upload" ? (
