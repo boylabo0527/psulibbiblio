@@ -39,7 +39,7 @@ export default function PublicSuggestTitleTab() {
       .then((r) => r.json())
       .then((j) => {
         if (j.error) throw new Error(j.error);
-        setSubjects(j.rows ?? []);
+        setSubjects(j.subjects ?? []);
       })
       .catch((e) => setLoadErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
