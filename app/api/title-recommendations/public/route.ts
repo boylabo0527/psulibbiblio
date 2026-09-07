@@ -16,6 +16,7 @@ type TitleInput = {
 type PublicTitleInput = {
   subject_id?: number;
   titles?: TitleInput[];
+  campus?: string;
   submitter_role?: string; submitter_name?: string; submitter_email?: string;
   /** Honeypot -- a real visitor never sees or fills this field (hidden via
    *  CSS in PublicSuggestTitleTab.tsx), so anything in it means a bot
@@ -35,11 +36,14 @@ type PublicTitleInput = {
  *  from the same public /api/dashboard/subjects list the Dashboard tab
  *  already exposes to anonymous visitors -- not a secret, so the form can
  *  send it directly instead of re-resolving a program/course-code pair.
- *  Body: { subject_id, titles, submitter_role, submitter_name?,
+ *  Body: { subject_id, titles, campus, submitter_role, submitter_name?,
  *  submitter_email? }, titles: [{ title, author?, publisher?, year?, isbn?,
  *  format_preference?, notes?, price_estimate? }, ...] -- mirrors POST
  *  /api/title-recommendations so one course visit can suggest several
- *  books at once. submitter_role must be one of SUBMITTER_ROLES. */
+ *  books at once. submitter_role must be one of SUBMITTER_ROLES; campus
+ *  must name a real row in the `campuses` table -- a course is offered
+ *  the same everywhere, so which campus's shortage this addresses can't
+ *  be inferred from subject_id alone. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -53,12 +57,17 @@ export async function POST(req: Request) {
     const subjectId = Number(body.subject_id);
     const inputs = (body.titles ?? []).filter((t) => (t.title ?? "").trim());
     const submitterRole = SUBMITTER_ROLES.includes(body.submitter_role ?? "") ? (body.submitter_role as string) : "";
-    if (!Number.isFinite(subjectId) || !inputs.length || !submitterRole) {
-      return NextResponse.json({ error: "Course, at least one Title, and 'I am a' are required." }, { status: 400 });
+    const campus = (body.campus ?? "").trim();
+    if (!Number.isFinite(subjectId) || !inputs.length || !submitterRole || !campus) {
+      return NextResponse.json({ error: "Campus, Course, at least one Title, and 'I am a' are required." }, { status: 400 });
     }
 
-    const { data: subject } = await db.from("subjects").select("id").eq("id", subjectId).maybeSingle();
+    const [{ data: subject }, { data: campusRow }] = await Promise.all([
+      db.from("subjects").select("id").eq("id", subjectId).maybeSingle(),
+      db.from("campuses").select("id").eq("name", campus).maybeSingle(),
+    ]);
     if (!subject) return NextResponse.json({ error: "That course couldn't be found -- reload the page and try again." }, { status: 404 });
+    if (!campusRow) return NextResponse.json({ error: "That campus couldn't be found -- reload the page and try again." }, { status: 404 });
 
     const submitterName = (body.submitter_name ?? "").trim();
     const submitterEmail = (body.submitter_email ?? "").trim();
@@ -72,7 +81,7 @@ export async function POST(req: Request) {
         year: (t.year ?? "").trim(), isbn: (t.isbn ?? "").trim(),
         format_preference: (t.format_preference ?? "").trim(), notes: (t.notes ?? "").trim(),
         price_estimate: Number.isFinite(priceEstimate) ? priceEstimate : null,
-        submitted_publicly: true, submitter_role: submitterRole,
+        submitted_publicly: true, submitter_role: submitterRole, campus,
       };
     });
     const { data: inserted, error } = await db.from("title_recommendations").insert(insertRows).select("id");
@@ -81,9 +90,9 @@ export async function POST(req: Request) {
     await logActivity(db, {
       action: "title_recommendation_submit",
       summary: inputs.length === 1
-        ? `${recommendedBy} (${submitterRole}) publicly suggested "${insertRows[0].title}"`
-        : `${recommendedBy} (${submitterRole}) publicly suggested ${inputs.length} titles: ${insertRows.map((r) => `"${r.title}"`).join(", ")}`,
-      detail: { recommendation_ids: (inserted ?? []).map((d) => d.id), subject_id: subject.id, public: true, submitter_role: submitterRole },
+        ? `${recommendedBy} (${submitterRole}, ${campus}) publicly suggested "${insertRows[0].title}"`
+        : `${recommendedBy} (${submitterRole}, ${campus}) publicly suggested ${inputs.length} titles: ${insertRows.map((r) => `"${r.title}"`).join(", ")}`,
+      detail: { recommendation_ids: (inserted ?? []).map((d) => d.id), subject_id: subject.id, public: true, submitter_role: submitterRole, campus },
     });
 
     return NextResponse.json({ ok: true });

@@ -38,6 +38,11 @@ export type TitleRecommendationRow = {
   /** "Faculty" | "Student" | "Staff" | "Other" | "" -- only ever set on a
    *  publicly-submitted recommendation (see submitted_publicly above). */
   submitter_role: string;
+  /** Which PSU campus this suggestion is for -- a course is offered the
+   *  same everywhere, so this can't be inferred from subject_id. Only
+   *  ever set on a publicly-submitted recommendation for now (see
+   *  submitted_publicly above). */
+  campus: string;
 };
 
 /** Anyone who does canvassing (or is admin) counts as a "reviewer" here --
@@ -99,6 +104,7 @@ export async function GET(req: Request) {
         price_estimate: r.price_estimate ?? null,
         submitted_publicly: r.submitted_publicly ?? false,
         submitter_role: r.submitter_role ?? "",
+        campus: r.campus ?? "",
       };
     });
     return NextResponse.json({ rows });
