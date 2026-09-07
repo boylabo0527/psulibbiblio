@@ -73,6 +73,13 @@ function cell(v: unknown, t?: "n" | "s"): XLSX.CellObject {
   return { v, t: t ?? (typeof v === "number" ? "n" : "s") } as XLSX.CellObject;
 }
 
+/** A numeric cell backed by a live formula (`f`, no leading "=") instead of
+ *  a bare value -- `v` is still the current computed number, kept as the
+ *  cached display value for viewers that don't recalculate on open. */
+function formulaCell(formula: string, v: number): XLSX.CellObject {
+  return { t: "n", v, f: formula } as XLSX.CellObject;
+}
+
 export function generatePurchaseOrderXlsx(data: POData): Buffer {
   const { items } = data;
   const COLS = 9;
@@ -201,8 +208,24 @@ export function generatePurchaseOrderXlsx(data: POData): Buffer {
     M(accIdx, 1, accIdx, 8),
   ];
 
+  // Amount per item is a live formula (Quantity * Unit Cost, columns G*H)
+  // instead of a pre-computed number, and the Grand Total cell sums that
+  // column instead of being independently recomputed -- same treatment as
+  // the Purchase Request export (see lib/exports-pr.ts).
+  for (let i = 0; i < items.length; i++) {
+    const row = itemStartIdx + i;
+    const addr = XLSX.utils.encode_cell({ r: row, c: 8 });
+    const excelRow = row + 1;
+    ws[addr] = formulaCell(`G${excelRow}*H${excelRow}`, items[i].quantity * items[i].unit_cost);
+  }
   const wordsAmountCellAddr = XLSX.utils.encode_cell({ r: wordsIdx, c: 8 });
-  ws[wordsAmountCellAddr] = cell(grandTotal, "n");
+  if (items.length) {
+    const firstRow = itemStartIdx + 1;
+    const lastRow = itemStartIdx + items.length;
+    ws[wordsAmountCellAddr] = formulaCell(`SUM(I${firstRow}:I${lastRow})`, grandTotal);
+  } else {
+    ws[wordsAmountCellAddr] = cell(grandTotal, "n");
+  }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "PO");

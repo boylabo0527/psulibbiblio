@@ -25,6 +25,13 @@ function cell(v: unknown, t?: "n" | "s"): XLSX.CellObject {
   return { v, t: t ?? (typeof v === "number" ? "n" : "s") } as XLSX.CellObject;
 }
 
+/** A numeric cell backed by a live formula (`f`, no leading "=") instead of
+ *  a bare value -- `v` is still the current computed number, kept as the
+ *  cached display value for viewers that don't recalculate on open. */
+function formulaCell(formula: string, v: number): XLSX.CellObject {
+  return { t: "n", v, f: formula } as XLSX.CellObject;
+}
+
 export function generatePurchaseRequestXlsx(data: PRData): Buffer {
   const { items } = data;
 
@@ -187,9 +194,25 @@ export function generatePurchaseRequestXlsx(data: PRData): Buffer {
     M(sigLabelIdx + 3, 6, sigLabelIdx + 3, 8),
   ];
 
-  // Override grand total cell to be numeric
+  // Total cost per item is a live formula (Quantity * Unit Cost, columns
+  // G*H) instead of a pre-computed number -- opening the file shows
+  // exactly how each line total was derived, and editing a quantity or
+  // cost recalculates it. Grand Total in turn sums that column instead of
+  // being independently recomputed.
+  for (let i = 0; i < items.length; i++) {
+    const row = itemStartIdx + i;
+    const addr = XLSX.utils.encode_cell({ r: row, c: 8 });
+    const excelRow = row + 1;
+    ws[addr] = formulaCell(`G${excelRow}*H${excelRow}`, items[i].quantity * items[i].unit_cost);
+  }
   const totalCellAddr = XLSX.utils.encode_cell({ r: totalIdx, c: 8 });
-  ws[totalCellAddr] = cell(grandTotal, "n");
+  if (items.length) {
+    const firstRow = itemStartIdx + 1;
+    const lastRow = itemStartIdx + items.length;
+    ws[totalCellAddr] = formulaCell(`SUM(I${firstRow}:I${lastRow})`, grandTotal);
+  } else {
+    ws[totalCellAddr] = cell(grandTotal, "n");
+  }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "PR");

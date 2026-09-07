@@ -145,6 +145,17 @@ export default function ProcurementTab() {
     })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+    if (fmt === "xlsx") {
+      // Est. Cost is a live formula (Gap * Est. Cost/Title, columns K*L)
+      // instead of a pre-computed number, so opening the file shows how it
+      // was derived from the two columns next to it.
+      filtered.forEach((r, i) => {
+        if (r.cost_per_title == null) return;
+        const excelRow = i + 2; // header is row 1
+        const addr = XLSX.utils.encode_cell({ r: i + 1, c: 12 });
+        ws[addr] = { t: "n", v: r.estimated_cost ?? 0, f: `K${excelRow}*L${excelRow}` } as import("xlsx").CellObject;
+      });
+    }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Procurement");
     const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });

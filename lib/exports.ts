@@ -83,18 +83,69 @@ const NON_EMPTY_TYPES = (buckets: Buckets) =>
   RESOURCE_TYPES.filter((t) => buckets[t.id].length > 0);
 
 // ---------------------------------------------------------------------------
-// XLSX
+// XLSX -- Summary and Detail are genuinely linked workbooks, not two
+// independent renderings of the same data: Detail's per-subject Titles/
+// Volumes cells hold real COUNTA/SUM formulas over that subject's own entry
+// rows, and Summary's Total Titles/Volumes columns are cross-sheet cell
+// references INTO those Detail cells (='Detail'!B12, not a second
+// independently-computed number) -- opening the file and clicking a total
+// shows exactly which rows it came from, and editing a Detail row (e.g.
+// fixing a copy count) updates Summary without regenerating the export.
+// Summary's Recent/Older split similarly reads a per-entry "parsed year"
+// helper column written into Detail (see writeDetailSheet) via COUNTIFS/
+// SUMIFS, rather than being baked in as a static split. Every formula also
+// carries a cached `result` (the same number this file used to write
+// statically) so a viewer that doesn't auto-recalculate on open still shows
+// the right value immediately.
+// Every per-type block on Detail also ends with one blank buffer row that's
+// already inside the range every formula above (and its Summary-sheet
+// cross-references) is computed over -- typing a title straight into it
+// updates totals with no regeneration needed, and it also guarantees Excel's
+// own row-insert range expansion (which only fires when the insertion point
+// falls within a range's existing bounds) always has a safe row to insert
+// against, even for a block with only one entry.
 // ---------------------------------------------------------------------------
 export async function programBibliographyXlsx(b: ProgramBibliography): Promise<Buffer> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   wb.creator = "PSU Bibliography Generator";
-  writeSummarySheet(wb, b);
-  writeDetailSheet(wb, b);
+  // Detail is written first so its row layout (which rows hold which
+  // subject's entries/totals) is known before Summary builds formulas that
+  // point into it.
+  const rowMap = writeDetailSheet(wb, b);
+  writeSummarySheet(wb, b, rowMap);
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
+/** Where one subject's (or the journals block's) rows ended up on the
+ *  Detail sheet, so Summary can build formulas that reference them. */
+type DetailRowInfo = {
+  /** First/last row of the subject's entry rows (every resource-type block,
+   *  including the italic type-label rows -- those leave the Title column
+   *  blank, so COUNTA/COUNTIFS over this range naturally skip them). Title
+   *  column is C for a subject block, B for the journals block. */
+  entryStart: number;
+  entryEnd: number;
+  /** Which Title column (subject vs. journal layout differ). */
+  titleCol: "B" | "C";
+  /** Which Copy column (subject vs. journal layout differ). */
+  copyCol: "E" | "F";
+  /** Which column holds each entry row's parsed year (see writeDetailSheet). */
+  yearCol: "G" | "H";
+  /** Contiguous row ranges belonging to print-medium resource types only
+   *  (book_printed, journal_printed) -- volumes only count print copies, so
+   *  the Volumes formula sums just these ranges instead of the whole block. */
+  printRanges: [number, number][];
+  /** Row holding the "Titles" formula cell (value in column B). */
+  titlesRow: number;
+  /** Row holding the "Volumes" formula cell (value in column B). */
+  volumesRow: number;
+};
+
+function writeSummarySheet(
+  wb: import("exceljs").Workbook, b: ProgramBibliography,
+  rowMap: { subjects: DetailRowInfo[]; journals: DetailRowInfo | null },
+) {
   const ws = wb.addWorksheet("sum");
   const currentYear = new Date().getFullYear();
   const cutoff = currentYear - 10;
@@ -122,7 +173,9 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   ws.getRow(r - 1).font = { italic: true };
   ws.getCell(r++, 1).value =
     `Combined totals across eBooks, printed books, and journals. ` +
-    `Recent = published ${cutoff}-${currentYear}; Older = before ${cutoff} or unknown year.`;
+    `Recent = published ${cutoff}-${currentYear}; Older = before ${cutoff} or unknown year. ` +
+    `Total Titles/Volumes are live references to the Detail sheet -- open a cell to see which ` +
+    `Detail row it reads from.`;
   ws.getRow(r - 1).font = { italic: true, size: 10 };
   r++;
 
@@ -138,8 +191,45 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
   ws.getRow(r).font = { bold: true };
   r++;
 
-  const colTotals: number[] = Array(header.length - 2).fill(0);
+  // Every row that holds real per-subject/journal numbers, so the Program
+  // Totals row at the end can SUM exactly those (section-label rows are
+  // skipped automatically since they're just never added to this list).
+  const dataRows: number[] = [];
+  const colTotals: number[] = Array(6).fill(0); // cached results for cols 3-8, kept in sync as rows are written
 
+  /** Recent Titles = count of Detail entry rows (Title column non-blank)
+   *  whose parsed year is >= cutoff. Older Titles = Total - Recent (a
+   *  formula, not a second independent count) -- Total in turn is a direct
+   *  reference to Detail's own Titles formula cell. Volumes mirror this,
+   *  restricted to the print-medium row ranges only. Cached `result`s use
+   *  the same JS-computed numbers this sheet wrote statically before, so
+   *  a viewer that doesn't auto-recalculate on open still shows them
+   *  correctly. */
+  function writeRow(rowInfo: DetailRowInfo, buckets: Buckets) {
+    const { entryStart, entryEnd, titleCol, copyCol, yearCol, printRanges, titlesRow, volumesRow } = rowInfo;
+    const hasEntries = entryEnd >= entryStart;
+    const all = subjectTotals(buckets);
+    const split = subjectTotalsByAge(buckets, currentYear);
+
+    const recentTitlesF = hasEntries
+      ? `COUNTIFS(Detail!${titleCol}${entryStart}:${titleCol}${entryEnd},"<>",Detail!${yearCol}${entryStart}:${yearCol}${entryEnd},">="&${cutoff})`
+      : null;
+    const recentVolumesF = printRanges.length
+      ? printRanges.map(([s, e]) => `SUMIFS(Detail!${copyCol}${s}:${copyCol}${e},Detail!${yearCol}${s}:${yearCol}${e},">="&${cutoff})`).join("+")
+      : null;
+
+    ws.getCell(r, 3).value = recentTitlesF ? { formula: recentTitlesF, result: split.recent.titles } : 0;
+    ws.getCell(r, 4).value = recentVolumesF ? { formula: recentVolumesF, result: split.recent.volumes } : 0;
+    ws.getCell(r, 5).value = { formula: `G${r}-C${r}`, result: split.old.titles };
+    ws.getCell(r, 6).value = { formula: `H${r}-D${r}`, result: split.old.volumes };
+    ws.getCell(r, 7).value = { formula: `Detail!B${titlesRow}`, result: all.titles };
+    ws.getCell(r, 8).value = { formula: `Detail!B${volumesRow}`, result: all.volumes };
+
+    const rowVals = [split.recent.titles, split.recent.volumes, split.old.titles, split.old.volumes, all.titles, all.volumes];
+    for (let i = 0; i < colTotals.length; i++) colTotals[i] += rowVals[i];
+  }
+
+  let subjectIdx = 0;
   for (const sec of b.bySection) {
     if (sec.section) {
       ws.getCell(r, 2).value = sec.section;
@@ -147,55 +237,44 @@ function writeSummarySheet(wb: import("exceljs").Workbook, b: ProgramBibliograph
       r++;
     }
     for (const sub of sec.subjects) {
-      const split = subjectTotalsByAge(sub.buckets, currentYear);
-      const all = subjectTotals(sub.buckets);
-      const cells: (string | number)[] = [
-        sub.subject.course_code || "",
-        sub.subject.course_title || "",
-        split.recent.titles,
-        split.recent.volumes,
-        split.old.titles,
-        split.old.volumes,
-        all.titles,
-        all.volumes,
-      ];
-      ws.getRow(r).values = cells;
-      for (let i = 0; i < colTotals.length; i++) {
-        colTotals[i] += Number(cells[i + 2]) || 0;
-      }
+      ws.getCell(r, 1).value = sub.subject.course_code || "";
+      ws.getCell(r, 2).value = sub.subject.course_title || "";
+      writeRow(rowMap.subjects[subjectIdx], sub.buckets);
+      dataRows.push(r);
+      subjectIdx++;
       r++;
     }
   }
 
-  const journalTotals = subjectTotals(b.journals);
-  if (journalTotals.titles > 0) {
-    const journalSplit = subjectTotalsByAge(b.journals, currentYear);
-    const journalCells: (string | number)[] = [
-      "", "Journals (program-wide, all courses)",
-      journalSplit.recent.titles, journalSplit.recent.volumes,
-      journalSplit.old.titles, journalSplit.old.volumes,
-      journalTotals.titles, journalTotals.volumes,
-    ];
-    ws.getRow(r).values = journalCells;
+  if (rowMap.journals) {
+    ws.getCell(r, 2).value = "Journals (program-wide, all courses)";
     ws.getRow(r).font = { italic: true };
-    for (let i = 0; i < colTotals.length; i++) {
-      colTotals[i] += Number(journalCells[i + 2]) || 0;
-    }
+    writeRow(rowMap.journals, b.journals);
+    dataRows.push(r);
     r++;
   }
 
   r++;
   ws.getCell(r, 1).value = "Program Totals";
   ws.getRow(r).font = { bold: true };
-  for (let i = 0; i < colTotals.length; i++) {
-    ws.getCell(r, 3 + i).value = colTotals[i];
+  for (let col = 3; col <= 8; col++) {
+    const colLetter = String.fromCharCode(64 + col);
+    const refs = dataRows.map((row) => `${colLetter}${row}`).join(",");
+    ws.getCell(r, col).value = dataRows.length ? { formula: `SUM(${refs})`, result: colTotals[col - 3] } : 0;
   }
 }
 
-function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography) {
+function writeDetailSheet(
+  wb: import("exceljs").Workbook, b: ProgramBibliography,
+): { subjects: DetailRowInfo[]; journals: DetailRowInfo | null } {
   const ws = wb.addWorksheet("Detail");
+  // Column H ("Yr#") is an internal helper -- the parsed 4-digit year behind
+  // each row's Year text (blank when it can't be parsed) -- that Summary's
+  // Recent/Older formulas filter on. Left visible (not hidden) rather than
+  // tucked away, so anyone checking Summary's numbers can see exactly what
+  // they're built from instead of an opaque hidden column.
   ws.columns = [
-    { width: 20 }, { width: 30 }, { width: 60 }, { width: 30 }, { width: 8 }, { width: 8 }, { width: 30 },
+    { width: 20 }, { width: 30 }, { width: 60 }, { width: 30 }, { width: 8 }, { width: 8 }, { width: 30 }, { width: 8 },
   ];
   let r = 1;
   ws.getCell(r++, 1).value = "PALAWAN STATE UNIVERSITY";
@@ -208,6 +287,8 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
   ws.getCell(r++, 1).value = "Professional Resources";
   ws.getRow(r - 1).font = { italic: true };
   r++;
+
+  const subjectRows: DetailRowInfo[] = [];
 
   for (const sec of b.bySection) {
     if (sec.section) {
@@ -228,61 +309,117 @@ function writeDetailSheet(wb: import("exceljs").Workbook, b: ProgramBibliography
         r++;
       }
       // Single header row, then a labeled block per non-empty resource type.
-      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link"];
+      ws.getRow(r).values = ["Call No. / ISSN", "Author", "Title", "Publisher", "Year", "Copy", "Link", "Yr#"];
       ws.getRow(r).font = { bold: true };
       r++;
+
+      const entryStart = r;
+      const printRanges: [number, number][] = [];
       for (const t of NON_EMPTY_TYPES(sub.buckets)) {
         ws.getCell(r, 1).value = t.sectionLabel;
         ws.getRow(r).font = { italic: true };
         r++;
+        const blockStart = r;
         for (const tt of sub.buckets[t.id]) {
           const ident = tt.call_no || tt.issn || "";
           ws.getRow(r).values = [ident, tt.author || "", tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
           if (tt.url) ws.getCell(r, 7).value = { text: tt.url, hyperlink: tt.url };
+          const yr = parseYear(tt.year);
+          if (yr !== null) ws.getCell(r, 8).value = yr;
           r++;
         }
+        // Blank buffer row left inside this type's range. Titles/Volumes
+        // (here and on the Summary sheet) are formulas over exactly this
+        // range, so a title typed directly into this row -- or a new row
+        // inserted anywhere in this block via Excel's own Insert Row, which
+        // only expands a range when the insertion point falls within its
+        // existing bounds -- is picked up without regenerating the export.
+        r++;
+        if (t.medium === "print" && r - 1 >= blockStart) printRanges.push([blockStart, r - 1]);
       }
-      const all = subjectTotals(sub.buckets);
+      const entryEnd = r - 1;
+
+      const totals = subjectTotals(sub.buckets);
+      const hasEntries = entryEnd >= entryStart;
+      const titlesRow = r;
       ws.getCell(r, 1).value = "Titles";
-      ws.getCell(r, 2).value = all.titles;
+      ws.getCell(r, 2).value = hasEntries
+        ? { formula: `COUNTA(C${entryStart}:C${entryEnd})`, result: totals.titles }
+        : 0;
       ws.getRow(r).font = { bold: true };
       r++;
+      const volumesRow = r;
+      const volFormula = printRanges.map(([s, e]) => `SUM(F${s}:F${e})`).join("+");
       ws.getCell(r, 1).value = "Volumes";
-      ws.getCell(r, 2).value = all.volumes;
+      ws.getCell(r, 2).value = volFormula
+        ? { formula: volFormula, result: totals.volumes }
+        : 0;
       ws.getRow(r).font = { bold: true };
       r++;
       r++;
+
+      subjectRows.push({
+        entryStart, entryEnd, titleCol: "C", copyCol: "F", yearCol: "H",
+        printRanges, titlesRow, volumesRow,
+      });
     }
   }
 
+  let journalsRow: DetailRowInfo | null = null;
   if (NON_EMPTY_TYPES(b.journals).length > 0) {
     ws.getCell(r, 2).value = "Journals (program-wide -- applies to every course, not repeated per course)";
     ws.getRow(r).font = { bold: true };
     r++;
-    ws.getRow(r).values = ["Call No. / ISSN", "Title", "Publisher", "Year", "Copy", "Link"];
+    ws.getRow(r).values = ["Call No. / ISSN", "Title", "Publisher", "Year", "Copy", "Link", "Yr#"];
     ws.getRow(r).font = { bold: true };
     r++;
+
+    const entryStart = r;
+    const printRanges: [number, number][] = [];
     for (const t of NON_EMPTY_TYPES(b.journals)) {
       ws.getCell(r, 1).value = t.sectionLabel;
       ws.getRow(r).font = { italic: true };
       r++;
+      const blockStart = r;
       for (const tt of b.journals[t.id]) {
         const ident = tt.call_no || tt.issn || "";
         ws.getRow(r).values = [ident, tt.title || "", tt.publisher || "", tt.year || "", tt.copies ?? 1];
         if (tt.url) ws.getCell(r, 6).value = { text: tt.url, hyperlink: tt.url };
+        const yr = parseYear(tt.year);
+        if (yr !== null) ws.getCell(r, 7).value = yr;
         r++;
       }
+      // Same blank buffer row as the per-subject blocks above.
+      r++;
+      if (t.medium === "print" && r - 1 >= blockStart) printRanges.push([blockStart, r - 1]);
     }
-    const all = subjectTotals(b.journals);
+    const entryEnd = r - 1;
+
+    const totals = subjectTotals(b.journals);
+    const hasEntries = entryEnd >= entryStart;
+    const titlesRow = r;
     ws.getCell(r, 1).value = "Titles";
-    ws.getCell(r, 2).value = all.titles;
+    ws.getCell(r, 2).value = hasEntries
+      ? { formula: `COUNTA(B${entryStart}:B${entryEnd})`, result: totals.titles }
+      : 0;
     ws.getRow(r).font = { bold: true };
     r++;
+    const volumesRow = r;
+    const volFormula = printRanges.map(([s, e]) => `SUM(E${s}:E${e})`).join("+");
     ws.getCell(r, 1).value = "Volumes";
-    ws.getCell(r, 2).value = all.volumes;
+    ws.getCell(r, 2).value = volFormula
+      ? { formula: volFormula, result: totals.volumes }
+      : 0;
     ws.getRow(r).font = { bold: true };
     r++;
+
+    journalsRow = {
+      entryStart, entryEnd, titleCol: "B", copyCol: "E", yearCol: "G",
+      printRanges, titlesRow, volumesRow,
+    };
   }
+
+  return { subjects: subjectRows, journals: journalsRow };
 }
 
 // ---------------------------------------------------------------------------
