@@ -740,3 +740,9 @@ alter table title_recommendations add column if not exists submitted_publicly bo
 -- no other way to tell who's submitting.
 -- ---------------------------------------------------------------------------
 alter table title_recommendations add column if not exists submitter_role text default '';
+
+-- ---------------------------------------------------------------------------
+-- 42: captures which PSU campus a title suggestion is for -- see
+-- 42_suggestion_campus.sql for why.
+-- ---------------------------------------------------------------------------
+alter table title_recommendations add column if not exists campus text default '';

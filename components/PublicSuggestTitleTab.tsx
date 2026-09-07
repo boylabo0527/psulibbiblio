@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
+import { useCampuses } from "@/lib/use-campuses";
 import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
 
 type DraftTitle = {
@@ -21,6 +22,8 @@ export default function PublicSuggestTitleTab() {
   const [subjects, setSubjects] = useState<SubjectSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [campus, setCampus] = useState("");
+  const [courseQuery, setCourseQuery] = useState("");
   const [subjectId, setSubjectId] = useState("");
   const [titles, setTitles] = useState<DraftTitle[]>([emptyDraftTitle()]);
   const [submitterRole, setSubmitterRole] = useState("");
@@ -30,6 +33,7 @@ export default function PublicSuggestTitleTab() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const campuses = useCampuses();
 
   useEffect(() => {
     apiFetch("/api/dashboard/subjects")
@@ -42,13 +46,21 @@ export default function PublicSuggestTitleTab() {
       .finally(() => setLoading(false));
   }, []);
 
-  // A single native <select> listing every course, grouped by program with
+  // A native <select> listing every course, grouped by program with
   // <optgroup> -- on a phone this opens the OS's own large touch-friendly
   // picker instead of a small custom list fighting the on-screen keyboard
-  // (what made finding a course here hard to use on mobile), and unlike a
-  // Program-then-Course cascade, every course is visible right away instead
-  // of being gated behind picking a program first.
-  const subjectGroups = useMemo(() => {
+  // (what made finding a course here hard to use on mobile with an earlier
+  // type-to-filter combobox), and unlike a Program-then-Course cascade,
+  // every course is visible right away instead of being gated behind
+  // picking a program first.
+  //
+  // With enough programs/courses, though, that single list is still a lot
+  // to scroll through with nothing but touch -- so a plain text filter
+  // narrows it first. This stays a completely separate step from opening
+  // the select (typing happens in an ordinary text input, no floating
+  // results panel layered over the keyboard), so it doesn't reintroduce
+  // the same mobile problem the old combobox had.
+  const allSubjectGroups = useMemo(() => {
     const map = new Map<string, SubjectSummaryRow[]>();
     for (const s of subjects) {
       if (!map.has(s.program)) map.set(s.program, []);
@@ -58,6 +70,32 @@ export default function PublicSuggestTitleTab() {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([program, subs]) => ({ program, subs: subs.sort((a, b) => a.sort_order - b.sort_order) }));
   }, [subjects]);
+
+  const subjectGroups = useMemo(() => {
+    const q = courseQuery.trim().toLowerCase();
+    if (!q) return allSubjectGroups;
+    return allSubjectGroups
+      .map((g) => ({
+        program: g.program,
+        subs: g.subs.filter((s) =>
+          s.course_code.toLowerCase().includes(q) ||
+          s.course_title.toLowerCase().includes(q) ||
+          g.program.toLowerCase().includes(q),
+        ),
+      }))
+      .filter((g) => g.subs.length > 0);
+  }, [allSubjectGroups, courseQuery]);
+
+  // A filter narrow enough to drop the currently-picked course out of the
+  // visible list would otherwise silently clear the selection the moment
+  // the <select> re-renders with that <option> gone -- keep it selectable
+  // regardless of the filter text so refining the search never loses a
+  // choice already made.
+  const selectedSubject = useMemo(
+    () => subjects.find((s) => String(s.subject_id) === subjectId),
+    [subjects, subjectId],
+  );
+  const selectedSubjectVisible = subjectGroups.some((g) => g.subs.some((s) => String(s.subject_id) === subjectId));
 
   function setTitleField(i: number, field: keyof DraftTitle, value: string) {
     setTitles((prev) => prev.map((t, idx) => idx === i ? { ...t, [field]: value } : t));
@@ -73,13 +111,14 @@ export default function PublicSuggestTitleTab() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!subjectId || validTitles.length === 0 || !submitterRole) return;
+    if (!campus || !subjectId || validTitles.length === 0 || !submitterRole) return;
     setSubmitting(true);
     setErr(null);
     try {
       const res = await apiFetch("/api/title-recommendations/public", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          campus,
           subject_id: Number(subjectId),
           titles: validTitles.map((t) => ({
             title: t.title, author: t.author, publisher: t.publisher, year: t.year, isbn: t.isbn,
@@ -93,7 +132,7 @@ export default function PublicSuggestTitleTab() {
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       setDone(true);
-      setSubjectId(""); setTitles([emptyDraftTitle()]);
+      setCampus(""); setCourseQuery(""); setSubjectId(""); setTitles([emptyDraftTitle()]);
       setSubmitterRole(""); setSubmitterName(""); setSubmitterEmail(""); setWebsite("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -124,9 +163,29 @@ export default function PublicSuggestTitleTab() {
           {!loading && (
             <form onSubmit={submit} className="space-y-3">
               <label className="label flex-col items-start gap-1">
+                <span className="text-xs">Campus *</span>
+                <select className="input w-full" value={campus} onChange={(e) => setCampus(e.target.value)}>
+                  <option value="">Select your campus…</option>
+                  {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              </label>
+
+              <label className="label flex-col items-start gap-1">
                 <span className="text-xs">Course *</span>
-                <select className="input w-full" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
-                  <option value="">Select a course…</option>
+                <input
+                  type="search"
+                  className="input w-full"
+                  placeholder="Search by course code or title to narrow the list below…"
+                  value={courseQuery}
+                  onChange={(e) => setCourseQuery(e.target.value)}
+                />
+                <select className="input w-full mt-1" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+                  <option value="">{subjectGroups.length ? "Select a course…" : "No courses match your search"}</option>
+                  {!selectedSubjectVisible && selectedSubject && (
+                    <option value={String(selectedSubject.subject_id)}>
+                      {selectedSubject.course_code} — {selectedSubject.course_title} (currently selected)
+                    </option>
+                  )}
                   {subjectGroups.map((g) => (
                     <optgroup key={g.program} label={g.program}>
                       {g.subs.map((s) => (
@@ -223,7 +282,7 @@ export default function PublicSuggestTitleTab() {
               </div>
 
               {err && <p className="text-red-700 text-sm">{err}</p>}
-              <button type="submit" className="btn text-sm" disabled={submitting || !subjectId || validTitles.length === 0 || !submitterRole}>
+              <button type="submit" className="btn text-sm" disabled={submitting || !campus || !subjectId || validTitles.length === 0 || !submitterRole}>
                 {submitting ? "Submitting…" : validTitles.length > 1 ? `Submit ${validTitles.length} Suggestions` : "Submit Suggestion"}
               </button>
             </form>

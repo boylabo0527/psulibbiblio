@@ -637,6 +637,11 @@ export default function FacultyRecommendationsTab() {
                             Public{r.submitter_role ? ` · ${r.submitter_role}` : ""}
                           </span>
                         )}
+                        {r.campus && (
+                          <span className="ml-1.5 inline-block bg-slate-100 text-slate-600 rounded px-1.5 py-0.5 text-[10px] font-normal" title="Campus the submitter suggested this for">
+                            {r.campus}
+                          </span>
+                        )}
                       </td>
                       <td className="py-1.5 pr-2">
                         {canReview ? (
