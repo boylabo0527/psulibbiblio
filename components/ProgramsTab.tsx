@@ -10,10 +10,14 @@ type Title = {
   title: string; author: string; publisher: string; year: string;
   isbn: string; issn: string; call_no: string; copies: number; url?: string;
   provider?: string;
+  /** Whether this title's match to the course is locked (assignments.manual)
+   *  -- a locked match survives every future Match run untouched, while the
+   *  course itself keeps getting searched for newly-added books. */
+  manual?: number;
 };
 type Buckets = Record<ResourceTypeId, Title[]>;
 type SubjectDetail = {
-  subject: { id: number; section: string; course_code: string; course_title: string; description: string; locked?: boolean };
+  subject: { id: number; section: string; course_code: string; course_title: string; description: string };
   buckets: Buckets;
 };
 type Bibliography = {
@@ -134,6 +138,24 @@ export default function ProgramsTab() {
     load();
   }
 
+  async function toggleAssignmentLock(subjectId: number, titleId: number, lock: boolean) {
+    await apiFetch("/api/match/override", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject_id: subjectId, title_id: titleId, lock }),
+    });
+    load();
+  }
+
+  async function bulkRemoveAssignments(subjectId: number, titleIds: number[]) {
+    await apiFetch("/api/match/override/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject_id: subjectId, title_ids: titleIds }),
+    });
+    load();
+  }
+
   return (
     <>
       <div className="card">
@@ -228,6 +250,8 @@ export default function ProgramsTab() {
                   programCampus={biblio.campus}
                   onRemove={(titleId) => changeAssignment(sub.subject.id, titleId, false)}
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
+                  onToggleLock={(titleId, lock) => toggleAssignmentLock(sub.subject.id, titleId, lock)}
+                  onBulkRemove={(titleIds) => bulkRemoveAssignments(sub.subject.id, titleIds)}
                   onReload={load}
                 />
               ))}
@@ -263,15 +287,18 @@ export default function ProgramsTab() {
 }
 
 function SubjectBlock({
-  detail, programCampus, onRemove, onAdd, onReload,
+  detail, programCampus, onRemove, onAdd, onToggleLock, onBulkRemove, onReload,
 }: {
   detail: SubjectDetail;
   programCampus: string;
   onRemove: (titleId: number) => void;
   onAdd: (titleId: number) => void;
+  onToggleLock: (titleId: number, lock: boolean) => void;
+  onBulkRemove: (titleIds: number[]) => void;
   onReload: () => void;
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   let totalTitles = 0;
   let totalVolumes = 0;
   for (const t of RESOURCE_TYPES) {
@@ -284,12 +311,27 @@ function SubjectBlock({
     }
   }
 
+  function toggleSelect(titleId: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(titleId)) next.delete(titleId);
+      else next.add(titleId);
+      return next;
+    });
+  }
+
+  function bulkRemove() {
+    if (selected.size === 0) return;
+    if (!confirm(`Remove ${selected.size} selected title${selected.size === 1 ? "" : "s"} from this course?`)) return;
+    onBulkRemove(Array.from(selected));
+    setSelected(new Set());
+  }
+
   return (
-    <div className={"mb-5 border-l-4 pl-3 " + (detail.subject.locked ? "border-amber-400" : "border-psu-light")}>
+    <div className="mb-5 border-l-4 pl-3 border-psu-light">
       <div className="flex items-baseline gap-2">
         <span className="font-semibold">{detail.subject.course_code}</span>
         <span className="font-semibold">{detail.subject.course_title}</span>
-        <LockToggle subject={detail.subject} onReload={onReload} />
       </div>
       <SubjectDescription subject={detail.subject} />
       {RESOURCE_TYPES.map((t) => (
@@ -301,60 +343,28 @@ function SubjectBlock({
           onReload={onReload}
           showIdent={t.medium === "print" || t.kind === "journal"}
           showProvider={t.id === "ebook_paid" || t.id === "ebook_complementary"}
+          onToggleLock={onToggleLock}
+          selected={selected}
+          onToggleSelect={toggleSelect}
         />
       ))}
-      <p className="text-xs text-slate-700 mt-1">
-        <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
-      </p>
+      <div className="flex items-center gap-3 mt-1 flex-wrap">
+        <p className="text-xs text-slate-700">
+          <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
+        </p>
+        {selected.size > 0 && (
+          <>
+            <button className="text-xs text-red-600 font-medium" onClick={bulkRemove}>
+              Remove selected ({selected.size})
+            </button>
+            <button className="text-xs text-slate-400" onClick={() => setSelected(new Set())}>
+              Clear selection
+            </button>
+          </>
+        )}
+      </div>
       <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
     </div>
-  );
-}
-
-function LockToggle({
-  subject, onReload,
-}: {
-  subject: { id: number; locked?: boolean };
-  onReload: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const locked = !!subject.locked;
-
-  async function toggle() {
-    setBusy(true);
-    try {
-      const res = await apiFetch(`/api/subjects/${subject.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ locked: !locked }),
-      });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `HTTP ${res.status}`);
-      }
-      onReload();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <button
-      className={
-        "text-[10px] px-1.5 py-0.5 rounded border font-medium " +
-        (locked
-          ? "bg-amber-100 text-amber-700 border-amber-300"
-          : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
-      }
-      disabled={busy}
-      onClick={toggle}
-      title={locked
-        ? "Locked — Run Matching will skip this subject and leave its titles untouched. Click to unlock."
-        : "Lock this subject so Run Matching never changes its title list. Click to lock."}
-    >
-      {locked ? "🔒 Locked" : "🔓 Unlocked"}
-    </button>
   );
 }
 
@@ -424,17 +434,24 @@ function SubjectDescription({
 
 function BookSection({
   label, books, onRemove, onReload, showIdent, hideRemove, hideAuthor, showProvider,
+  onToggleLock, selected, onToggleSelect,
 }: {
   label: string; books: Title[]; onRemove: (id: number) => void; onReload: () => void; showIdent: boolean;
   hideRemove?: boolean; hideAuthor?: boolean; showProvider?: boolean;
+  onToggleLock?: (titleId: number, lock: boolean) => void;
+  selected?: Set<number>; onToggleSelect?: (titleId: number) => void;
 }) {
   if (!books.length) return null;
+  // Selection checkboxes only make sense where removal does -- the
+  // program-wide journals section (hideRemove) has no per-course selection.
+  const selectable = !hideRemove && !!onToggleSelect;
   return (
     <div className="mb-2">
       <div className="text-xs italic text-slate-700 mb-1">{label}</div>
       <table className="w-full text-xs">
         <thead className="text-slate-500">
           <tr>
+            {selectable && <th className="p-1 w-6"></th>}
             {showIdent && <th className="text-left p-1 w-32">Call No. / ISSN</th>}
             {!hideAuthor && <th className="text-left p-1 w-44">Author</th>}
             <th className="text-left p-1">Title</th>
@@ -442,7 +459,7 @@ function BookSection({
             {showProvider && <th className="text-left p-1 w-32">Provider / Source</th>}
             <th className="text-left p-1 w-12">Year</th>
             <th className="text-left p-1 w-12">Copy</th>
-            <th className="p-1 w-20"></th>
+            <th className="p-1 w-28"></th>
           </tr>
         </thead>
         <tbody>
@@ -450,6 +467,10 @@ function BookSection({
             <EditableTitleRow
               key={b.id} book={b} siblings={books} showIdent={showIdent} onRemove={onRemove} onReload={onReload}
               hideRemove={hideRemove} hideAuthor={hideAuthor} showProvider={showProvider}
+              onToggleLock={onToggleLock}
+              selectable={selectable}
+              selected={!!selected?.has(b.id)}
+              onToggleSelect={onToggleSelect}
             />
           ))}
         </tbody>
@@ -460,9 +481,12 @@ function BookSection({
 
 function EditableTitleRow({
   book, siblings, showIdent, onRemove, onReload, hideRemove, hideAuthor, showProvider,
+  onToggleLock, selectable, selected, onToggleSelect,
 }: {
   book: Title; siblings: Title[]; showIdent: boolean; onRemove: (id: number) => void; onReload: () => void;
   hideRemove?: boolean; hideAuthor?: boolean; showProvider?: boolean;
+  onToggleLock?: (titleId: number, lock: boolean) => void;
+  selectable?: boolean; selected?: boolean; onToggleSelect?: (titleId: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -527,6 +551,7 @@ function EditableTitleRow({
   if (editing) {
     return (
       <tr className="border-t border-slate-100 bg-amber-50">
+        {selectable && <td className="p-1"></td>}
         {showIdent && (
           <td className="p-1">
             <input className="input text-xs w-full" value={draft.call_no ?? draft.issn ?? ""}
@@ -555,13 +580,24 @@ function EditableTitleRow({
   }
 
   const others = siblings.filter((s) => s.id !== book.id);
+  const locked = !!book.manual;
 
   return (
     <>
-      <tr className="border-t border-slate-100">
+      <tr className={"border-t border-slate-100" + (locked ? " bg-amber-50/40" : "")}>
+        {selectable && (
+          <td className="p-1">
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onChange={() => onToggleSelect?.(book.id)}
+            />
+          </td>
+        )}
         {showIdent && <td className="p-1">{local.call_no || local.issn}</td>}
         {!hideAuthor && <td className="p-1">{local.author}</td>}
         <td className="p-1">
+          {locked && <span className="mr-1" title="Locked — Match runs never remove or replace this title.">🔒</span>}
           {local.title}
           {local.url && (
             <a href={local.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-psu" title={local.url}>
@@ -574,10 +610,21 @@ function EditableTitleRow({
         <td className="p-1">{local.year}</td>
         <td className="p-1">{local.copies ?? 1}</td>
         <td className="p-1">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button className="text-psu text-xs" onClick={() => { setDraft(local); setEditing(true); }}>edit</button>
             {others.length > 0 && (
               <button className="text-slate-500 text-xs" onClick={() => setCombining((v) => !v)}>combine</button>
+            )}
+            {onToggleLock && (
+              <button
+                className={locked ? "text-amber-700 text-xs" : "text-slate-400 text-xs"}
+                title={locked
+                  ? "Locked — this match survives every future Match run. Click to unlock."
+                  : "Lock this match so Match runs never remove or replace it, even as the course keeps getting re-matched for new books."}
+                onClick={() => onToggleLock(book.id, !locked)}
+              >
+                {locked ? "🔒 locked" : "🔓 lock"}
+              </button>
             )}
             {!hideRemove && (
               <button className="text-red-600 text-xs" onClick={() => onRemove(book.id)}>remove</button>
@@ -587,7 +634,7 @@ function EditableTitleRow({
       </tr>
       {combining && (
         <tr className="border-t border-slate-100 bg-slate-50">
-          <td colSpan={showIdent ? 6 : 5} className="p-1">
+          <td colSpan={(showIdent ? 6 : 5) + (selectable ? 1 : 0)} className="p-1">
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500">Combine this into:</span>
               <select className="input text-xs" value={combineTarget} onChange={(e) => setCombineTarget(e.target.value)}>

@@ -27,6 +27,11 @@ export type TitleRow = {
    *  from one source be found and removed together if that subscription
    *  ends or that agreement lapses. */
   provider?: string;
+  /** Set on titles returned from a program bibliography: whether the
+   *  match to that course is protected (assignments.manual=1) -- Match
+   *  runs never delete a protected assignment, so it survives even
+   *  though the course itself keeps getting re-matched. */
+  manual?: number;
 };
 
 export type ProgramRow = {
@@ -41,8 +46,10 @@ export type SubjectRow = {
   course_title: string;
   description?: string;
   sort_order?: number;
-  /** When true, /api/match/run skips this subject entirely so a curated
-   *  title list is never touched by a future match run. */
+  /** @deprecated No longer read by /api/match/run -- locking is now
+   *  per-title (assignments.manual), so a course stays open to newly
+   *  matched titles while individually protected ones survive. Column
+   *  kept for old data; not surfaced in the UI anymore. */
   locked?: boolean;
 };
 

@@ -43,10 +43,10 @@ export async function loadProgramBibliography(
     return q;
   });
 
-  type Joined = { subject_id: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
+  type Joined = { subject_id: number; manual: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
   const assignments = await paged<Joined>((from, to) =>
     db.from("assignments")
-      .select("subject_id, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
+      .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
       .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
       .range(from, to),
   );
@@ -84,15 +84,16 @@ export async function loadProgramBibliography(
   for (const a of assignments) {
     if (!includeTitle(a.titles)) continue;
     const fmt = a.titles.format;
+    const title = { ...a.titles, manual: a.manual };
     const journalMap = journalsById.get(fmt);
     if (journalMap) {
-      if (a.titles.id != null && !journalMap.has(a.titles.id)) journalMap.set(a.titles.id, a.titles);
+      if (title.id != null && !journalMap.has(title.id)) journalMap.set(title.id, title);
       continue;
     }
     const bucket = bySubject.get(a.subject_id);
     if (!bucket) continue;
     if (!(fmt in bucket)) continue;
-    bucket[fmt].push(a.titles);
+    bucket[fmt].push(title);
   }
 
   const journals = emptyBuckets();

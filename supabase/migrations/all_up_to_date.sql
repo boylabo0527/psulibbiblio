@@ -10,8 +10,9 @@
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
 -- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
 -- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
--- 21_backfill_printed_campus.sql in order. If you've already run some of
--- those individually, running this on top is still safe.
+-- 21_backfill_printed_campus.sql + 22_promote_locked_subject_assignments.sql
+-- in order. If you've already run some of those individually, running this
+-- on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -399,3 +400,15 @@ update titles
 set campus = 'Main Campus'
 where format in ('book_printed', 'journal_printed')
   and (campus is null or trim(campus) = '');
+
+-- ---------------------------------------------------------------------------
+-- 22: promote assignments under a locked subject to manual=1 before
+-- subject-level lock is retired in favor of per-title locking -- see
+-- 22_promote_locked_subject_assignments.sql for why.
+-- ---------------------------------------------------------------------------
+update assignments a
+set manual = 1
+from subjects s
+where a.subject_id = s.id
+  and s.locked = true
+  and a.manual = 0;
