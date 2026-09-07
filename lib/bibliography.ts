@@ -52,15 +52,15 @@ export async function loadProgramBibliography(
   );
 
   // Printed titles are included only when their campus matches the report's
-  // campus (or is blank, for legacy / cross-campus rows). Digital titles
-  // (eBooks, online journals) are always included. A year-coverage window
-  // (if set) additionally excludes titles published outside that range,
-  // so outdated titles drop out of the report without deleting the data.
+  // campus. Digital titles (eBooks, online journals) are always included.
+  // A year-coverage window (if set) additionally excludes titles published
+  // outside that range, so outdated titles drop out of the report without
+  // deleting the data.
   const includeTitle = (t: { format: ResourceTypeId; campus?: string; year?: string }) => {
     const rt = RESOURCE_BY_ID[t.format];
     if (rt?.campusScoped && campus) {
       const tc = (t.campus ?? "").trim();
-      if (tc !== "" && tc !== campus) return false;
+      if (tc !== campus) return false;
     }
     return yearInRange(t.year, minYear, maxYear);
   };

@@ -9,9 +9,9 @@
 -- 12_procurement_cost_estimate.sql + 13_roles_and_permissions.sql +
 -- 14_supplier_offers.sql + 15_supplier_offer_batches.sql +
 -- 16_user_campus_scope.sql + 17_sync_jobs.sql + 18_complementary_and_provider.sql +
--- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql in
--- order. If you've already run some of those individually, running this on
--- top is still safe.
+-- 19_unmatched_titles_function.sql + 20_fix_unmatched_titles_count.sql +
+-- 21_backfill_printed_campus.sql in order. If you've already run some of
+-- those individually, running this on top is still safe.
 
 -- ---------------------------------------------------------------------------
 -- 02: expanded resource types + ISSN
@@ -390,3 +390,12 @@ as $$
      join titles t on t.id = a.title_id
      where t.format = p_format);
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 21: backfill legacy printed titles left with campus = '' when the campus
+-- column was first added -- see 21_backfill_printed_campus.sql for why.
+-- ---------------------------------------------------------------------------
+update titles
+set campus = 'Main Campus'
+where format in ('book_printed', 'journal_printed')
+  and (campus is null or trim(campus) = '');
