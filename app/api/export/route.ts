@@ -8,6 +8,7 @@ import {
   programCitationsTxt,
 } from "@/lib/exports";
 import type { CitationStyle } from "@/lib/types";
+import { isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,10 +39,17 @@ export async function GET(req: Request) {
     const subjectLabel = u.searchParams.get("subject_label") ?? "";
     const minYear = parseInt(u.searchParams.get("from_year") ?? "", 10);
     const maxYear = parseInt(u.searchParams.get("to_year") ?? "", 10);
+    // Presence of the param (even empty) means "filter to exactly this set,
+    // possibly none" -- distinct from omitting it entirely, which means no
+    // filtering at all (every resource type included, the old default).
+    const types: ResourceTypeId[] | undefined = u.searchParams.has("types")
+      ? (u.searchParams.get("types") ?? "").split(",").filter(isResourceTypeId)
+      : undefined;
     const data = await loadProgramBibliography(
       programId, campus, subjectId,
       Number.isFinite(minYear) ? minYear : undefined,
       Number.isFinite(maxYear) ? maxYear : undefined,
+      types,
     );
     const baseName = safeName(
       subjectId && subjectLabel

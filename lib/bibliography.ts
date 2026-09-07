@@ -27,6 +27,13 @@ export async function loadProgramBibliography(
   subjectId?: number,
   minYear?: number,
   maxYear?: number,
+  /** When given, only these resource types (Printed Books, Subscribed
+   *  eBooks, etc.) are included -- everything else (on-screen buckets,
+   *  every export format, citations) is empty for the rest. undefined
+   *  means no filtering, i.e. every type included, same as before this
+   *  parameter existed. An empty array is a deliberate "include nothing",
+   *  not the same as undefined. */
+  types?: ResourceTypeId[],
 ): Promise<ProgramBibliography> {
   const db = serviceClient();
   const { data: progRow, error: progErr } = await db
@@ -35,7 +42,7 @@ export async function loadProgramBibliography(
 
   const subjects = await paged<SubjectRow>((from, to) => {
     let q = db.from("subjects")
-      .select("id, program_id, course_code, course_title, description, sort_order, locked")
+      .select("id, program_id, course_code, course_title, description, sort_order")
       .eq("program_id", programId)
       .order("sort_order", { ascending: true })
       .range(from, to);
@@ -51,12 +58,16 @@ export async function loadProgramBibliography(
       .range(from, to),
   );
 
+  const typeSet = types ? new Set(types) : undefined;
+
   // Printed titles are included only when their campus matches the report's
   // campus. Digital titles (eBooks, online journals) are always included.
   // A year-coverage window (if set) additionally excludes titles published
   // outside that range, so outdated titles drop out of the report without
-  // deleting the data.
+  // deleting the data. A resource-type filter (if set) additionally
+  // excludes any format not explicitly selected.
   const includeTitle = (t: { format: ResourceTypeId; campus?: string; year?: string }) => {
+    if (typeSet && !typeSet.has(t.format)) return false;
     const rt = RESOURCE_BY_ID[t.format];
     if (rt?.campusScoped && campus) {
       const tc = (t.campus ?? "").trim();

@@ -36,6 +36,13 @@ export default function ProgramsTab() {
   const [fromYear, setFromYear] = useState<string>("");
   const [toYear, setToYear] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState<string>("apa7");
+  // Which resource types (Printed Books, Subscribed eBooks, etc.) show on
+  // screen and end up in every exported report/citation list. Starts with
+  // everything on so the default view/export is unchanged from before this
+  // filter existed.
+  const [enabledTypes, setEnabledTypes] = useState<Set<ResourceTypeId>>(
+    () => new Set(RESOURCE_TYPES.map((t) => t.id)),
+  );
   const [biblio, setBiblio] = useState<Bibliography | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -74,6 +81,22 @@ export default function ProgramsTab() {
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   }, [selected]);
 
+  // Only sent when the selection is a strict subset of every type (possibly
+  // empty) -- with everything checked, omitting the param entirely keeps
+  // the request identical to before this filter existed.
+  function typesParam(): string | undefined {
+    return enabledTypes.size < RESOURCE_TYPES.length ? Array.from(enabledTypes).join(",") : undefined;
+  }
+
+  function toggleType(id: ResourceTypeId) {
+    setEnabledTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const load = useCallback(async () => {
     if (!selected) return;
     setLoading(true);
@@ -84,6 +107,8 @@ export default function ProgramsTab() {
       if (campus) params.set("campus", campus);
       if (fromYear) params.set("from_year", fromYear);
       if (toYear) params.set("to_year", toYear);
+      const types = typesParam();
+      if (types !== undefined) params.set("types", types);
       const url = `/api/programs/${selected}/bibliography${params.toString() ? "?" + params.toString() : ""}`;
       const res = await apiFetch(url);
       const data = await res.json().catch(() => ({}));
@@ -97,7 +122,8 @@ export default function ProgramsTab() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
-  }, [selected, campus, fromYear, toYear]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, campus, fromYear, toYear, enabledTypes]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -107,6 +133,8 @@ export default function ProgramsTab() {
     if (campus) p.set("campus", campus);
     if (fromYear) p.set("from_year", fromYear);
     if (toYear) p.set("to_year", toYear);
+    const types = typesParam();
+    if (types !== undefined) p.set("types", types);
     if (fmt.startsWith("citations-")) p.set("style", citationStyle);
     try {
       const res = await apiFetch(`/api/export?${p.toString()}`);
@@ -198,6 +226,36 @@ export default function ProgramsTab() {
             Campus only filters printed materials. Digital resources show for all campuses.
             Year range excludes titles published outside it (blank/unreadable years are always kept).
           </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-sm text-slate-600 mr-1">Materials:</span>
+          {RESOURCE_TYPES.map((t) => {
+            const on = enabledTypes.has(t.id);
+            return (
+              <button
+                key={t.id}
+                className={
+                  "text-[11px] px-2 py-0.5 rounded-full border font-medium " +
+                  (on
+                    ? "bg-psu-light text-psu border-psu"
+                    : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
+                }
+                title={on ? `Hide ${t.uiLabel} from the view and every export` : `Show ${t.uiLabel} in the view and every export`}
+                onClick={() => toggleType(t.id)}
+              >
+                {t.uiLabel}
+              </button>
+            );
+          })}
+          <button className="text-[11px] text-psu underline ml-1" onClick={() => setEnabledTypes(new Set(RESOURCE_TYPES.map((t) => t.id)))}>
+            All
+          </button>
+          <button className="text-[11px] text-slate-400 underline" onClick={() => setEnabledTypes(new Set())}>
+            None
+          </button>
+          {enabledTypes.size === 0 && (
+            <span className="text-xs text-amber-700 ml-1">No material types selected — the view and every export will be empty.</span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-sm text-slate-600">Master report:</span>
