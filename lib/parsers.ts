@@ -29,7 +29,10 @@ const PRINTED_ALIASES: Record<string, string[]> = {
   publisher: ["publisher", "publisher_name"],
   isbn: ["isbn", "isbn-13", "isbn13"],
   campus: ["campus", "branch", "library"],
-  barcode: ["barcode", "bar code", "accession no", "accession no.", "accession number", "acc no", "acc. no.", "acc no."],
+  barcode: [
+    "barcode", "bar code", "accession no", "accession no.", "accession number",
+    "acc no", "acc. no.", "acc no.", "barcode / accession no.", "barcode/accession no.",
+  ],
 };
 
 const SUBJECT_ALIASES: Record<string, string[]> = {
