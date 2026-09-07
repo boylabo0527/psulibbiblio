@@ -97,6 +97,13 @@ const NON_EMPTY_TYPES = (buckets: Buckets) =>
 // carries a cached `result` (the same number this file used to write
 // statically) so a viewer that doesn't auto-recalculate on open still shows
 // the right value immediately.
+// Every per-type block on Detail also ends with one blank buffer row that's
+// already inside the range every formula above (and its Summary-sheet
+// cross-references) is computed over -- typing a title straight into it
+// updates totals with no regeneration needed, and it also guarantees Excel's
+// own row-insert range expansion (which only fires when the insertion point
+// falls within a range's existing bounds) always has a safe row to insert
+// against, even for a block with only one entry.
 // ---------------------------------------------------------------------------
 export async function programBibliographyXlsx(b: ProgramBibliography): Promise<Buffer> {
   const ExcelJS = (await import("exceljs")).default;
@@ -321,6 +328,13 @@ function writeDetailSheet(
           if (yr !== null) ws.getCell(r, 8).value = yr;
           r++;
         }
+        // Blank buffer row left inside this type's range. Titles/Volumes
+        // (here and on the Summary sheet) are formulas over exactly this
+        // range, so a title typed directly into this row -- or a new row
+        // inserted anywhere in this block via Excel's own Insert Row, which
+        // only expands a range when the insertion point falls within its
+        // existing bounds -- is picked up without regenerating the export.
+        r++;
         if (t.medium === "print" && r - 1 >= blockStart) printRanges.push([blockStart, r - 1]);
       }
       const entryEnd = r - 1;
@@ -375,6 +389,8 @@ function writeDetailSheet(
         if (yr !== null) ws.getCell(r, 7).value = yr;
         r++;
       }
+      // Same blank buffer row as the per-subject blocks above.
+      r++;
       if (t.medium === "print" && r - 1 >= blockStart) printRanges.push([blockStart, r - 1]);
     }
     const entryEnd = r - 1;
