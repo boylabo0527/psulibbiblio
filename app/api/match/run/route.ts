@@ -51,7 +51,7 @@ export type MatchProgressEvent =
   // point from the last batch that actually committed.
   | { phase: "matching"; done: number; total: number; matches_so_far: number; failed_so_far: { course_code: string; error: string }[] }
   | { phase: "paused"; done: number; total: number; next_offset: number; matches_so_far: number; failed_so_far: { course_code: string; error: string }[] }
-  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; locked_skipped: number; failed_subjects: { course_code: string; error: string }[] }
+  | { phase: "done"; matches: number; subjects: number; titles: number; semantic_used: boolean; failed_subjects: { course_code: string; error: string }[] }
   | { phase: "error"; error: string };
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -119,7 +119,7 @@ export async function POST(req: Request) {
 
     const fetchedSubjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
-      "id, program_id, course_code, course_title, description, locked",
+      "id, program_id, course_code, course_title, description",
       "subjects", send,
       programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
@@ -127,22 +127,17 @@ export async function POST(req: Request) {
     // caller is campus-restricted -- narrow to only their allowed
     // programs' subjects. When a specific program_id WAS requested, it's
     // already been verified above and fetchAllWithProgress filtered to it.
-    const allSubjects = !programId && allowedProgramIds
+    const subjects = !programId && allowedProgramIds
       ? fetchedSubjects.filter((s) => allowedProgramIds!.has(s.program_id!))
       : fetchedSubjects;
-    if (!allSubjects.length) {
+    if (!subjects.length) {
       send({ phase: "error", error: "Need at least one subject before matching." });
       return;
     }
-    // Locked subjects are skipped entirely -- their assignment list (whatever
-    // mix of manual and auto-matched titles it currently has) is left
-    // untouched by this run.
-    const subjects = allSubjects.filter((s) => !s.locked);
-    const lockedSkipped = allSubjects.length - subjects.length;
-    if (!subjects.length) {
-      send({ phase: "error", error: "All selected subjects are locked. Unlock at least one before running matching." });
-      return;
-    }
+    // Every subject is re-matched on every run -- locking is per-title now
+    // (assignments.manual=1), not per-subject: the delete-then-upsert below
+    // only ever removes/replaces manual=0 rows, so a protected title always
+    // survives while its course still gets searched for newly-added books.
 
     // "estimated" uses the query planner's row estimate instead of a real
     // COUNT(*) -- this is purely informational (shown in the done summary),
@@ -320,13 +315,12 @@ export async function POST(req: Request) {
       subjects: subjects.length,
       titles: titleCount ?? 0,
       semantic_used: semanticUsed,
-      locked_skipped: lockedSkipped,
       failed_subjects: failedSubjects,
     });
     await logActivity(db, {
       userEmail, action: "match_run",
-      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${lockedSkipped ? `, ${lockedSkipped} locked subject${lockedSkipped === 1 ? "" : "s"} skipped` : ""}${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
-      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, locked_skipped: lockedSkipped, semantic_used: semanticUsed, failed_subjects: failedSubjects },
+      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
+      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
     });
   });
 

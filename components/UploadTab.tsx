@@ -604,7 +604,7 @@ export default function UploadTab() {
       />
       <FileCard
         title="6. Printed Books"
-        hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus."
+        hint="Library catalog rows for printed books. Campus-specific. The campus you set here applies to every row UNLESS the file has a Campus column (per-row campus wins). Recognized columns: Call No., Author, Title, Year, Copies, Publisher, optional Campus, optional Barcode / Accession No. Each physical volume of the same title should get its own row with its own Barcode/Accession No. -- that's what tells the catalog apart multiple copies instead of merging them into one count. A row with a Barcode always counts as exactly 1 copy (its Copies value is ignored); leave Barcode blank and use Copies for older stock whose individual accession numbers aren't on hand yet."
         endpoint="/api/upload/book_printed"
         templates={[
           { label: "printed_books_template.xlsx", href: "/templates/printed_books_template.xlsx" },

@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
-import { RESOURCE_BY_ID, isResourceTypeId } from "@/lib/resources";
+import { RESOURCE_BY_ID, RESOURCE_TYPES, isResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const NON_CAMPUS_SCOPED_FORMATS = RESOURCE_TYPES.filter((t) => !t.campusScoped).map((t) => t.id);
 
 export async function GET(req: Request) {
   try {
@@ -22,13 +24,14 @@ export async function GET(req: Request) {
       query = query.eq("format", format);
       // Campus filter only applies to campus-scoped (printed) formats.
       if (RESOURCE_BY_ID[format].campusScoped && campus) {
-        query = query.or(`campus.eq.${campus},campus.eq.`);
+        query = query.eq("campus", campus);
       }
     } else if (campus) {
       // No specific format chosen: still hide cross-campus printed copies.
-      // Postgrest can't conditionally OR by row, so the client also filters
-      // visually; we just narrow common case here.
-      query = query.or(`campus.eq.${campus},campus.eq.`);
+      // Digital formats aren't campus-scoped, so they're never filtered
+      // here regardless of their campus value -- only rows actually tagged
+      // with a different campus are excluded.
+      query = query.or(`format.in.(${NON_CAMPUS_SCOPED_FORMATS.join(",")}),campus.eq.${campus}`);
     }
     const { data, error } = await query;
     if (error) throw error;
