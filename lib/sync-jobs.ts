@@ -127,11 +127,29 @@ export async function processSyncJobChunk(
       // constraints on the row this upsert's INSERT ... ON CONFLICT
       // builds to test for a conflict -- see the IngestOp comment in
       // lib/ingest-titles.ts. They're the row's own current values, so
-      // only copies/barcodes actually change.
-      const { error: updErr } = await db.from("titles").upsert(
-        updates.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
-      );
-      if (updErr) throw updErr;
+      // only copies/barcodes (and publisher, for the rows backfilling
+      // one) actually change.
+      //
+      // Split by whether `publisher` is present, same as
+      // applyIngestOps in lib/ingest-titles.ts and for the same reason:
+      // a bulk upsert applies one column list to every row in the call,
+      // so a row missing a key that a sibling row in the same batch has
+      // would get that column overwritten with NULL instead of left
+      // alone.
+      const withoutPublisher = updates.filter((u) => u.publisher === undefined);
+      const withPublisher = updates.filter((u) => u.publisher !== undefined);
+      if (withoutPublisher.length) {
+        const { error: updErr } = await db.from("titles").upsert(
+          withoutPublisher.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
+        );
+        if (updErr) throw updErr;
+      }
+      if (withPublisher.length) {
+        const { error: updErr } = await db.from("titles").upsert(
+          withPublisher.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes, publisher: u.publisher })),
+        );
+        if (updErr) throw updErr;
+      }
       updatedDelta += updates.length;
     }
 
