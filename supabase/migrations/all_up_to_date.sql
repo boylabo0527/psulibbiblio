@@ -13,8 +13,16 @@
 -- 21_faculty_role.sql + 22_purchase_request_records.sql +
 -- 23_purchase_request_campus.sql + 24_pr_workflow.sql +
 -- 25_campus_budgets.sql + 26_pr_cancel_and_po.sql +
--- 27_purchase_order_lifecycle.sql + 28_title_recommendations.sql in
--- order. If you've already run some of those individually, running this
+-- 27_purchase_order_lifecycle.sql + 28_title_recommendations.sql +
+-- 29_multi_subject_and_university_wide_budget.sql + 30_recommendation_canvassing_link.sql +
+-- 31_program_college.sql + 32_standard_titles.sql +
+-- 33_recommendation_price_estimate.sql + 34_supplier_offer_recommendation_match.sql +
+-- 35_canvassing_periodicals.sql + 36_suppliers_directory.sql +
+-- 37_po_delivery_tracking.sql + 38_pr_reminder_tracking.sql +
+-- 39_pr_fund_source.sql + 40_public_title_suggestions.sql +
+-- 41_submitter_role.sql + 42_suggestion_campus.sql +
+-- 43_backfill_printed_campus.sql + 44_promote_locked_subject_assignments.sql
+-- in order. If you've already run some of those individually, running this
 -- on top is still safe.
 
 -- ---------------------------------------------------------------------------
@@ -746,3 +754,24 @@ alter table title_recommendations add column if not exists submitter_role text d
 -- 42_suggestion_campus.sql for why.
 -- ---------------------------------------------------------------------------
 alter table title_recommendations add column if not exists campus text default '';
+
+-- ---------------------------------------------------------------------------
+-- 43: backfill legacy printed titles left with campus = '' when the campus
+-- column was first added -- see 43_backfill_printed_campus.sql for why.
+-- ---------------------------------------------------------------------------
+update titles
+set campus = 'Main Campus'
+where format in ('book_printed', 'journal_printed')
+  and (campus is null or trim(campus) = '');
+
+-- ---------------------------------------------------------------------------
+-- 44: promote assignments under a locked subject to manual=1 before
+-- subject-level lock is retired in favor of per-title locking -- see
+-- 44_promote_locked_subject_assignments.sql for why.
+-- ---------------------------------------------------------------------------
+update assignments a
+set manual = 1
+from subjects s
+where a.subject_id = s.id
+  and s.locked = true
+  and a.manual = 0;

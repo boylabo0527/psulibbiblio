@@ -46,7 +46,11 @@ export type IngestOp =
   // checking whether a conflict exists, so omitting them fails outright
   // with "null value in column ... violates not-null constraint" rather
   // than quietly updating just the listed columns.
-  | { kind: "update"; id: number; format: string; title: string; copies: number; barcodes: string[] };
+  // publisher is set only when backfilling a blank -- see planIngestOps'
+  // accession-mode branch. Left undefined on every other update so
+  // applyIngestOps' batched upsert never overwrites a good publisher with
+  // one it doesn't actually have.
+  | { kind: "update"; id: number; format: string; title: string; copies: number; barcodes: string[]; publisher?: string };
 
 export type IngestPlan = {
   ops: IngestOp[];
@@ -114,10 +118,10 @@ export async function planIngestOps(
     // re-covering most of an existing catalog can have thousands of those
     // -- each round trip's fixed latency (not the bytes moved) is what
     // was actually slow enough to hit a serverless function's time limit.
-    type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number; barcodes: string[] | null };
+    type Existing = { id: number; call_no: string; title: string; author: string; campus: string; copies: number; barcodes: string[] | null; publisher: string | null };
     const existing = await pageThroughParallel<Existing>(
       (from, to) => db.from("titles")
-        .select("id, call_no, title, author, campus, copies, barcodes", { count: "exact" })
+        .select("id, call_no, title, author, campus, copies, barcodes, publisher", { count: "exact" })
         .eq("format", rt.id).order("id", { ascending: true }).range(from, to) as unknown as
         PromiseLike<{ data: Existing[] | null; count: number | null; error: { message: string } | null }>,
       (done) => send({ phase: "deduping", existing: done }),
@@ -139,11 +143,23 @@ export async function planIngestOps(
         for (const bc of barcodes) {
           if (!existingBarcodes.has(bc)) { existingBarcodes.add(bc); newBarcodes++; }
         }
-        if (newBarcodes === 0 && unbarcoded === 0) {
+        // A re-upload/re-sync never overwrites a publisher that's already
+        // there (the incoming row could just be an older or less complete
+        // source), but if the existing row has never had one filled in and
+        // this one does, that's a strict improvement worth taking -- even
+        // when the row is otherwise an exact duplicate (same barcodes,
+        // same copy count).
+        const incomingPublisher = (row.publisher ?? "").trim();
+        const fillPublisher = !(ex.publisher ?? "").trim() && !!incomingPublisher;
+        if (newBarcodes === 0 && unbarcoded === 0 && !fillPublisher) {
           duplicates++;
           continue;
         }
-        ops.push({ kind: "update", id: ex.id, format: rt.id, title: ex.title, copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes) });
+        ops.push({
+          kind: "update", id: ex.id, format: rt.id, title: ex.title,
+          copies: ex.copies + newBarcodes + unbarcoded, barcodes: Array.from(existingBarcodes),
+          ...(fillPublisher ? { publisher: incomingPublisher } : {}),
+        });
       } else {
         ops.push({
           kind: "insert",
@@ -313,12 +329,27 @@ export async function applyIngestOps(
       // format/title are included solely to satisfy titles' NOT NULL
       // constraints on the row Postgres builds to test for a conflict
       // (see the IngestOp comment above) -- they're set to their current,
-      // unchanged values, so only copies/barcodes actually end up
-      // different after the update.
-      const { error } = await db.from("titles").upsert(
-        updates.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
-      );
-      if (error) throw error;
+      // unchanged values, so only copies/barcodes (and publisher, for the
+      // rows backfilling one) actually end up different after the update.
+      //
+      // Split into two upsert calls by whether `publisher` is present --
+      // a bulk upsert applies the same column list to every row in the
+      // call, so a row missing a key that a sibling row in the same batch
+      // has would get that column overwritten with NULL, not left alone.
+      const withoutPublisher = updates.filter((u) => u.publisher === undefined);
+      const withPublisher = updates.filter((u) => u.publisher !== undefined);
+      if (withoutPublisher.length) {
+        const { error } = await db.from("titles").upsert(
+          withoutPublisher.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes })),
+        );
+        if (error) throw error;
+      }
+      if (withPublisher.length) {
+        const { error } = await db.from("titles").upsert(
+          withPublisher.map((u) => ({ id: u.id, format: u.format, title: u.title, copies: u.copies, barcodes: u.barcodes, publisher: u.publisher })),
+        );
+        if (error) throw error;
+      }
       updated += updates.length;
     }
     cursor = end;
