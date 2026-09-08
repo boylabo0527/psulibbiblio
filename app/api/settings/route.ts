@@ -3,6 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest, logActivity } from "@/lib/activity";
 import { getAppSettings } from "@/lib/settings";
+import { errorMessage } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ export async function GET() {
     const settings = await getAppSettings(db);
     return NextResponse.json({ settings });
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
 }
 
@@ -49,6 +50,12 @@ export async function PATCH(req: Request) {
     });
     return NextResponse.json({ settings: data });
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    // Supabase/PostgREST errors are plain objects, not Error instances --
+    // `err instanceof Error ? err.message : String(err)` used to fall
+    // through to String(err) for those and render as the useless
+    // "[object Object]" (e.g. the admin's toggle failing with that text
+    // whenever migration 45 hasn't been run against a deployment's
+    // database yet, so the app_settings table doesn't exist).
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
 }

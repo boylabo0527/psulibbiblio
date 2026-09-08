@@ -189,6 +189,15 @@ export default function ProgramsTab() {
     load();
   }
 
+  async function bulkLockAssignments(subjectId: number, titleIds: number[]) {
+    await apiFetch("/api/match/lock/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: titleIds.map((title_id) => ({ subject_id: subjectId, title_id })), lock: true }),
+    });
+    load();
+  }
+
   return (
     <>
       <div className="card">
@@ -315,6 +324,7 @@ export default function ProgramsTab() {
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
                   onToggleLock={(titleId, lock) => toggleAssignmentLock(sub.subject.id, titleId, lock)}
                   onBulkRemove={(titleIds) => bulkRemoveAssignments(sub.subject.id, titleIds)}
+                  onBulkLock={(titleIds) => bulkLockAssignments(sub.subject.id, titleIds)}
                   onReload={load}
                 />
               ))}
@@ -367,6 +377,7 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
   const [file, setFile] = useState<File | null>(null);
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [locking, setLocking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [preview, setPreview] = useState<ValidateCsvPreview | null>(null);
@@ -435,6 +446,32 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
     }
   }
 
+  async function lockConfirmed() {
+    if (!preview || !preview.confirmed.length) return;
+    setLocking(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/match/lock/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: preview.confirmed.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })),
+          lock: true,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setResult(`Locked ${j.updated} confirmed match${j.updated === 1 ? "" : "es"} -- protected from future Match runs.`);
+      setPreview(null);
+      setFile(null);
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLocking(false);
+    }
+  }
+
   const keptCount = preview ? preview.toRemove.length - excluded.size : 0;
 
   return (
@@ -462,9 +499,21 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
       {result && <p className="text-emerald-700 text-xs mb-2">{result}</p>}
       {preview && (
         <div className="text-xs">
-          <p className="text-slate-600 mb-2">
-            {preview.coursesReviewed} course{preview.coursesReviewed === 1 ? "" : "s"} reviewed · {preview.confirmedCount} confirmed · {preview.toRemove.length} to remove
-            {preview.lockedSkipped.length > 0 && ` · ${preview.lockedSkipped.length} locked (kept)`}
+          <p className="text-slate-600 mb-2 flex flex-wrap items-center gap-2">
+            <span>
+              {preview.coursesReviewed} course{preview.coursesReviewed === 1 ? "" : "s"} reviewed · {preview.confirmedCount} confirmed · {preview.toRemove.length} to remove
+              {preview.lockedSkipped.length > 0 && ` · ${preview.lockedSkipped.length} locked (kept)`}
+            </span>
+            {preview.confirmed.length > 0 && (
+              <button
+                className="text-xs text-amber-700 font-medium underline disabled:opacity-40"
+                disabled={locking}
+                title="Protect every confirmed match from being deleted/replaced by future Match runs"
+                onClick={lockConfirmed}
+              >
+                {locking ? "Locking…" : `🔒 Lock ${preview.confirmed.length} confirmed match${preview.confirmed.length === 1 ? "" : "es"}`}
+              </button>
+            )}
           </p>
           {preview.unknownCourses.length > 0 && (
             <p className="text-amber-700 mb-2">
@@ -701,7 +750,7 @@ function PerlegoSearchPanel() {
 }
 
 function SubjectBlock({
-  detail, programCampus, onRemove, onAdd, onToggleLock, onBulkRemove, onReload,
+  detail, programCampus, onRemove, onAdd, onToggleLock, onBulkRemove, onBulkLock, onReload,
 }: {
   detail: SubjectDetail;
   programCampus: string;
@@ -709,6 +758,7 @@ function SubjectBlock({
   onAdd: (titleId: number) => void;
   onToggleLock: (titleId: number, lock: boolean) => void;
   onBulkRemove: (titleIds: number[]) => void;
+  onBulkLock: (titleIds: number[]) => void;
   onReload: () => void;
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
@@ -741,6 +791,12 @@ function SubjectBlock({
     setSelected(new Set());
   }
 
+  function bulkLock() {
+    if (selected.size === 0) return;
+    onBulkLock(Array.from(selected));
+    setSelected(new Set());
+  }
+
   return (
     <div className="mb-5 border-l-4 pl-3 border-psu-light">
       <div className="flex items-baseline gap-2">
@@ -768,6 +824,13 @@ function SubjectBlock({
         </p>
         {selected.size > 0 && (
           <>
+            <button
+              className="text-xs text-amber-700 font-medium"
+              title="Protect the selected matches from being deleted/replaced by future Match runs"
+              onClick={bulkLock}
+            >
+              🔒 Lock selected ({selected.size})
+            </button>
             <button className="text-xs text-red-600 font-medium" onClick={bulkRemove}>
               Remove selected ({selected.size})
             </button>

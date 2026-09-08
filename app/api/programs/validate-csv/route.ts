@@ -34,6 +34,10 @@ export type ValidateCsvPreview = {
   unresolvedRows: { course_code: string; title: string }[];
   /** Course codes present in the CSV that don't exist in this program. */
   unknownCourses: string[];
+  /** Matches the upload confirmed and that aren't locked yet -- offered so
+   *  they can be bulk-locked in one action, protecting them from a future
+   *  Match run now that a reviewer has actually vetted them. */
+  confirmed: ValidateCsvPreviewRow[];
   confirmedCount: number;
   coursesReviewed: number;
 };
@@ -93,7 +97,7 @@ export async function POST(req: Request) {
 
     const subjectIds = Array.from(rowsBySubject.keys());
     const preview: ValidateCsvPreview = {
-      toRemove: [], lockedSkipped: [], unresolvedRows: [],
+      toRemove: [], lockedSkipped: [], unresolvedRows: [], confirmed: [],
       unknownCourses: Array.from(unknownCourses),
       confirmedCount: 0, coursesReviewed: subjectIds.length,
     };
@@ -116,13 +120,18 @@ export async function POST(req: Request) {
         const match = matchIdx >= 0 ? csvRows[matchIdx] : undefined;
         if (match) matchedRowIdx.add(matchIdx);
 
-        const notApplicable = match ? match.verdict === false : true;
-        if (!notApplicable) { preview.confirmedCount++; continue; }
-
         const entry: ValidateCsvPreviewRow = {
           subject_id: subjectId, course_code: subj.course_code ?? "", course_title: subj.course_title,
           title_id: a.title_id, title: a.titles.title,
         };
+
+        const notApplicable = match ? match.verdict === false : true;
+        if (!notApplicable) {
+          preview.confirmedCount++;
+          if (!a.manual) preview.confirmed.push(entry);
+          continue;
+        }
+
         if (a.manual) preview.lockedSkipped.push(entry);
         else preview.toRemove.push(entry);
       }
