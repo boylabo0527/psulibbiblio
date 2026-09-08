@@ -4,6 +4,9 @@
  * - parseEbookTitles:  Perlego-style title lists (xlsx/xls/csv/pdf/docx)
  * - parsePrintedBooks: library catalog rows with Call No., Author, Title, Year, Copies
  * - parseSubjects:     per-program subject list (course code, title, description, optional section)
+ * - parseValidationRows: a Programs & Export CSV export (or an AI-reviewed
+ *   copy of one) re-uploaded to validate which title-to-course matches
+ *   actually belong -- see /api/programs/validate-csv.
  */
 import * as XLSX from "xlsx";
 import type { TitleRow, SubjectRow } from "./types";
@@ -312,4 +315,68 @@ export async function parseSubjects(filename: string, buf: Buffer): Promise<Pars
 /** Build ParsedSubject rows from rows already parsed by the browser. */
 export function buildSubjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
   return subjectRowsFromRaw(rows);
+}
+
+// ---------------------------------------------------------------------------
+// Validation rows: re-upload of a Programs & Export CSV (possibly reviewed
+// by an outside AI) to confirm/prune which title-to-course matches belong.
+// ---------------------------------------------------------------------------
+const VALIDATE_ALIASES: Record<string, string[]> = {
+  course_code: ["course code", "code", "course_code", "subject code"],
+  title: ["title"],
+  isbn: ["isbn", "isbn-13", "isbn13"],
+  // Whatever column the reviewer (human or AI) used to record its verdict --
+  // its exact name doesn't matter, only that it holds one of the yes/no
+  // values recognized below.
+  verdict: [
+    "applicable", "applicable to course", "applicable?",
+    "valid", "keep", "keep?", "match", "matched", "ai match", "ai verdict",
+    "verdict", "decision", "status", "correct", "relevant", "result",
+  ],
+};
+
+const VERDICT_YES = new Set(["yes", "y", "true", "1", "keep", "valid", "correct", "applicable", "match", "matched", "relevant", "ok", "pass"]);
+const VERDICT_NO = new Set(["no", "n", "false", "0", "remove", "invalid", "incorrect", "not applicable", "no match", "not matched", "irrelevant", "drop", "delete", "fail"]);
+
+export type ValidationRow = {
+  course_code: string;
+  /** Title of the matched resource (book/ebook/etc.), not the course. */
+  title: string;
+  isbn: string;
+  /** true = confirmed applicable, false = confirmed NOT applicable,
+   *  null = no verdict column (or an unrecognized value) -- the row's mere
+   *  presence in the file is the only signal. */
+  verdict: boolean | null;
+};
+
+/** Parses a Programs & Export CSV/XLSX re-upload into per-row course +
+ *  title + verdict. Only Course Code and Title are required -- every other
+ *  export column (Section, Description, Resource Type, Author, ...) is
+ *  ignored, and rows with no course code (the program-wide Journals rows)
+ *  are dropped since journals aren't matched per-course. */
+export async function parseValidationRows(filename: string, buf: Buffer): Promise<ValidationRow[]> {
+  const rows = rowsFromWorkbook(readSheet(filename, buf));
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), VALIDATE_ALIASES);
+  if (!map.course_code || !map.title) {
+    throw new Error(`Could not find Course Code and Title columns. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: ValidationRow[] = [];
+  for (const r of rows) {
+    const course_code = (r[map.course_code] || "").trim();
+    const title = (r[map.title] || "").trim();
+    if (!course_code || !title) continue;
+    let verdict: boolean | null = null;
+    if (map.verdict) {
+      const raw = norm(r[map.verdict]);
+      if (VERDICT_YES.has(raw)) verdict = true;
+      else if (VERDICT_NO.has(raw)) verdict = false;
+    }
+    out.push({
+      course_code, title,
+      isbn: map.isbn ? (r[map.isbn] || "").trim() : "",
+      verdict,
+    });
+  }
+  return out;
 }

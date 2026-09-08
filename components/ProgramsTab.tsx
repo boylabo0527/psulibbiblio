@@ -3,9 +3,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
-import { usePermissions } from "@/lib/use-permissions";
+import { usePermissions, canEdit } from "@/lib/use-permissions";
 import SearchableSelect from "@/components/SearchableSelect";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import type { ValidateCsvPreview, ValidateCsvPreviewRow } from "@/app/api/programs/validate-csv/route";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -345,8 +346,183 @@ export default function ProgramsTab() {
         </div>
       )}
 
+      {canEdit(perms, "programs") && selected && (
+        <ValidateCsvPanel programId={selected} onApplied={load} />
+      )}
+
       {perms.isAdmin && <PerlegoSearchPanel />}
     </>
+  );
+}
+
+/** Upload a Programs & Export CSV (optionally reviewed by an outside AI or
+ *  a person) to validate which title-to-course matches on the currently
+ *  selected program actually belong -- the app's own Match run only scores
+ *  title + description text, so a second, better-informed pass over the
+ *  exported list is often needed before the matches are trustworthy. Only
+ *  courses present in the file are touched; anything the file doesn't
+ *  confirm for those courses is proposed for removal (never added --
+ *  this prunes bad matches, it doesn't invent new ones). */
+function ValidateCsvPanel({ programId, onApplied }: { programId: number; onApplied: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ValidateCsvPreview | null>(null);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+
+  const rowKey = (r: ValidateCsvPreviewRow) => `${r.subject_id}:${r.title_id}`;
+
+  function reset() {
+    setPreview(null);
+    setResult(null);
+    setErr(null);
+    setExcluded(new Set());
+  }
+
+  async function check() {
+    if (!file) return;
+    setChecking(true);
+    reset();
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("program_id", String(programId));
+      const res = await apiFetch("/api/programs/validate-csv", { method: "POST", body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setPreview(j as ValidateCsvPreview);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  function toggleExclude(key: string) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function apply() {
+    if (!preview) return;
+    const removals = preview.toRemove.filter((r) => !excluded.has(rowKey(r)));
+    if (!removals.length) return;
+    if (!confirm(`Remove ${removals.length} title-course match${removals.length === 1 ? "" : "es"} not confirmed by this upload?`)) return;
+    setApplying(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/programs/validate-csv/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ removals: removals.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setResult(`Removed ${j.removed} match${j.removed === 1 ? "" : "es"}.`);
+      setPreview(null);
+      setFile(null);
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  const keptCount = preview ? preview.toRemove.length - excluded.size : 0;
+
+  return (
+    <div className="card">
+      <h2 className="text-psu font-semibold mb-1">Validate Matches (CSV)</h2>
+      <p className="text-xs text-slate-500 mb-3">
+        Export the master CSV above, have it reviewed for accuracy -- Match here only scores title and
+        description text -- then upload the reviewed copy here. Only courses that appear in the file
+        are touched; for those, any current match the file doesn&apos;t confirm is proposed for removal.
+        Delete the rows that don&apos;t belong before uploading, or add a column such as
+        &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <input
+          type="file"
+          accept=".csv,.xlsx,.xls"
+          onChange={(e) => { setFile(e.target.files?.[0] ?? null); reset(); }}
+          className="text-xs"
+        />
+        <button className="btn text-xs" disabled={!file || checking} onClick={check}>
+          {checking ? "Checking…" : "Check"}
+        </button>
+      </div>
+      {err && <p className="text-red-700 text-xs mb-2">{err}</p>}
+      {result && <p className="text-emerald-700 text-xs mb-2">{result}</p>}
+      {preview && (
+        <div className="text-xs">
+          <p className="text-slate-600 mb-2">
+            {preview.coursesReviewed} course{preview.coursesReviewed === 1 ? "" : "s"} reviewed · {preview.confirmedCount} confirmed · {preview.toRemove.length} to remove
+            {preview.lockedSkipped.length > 0 && ` · ${preview.lockedSkipped.length} locked (kept)`}
+          </p>
+          {preview.unknownCourses.length > 0 && (
+            <p className="text-amber-700 mb-2">
+              Course code{preview.unknownCourses.length === 1 ? "" : "s"} not found in this program: {preview.unknownCourses.join(", ")}
+            </p>
+          )}
+          {preview.toRemove.length === 0 ? (
+            <p className="text-slate-500">Nothing to remove — every current match in the reviewed courses is confirmed.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs mb-2">
+                  <thead className="text-slate-500">
+                    <tr className="text-left border-b border-slate-200">
+                      <th className="p-1 w-6"></th>
+                      <th className="p-1">Course</th>
+                      <th className="p-1">Title</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.toRemove.map((r) => {
+                      const key = rowKey(r);
+                      return (
+                        <tr key={key} className="border-b border-slate-100">
+                          <td className="p-1">
+                            <input type="checkbox" checked={!excluded.has(key)} onChange={() => toggleExclude(key)} />
+                          </td>
+                          <td className="p-1">{r.course_code || r.course_title}</td>
+                          <td className="p-1">{r.title}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <button className="btn text-xs" disabled={applying || keptCount === 0} onClick={apply}>
+                {applying ? "Removing…" : `Remove ${keptCount} checked match${keptCount === 1 ? "" : "es"}`}
+              </button>
+            </>
+          )}
+          {preview.lockedSkipped.length > 0 && (
+            <p className="text-slate-500 mt-2">🔒 Locked, kept as-is: {preview.lockedSkipped.map((r) => r.title).join(", ")}</p>
+          )}
+          {preview.unresolvedRows.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-slate-500">
+                {preview.unresolvedRows.length} row{preview.unresolvedRows.length === 1 ? "" : "s"} in the file didn&apos;t match a current title
+              </summary>
+              <ul className="mt-1 text-slate-500">
+                {preview.unresolvedRows.map((r, i) => (
+                  <li key={i}>{r.course_code} — {r.title}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
