@@ -123,10 +123,16 @@ export async function POST(req: Request) {
     const assignments: Joined[] = [];
     for (let i = 0; i < subjectIds.length; i += SUBJECT_CHUNK) {
       const chunk = subjectIds.slice(i, i + SUBJECT_CHUNK);
+      // .order("id") is required for a multi-page chunk to come back
+      // complete -- without a deterministic sort, Postgres doesn't
+      // guarantee a row lands on the same page across repeated .range()
+      // calls, so a row can fall into a gap between pages and never come
+      // back at all (see lib/bibliography.ts for how this manifested).
       const rows = await pageThrough<Joined>((from, to) =>
         db.from("assignments")
           .select("subject_id, title_id, manual, titles!inner(id, title, isbn)")
           .in("subject_id", chunk)
+          .order("id", { ascending: true })
           .range(from, to) as unknown as PromiseLike<{ data: Joined[] | null; error: { message: string } | null }>,
       );
       assignments.push(...rows);

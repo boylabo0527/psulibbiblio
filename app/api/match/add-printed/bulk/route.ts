@@ -138,11 +138,17 @@ export async function POST(req: Request) {
     const candidates: Existing[] = [];
     for (let i = 0; i < uniqueTitles.length; i += 200) {
       const chunk = uniqueTitles.slice(i, i + 200);
+      // .order("id") is required for a multi-page chunk to come back
+      // complete -- without a deterministic sort, Postgres doesn't
+      // guarantee a row lands on the same page across repeated .range()
+      // calls, so a row can fall into a gap between pages and never come
+      // back at all (see lib/bibliography.ts for how this manifested).
       const rows = await pageThrough<Existing>((from, to) =>
         db.from("titles")
           .select("id, call_no, title, author")
           .eq("format", "book_printed").eq("campus", campus)
           .in("title", chunk)
+          .order("id", { ascending: true })
           .range(from, to) as unknown as PromiseLike<{ data: Existing[] | null; error: { message: string } | null }>,
       );
       candidates.push(...rows);

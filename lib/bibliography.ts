@@ -65,10 +65,20 @@ export async function loadProgramBibliography(
   const assignments: Joined[] = [];
   for (let i = 0; i < subjectIds.length; i += 200) {
     const chunk = subjectIds.slice(i, i + 200);
+    // .order("id") is required, not cosmetic: without an explicit,
+    // deterministic sort, Postgres doesn't guarantee the same row lands on
+    // the same page across the repeated .range() calls a multi-page chunk
+    // needs -- a row can fall into a gap between two pages and never come
+    // back at all, with the total row count still looking plausible. This
+    // is exactly how a course's real, already-matched titles could vanish
+    // from every view built on this data with no error anywhere to explain
+    // it (confirmed: the same subject fetched alone came back complete,
+    // but as part of a larger program came back with none of its titles).
     const chunkRows = await paged<Joined>((from, to) =>
       db.from("assignments")
         .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
         .in("subject_id", chunk)
+        .order("id", { ascending: true })
         .range(from, to),
     );
     assignments.push(...chunkRows);
