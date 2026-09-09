@@ -198,12 +198,15 @@ export default function DashboardTab() {
             </span>
           )}
         </h2>
+        <p className="text-xs text-slate-500 mb-3" title="Auto-matches don't count here until a librarian locks them, directly or via Validate Matches CSV in Programs & Export">
+          Title/volume counts below are validated (locked) matches only -- journal subscriptions are counted as confirmed on entry since they aren't matched per title.
+        </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           {[
             { label: "Programs", value: summaryPrograms },
             { label: "Subjects", value: summarySubjects },
-            { label: "Total Titles", value: summaryTitles },
-            { label: "Total Volumes", value: summaryVolumes },
+            { label: "Validated Titles", value: summaryTitles },
+            { label: "Validated Volumes", value: summaryVolumes },
           ].map((s) => (
             <div key={s.label} className="bg-psu-light rounded p-4">
               <div className="text-xs text-slate-600">{s.label}</div>
@@ -317,7 +320,7 @@ export default function DashboardTab() {
                       <tr className="border-b border-slate-200 text-slate-500 text-left">
                         <th className="py-1 pr-2 w-24">Code</th>
                         <th className="py-1 pr-2">Subject</th>
-                        <th className="py-1 px-2 text-right">Titles</th>
+                        <th className="py-1 px-2 text-right" title="Locked (validated) matches only">Titles</th>
                         <th className="py-1 px-2 text-right" title="Printed books and journals">Printed</th>
                         <th className="py-1 px-2 text-right" title="eBooks, online journals, and institutional repository items">Digital/eBook</th>
                         <th className="py-1 px-2 text-right">Volumes</th>

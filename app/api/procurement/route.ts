@@ -79,8 +79,11 @@ export async function GET(req: Request) {
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
     const programCostMap = new Map((programRows ?? []).map((p: { id: number; cost_per_title: number | null }) => [p.id, p.cost_per_title]));
 
-    // Include year in title fetch so we can apply recency filter
-    type AssignRow = { subject_id: number; titles: { id: number; format: string; campus: string; copies: number; year: string | null } | null };
+    // Include year in title fetch so we can apply recency filter. `manual`
+    // (locked) is needed because an auto-match is a candidate, not a
+    // confirmed answer -- compliance is computed only from validated titles,
+    // same as Programs & Export and the Dashboard.
+    type AssignRow = { subject_id: number; manual: number; titles: { id: number; format: string; campus: string; copies: number; year: string | null } | null };
     const subjectIds = subjects.map((s) => s.id);
     const assignments: AssignRow[] = [];
     for (let i = 0; i < subjectIds.length; i += 200) {
@@ -92,7 +95,7 @@ export async function GET(req: Request) {
       // back at all (see lib/bibliography.ts for how this manifested).
       const rows = await pageThrough<AssignRow>(
         (from, to) => db.from("assignments")
-          .select("subject_id, titles(id, format, campus, copies, year)")
+          .select("subject_id, manual, titles(id, format, campus, copies, year)")
           .in("subject_id", chunk)
           .order("id", { ascending: true })
           .range(from, to) as unknown as PromiseLike<{ data: AssignRow[] | null; error: { message: string } | null }>,
@@ -134,6 +137,12 @@ export async function GET(req: Request) {
         }
         continue;
       }
+
+      // Non-journal titles only count once a librarian has locked (validated)
+      // the match -- an auto-match is a candidate, not a confirmed answer.
+      // No per-journal lock UI exists yet, so journals (handled above) are
+      // deliberately exempt from this filter.
+      if (!a.manual) continue;
 
       const isCampusScoped = t.format === "book_printed";
       if (isCampusScoped && campus && t.campus !== campus) continue;

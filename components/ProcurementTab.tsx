@@ -182,6 +182,8 @@ export default function ProcurementTab() {
           including <span className="font-semibold">at least {MIN_PRINTED_BOOKS} recent printed book</span> -- {ACCREDITATION_MIN} recent
           eBooks alone is not compliant. Titles with no publication year or older than {cutoffYear} do not count toward compliance.
           Subjects with at least <span className="font-semibold">{PARTIAL_MIN}</span> recent titles count as partial compliance.
+          Only <span className="font-semibold">locked (validated)</span> matches count toward these numbers -- an auto-match from
+          Match doesn't count until a librarian reviews and locks it, directly or via Validate Matches CSV in Programs & Export.
         </div>
 
         {/* Filters */}

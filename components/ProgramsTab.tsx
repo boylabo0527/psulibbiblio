@@ -855,15 +855,24 @@ function SubjectBlock({
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // "Titles"/"Volumes" count only locked (validated) matches -- an
+  // auto-match is a candidate, not a confirmed answer, until a librarian
+  // has reviewed and locked it (directly, or via Validate Matches CSV).
+  // matchedTitles/matchedVolumes track everything (validated or not) so
+  // the difference is visible instead of the count just looking low with
+  // no explanation, since the rows below still list every match either
+  // way -- that full list is what there is to review.
   let totalTitles = 0;
   let totalVolumes = 0;
+  let matchedTitles = 0;
+  let matchedVolumes = 0;
   for (const t of RESOURCE_TYPES) {
     const list = buckets[t.id] ?? [];
-    totalTitles += list.length;
-    if (t.medium === "print") {
-      for (const b of list) totalVolumes += Math.max(1, b.copies ?? 1);
-    } else {
-      totalVolumes += list.length;
+    matchedTitles += list.length;
+    for (const b of list) {
+      const vol = t.medium === "print" ? Math.max(1, b.copies ?? 1) : 1;
+      matchedVolumes += vol;
+      if (b.manual) { totalTitles += 1; totalVolumes += vol; }
     }
   }
 
@@ -911,8 +920,11 @@ function SubjectBlock({
         />
       ))}
       <div className="flex items-center gap-3 mt-1 flex-wrap">
-        <p className="text-xs text-slate-700">
-          <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
+        <p className="text-xs text-slate-700" title="Locked (validated) matches only -- auto-matches shown below still count toward neither until reviewed and locked">
+          <strong>Validated:</strong> {totalTitles} title{totalTitles === 1 ? "" : "s"} / {totalVolumes} volume{totalVolumes === 1 ? "" : "s"}
+          {matchedTitles > totalTitles && (
+            <span className="text-slate-500"> · {matchedTitles - totalTitles} more matched, not yet validated</span>
+          )}
         </p>
         {selected.size > 0 && (
           <>
