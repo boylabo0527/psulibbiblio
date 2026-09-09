@@ -11,7 +11,7 @@ type Item = { subject_id: number; title_id: number };
 
 export type BulkLockEvent =
   | { phase: "locking"; done: number; total: number; updated: number }
-  | { phase: "done"; updated: number }
+  | { phase: "done"; updated: number; skipped: Item[] }
   | { phase: "error"; error: string };
 
 /** POST /api/match/lock/bulk -- lock (or unlock) several existing matches
@@ -57,24 +57,37 @@ export async function POST(req: Request) {
   const stream = ndjsonStream<BulkLockEvent>(async (send) => {
     let updated = 0;
     let done = 0;
+    const skipped: Item[] = [];
     send({ phase: "locking", done, total: subjectEntries.length, updated });
     for (const [subjectId, titleIds] of subjectEntries) {
+      // UPDATE only touches rows that still exist -- a title_id the
+      // caller asked to lock can have vanished from this course since the
+      // request was built (removed by a Match run, an explicit remove, or
+      // a validate-CSV apply that ran first). Select title_id back (not
+      // the assignment's own id) so those specific misses can be told
+      // apart from ones that actually locked, instead of only knowing an
+      // aggregate count fell short.
       const { data, error } = await db.from("assignments")
         .update({ manual: lock ? 1 : 0 })
         .eq("subject_id", subjectId).in("title_id", titleIds)
-        .select("id");
+        .select("title_id");
       if (error) throw error;
-      updated += data?.length ?? 0;
+      const touched = new Set((data ?? []).map((r) => r.title_id as number));
+      updated += touched.size;
+      for (const titleId of titleIds) {
+        if (!touched.has(titleId)) skipped.push({ subject_id: subjectId, title_id: titleId });
+      }
       done++;
       send({ phase: "locking", done, total: subjectEntries.length, updated });
     }
 
     await logActivity(db, {
       userEmail: email, action: "assignment_bulk_lock",
-      summary: `${email || "Someone"} ${lock ? "locked" : "unlocked"} ${updated} title-course match${updated === 1 ? "" : "es"}`,
-      detail: { updated, subjects: subjectEntries.length, lock },
+      summary: `${email || "Someone"} ${lock ? "locked" : "unlocked"} ${updated} title-course match${updated === 1 ? "" : "es"}`
+        + (skipped.length ? `, ${skipped.length} no longer existed and were skipped` : ""),
+      detail: { updated, subjects: subjectEntries.length, lock, skipped: skipped.length },
     });
-    send({ phase: "done", updated });
+    send({ phase: "done", updated, skipped });
   });
 
   return new Response(stream, {

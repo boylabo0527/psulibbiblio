@@ -468,14 +468,15 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
     if (!preview || !preview.confirmed.length) return;
     setLocking(true);
     setErr(null);
-    const courseCount = new Set(preview.confirmed.map((r) => r.subject_id)).size;
+    const confirmedNow = preview.confirmed;
+    const courseCount = new Set(confirmedNow.map((r) => r.subject_id)).size;
     setProgress({ label: "Locking", done: 0, total: courseCount });
     try {
       const res = await apiFetch("/api/match/lock/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: preview.confirmed.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })),
+          items: confirmedNow.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })),
           lock: true,
         }),
       });
@@ -484,16 +485,28 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
         throw new Error(j.error || `HTTP ${res.status}`);
       }
       let updated = 0;
+      let skipped: { subject_id: number; title_id: number }[] = [];
       let streamErr: string | null = null;
       await consumeNdjson<BulkLockEvent>(res, (ev) => {
         if (ev.phase === "locking") setProgress({ label: "Locking", done: ev.done, total: ev.total });
-        else if (ev.phase === "done") updated = ev.updated;
+        else if (ev.phase === "done") { updated = ev.updated; skipped = ev.skipped; }
         else if (ev.phase === "error") streamErr = ev.error;
       });
       if (streamErr) throw new Error(streamErr);
-      setResult(`Locked ${updated} confirmed match${updated === 1 ? "" : "es"} -- protected from future Match runs.`);
-      setPreview(null);
-      setFile(null);
+      // A skipped item was in the confirmed list when this request was
+      // built but no longer had a matching assignment row by the time the
+      // lock ran (removed elsewhere in the meantime) -- keep it in
+      // `confirmed` (instead of clearing the whole preview) so it's still
+      // visible and exportable rather than silently disappearing.
+      const skippedKeys = new Set(skipped.map((s) => `${s.subject_id}:${s.title_id}`));
+      const stillUnlocked = confirmedNow.filter((r) => skippedKeys.has(rowKey(r)));
+      setResult(
+        `Locked ${updated} confirmed match${updated === 1 ? "" : "es"} -- protected from future Match runs.`
+        + (stillUnlocked.length
+          ? ` ${stillUnlocked.length} could no longer be found in their course and were skipped -- export them below to re-check.`
+          : ""),
+      );
+      setPreview((prev) => (prev ? { ...prev, confirmed: stillUnlocked } : prev));
       onApplied();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -501,6 +514,29 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
       setLocking(false);
       setProgress(null);
     }
+  }
+
+  /** Downloads whatever's currently in `confirmed` (validated by the
+   *  upload but not locked in the system -- either never locked yet, or
+   *  skipped by a lock attempt because the match had since vanished) as a
+   *  small CSV with the same Course Code / Title columns
+   *  parseValidationRows expects, so it can go through another AI review
+   *  pass and come back in through Check again. */
+  function downloadNotYetLocked() {
+    if (!preview || !preview.confirmed.length) return;
+    const escape = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const lines = ["Course Code,Course Title,Title"];
+    for (const r of preview.confirmed) {
+      lines.push([r.course_code, r.course_title, r.title].map(escape).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `not_yet_locked_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   }
 
   const keptCount = preview ? preview.toRemove.length - excluded.size : 0;
@@ -556,6 +592,16 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
                 onClick={lockConfirmed}
               >
                 {locking ? "Locking…" : `🔒 Lock ${preview.confirmed.length} confirmed match${preview.confirmed.length === 1 ? "" : "es"}`}
+              </button>
+            )}
+            {preview.confirmed.length > 0 && (
+              <button
+                className="text-xs text-slate-600 font-medium underline disabled:opacity-40"
+                disabled={locking}
+                title="Download the confirmed-but-not-yet-locked matches as a CSV, for another AI review pass -- re-upload the result with Check to validate again"
+                onClick={downloadNotYetLocked}
+              >
+                ⬇ Export {preview.confirmed.length} not-yet-locked (CSV)
               </button>
             )}
           </p>
