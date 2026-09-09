@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-client";
 import type { SubjectSearchRow } from "@/app/api/subjects/search/route";
 
 type ProgramSummary = { id: number; name: string; subjects: number };
@@ -33,7 +34,7 @@ function SubjectFinder() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/subjects/search?q=${encodeURIComponent(q.trim())}`);
+      const res = await apiFetch(`/api/subjects/search?q=${encodeURIComponent(q.trim())}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRows(data.subjects ?? []);
@@ -128,7 +129,7 @@ function ProgramsCleanup() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch("/api/programs/duplicates");
+      const res = await apiFetch("/api/programs/duplicates");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setGroups(data.groups ?? []);
@@ -149,7 +150,7 @@ function ProgramsCleanup() {
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch("/api/programs/merge", {
+      const res = await apiFetch("/api/programs/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keep_id: keepId, drop_ids: dropIds }),
@@ -182,7 +183,7 @@ function ProgramsCleanup() {
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/programs/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/programs/${id}`, { method: "DELETE" });
       const text = await res.text();
       let data: { error?: string } = {};
       try { data = JSON.parse(text); } catch { /* non-JSON response — keep raw text */ }
