@@ -4,7 +4,7 @@ import { RESOURCE_TYPES } from "@/lib/resources";
 import type { ResourceTypeId } from "@/lib/resources";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
-import type { SubjectSummaryRow } from "@/app/api/dashboard/subjects/route";
+import type { SubjectSummaryRow, JournalTotals } from "@/app/api/dashboard/subjects/route";
 import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
 
 type Program = { id: number; name: string };
@@ -25,6 +25,7 @@ export default function DashboardTab() {
   const [toYear, setToYear] = useState<string>("");
   const [citationStyle, setCitationStyle] = useState("apa7");
   const [subjects, setSubjects] = useState<SubjectSummaryRow[]>([]);
+  const [journalTotals, setJournalTotals] = useState<JournalTotals>({});
   const [loading, setLoading] = useState(true); // true only until the very first fetch resolves
   const [refreshing, setRefreshing] = useState(false); // true for every fetch after that
   const [err, setErr] = useState<string | null>(null);
@@ -79,7 +80,7 @@ export default function DashboardTab() {
       .then((r) => r.json())
       .then((j) => {
         if (j.error) setErr(j.error);
-        else setSubjects(j.subjects ?? []);
+        else { setSubjects(j.subjects ?? []); setJournalTotals(j.journalTotals ?? {}); }
       })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => { setRefreshing(false); setLoading(false); });
@@ -98,12 +99,35 @@ export default function DashboardTab() {
     ? programScoped.filter(s => validProgramIds.has(s.program_id))
     : programScoped;
 
+  // Journals aren't in any subject's own `counts` (see /api/dashboard/subjects
+  // -- they're program-wide, not really "this course's" the way a book is,
+  // same treatment as Programs & Export and ProgramJournalsPanel). Summed
+  // in here separately, once per program actually in view, instead of once
+  // per subject Match happened to attach them to -- the same journal
+  // program-wide scoping used for `programScoped`/`validProgramIds` above.
+  const journalProgramIds = programId
+    ? [Number(programId)]
+    : (validProgramIds ? Array.from(validProgramIds) : programs.map((p) => p.id));
+  const journalByType = RESOURCE_TYPES.filter((rt) => rt.kind === "journal").reduce<Record<ResourceTypeId, { titles: number; volumes: number }>>((acc, rt) => {
+    let titles = 0, volumes = 0;
+    for (const pid of journalProgramIds) {
+      const v = journalTotals[pid]?.[rt.id];
+      if (v) { titles += v.titles; volumes += v.volumes; }
+    }
+    acc[rt.id] = { titles, volumes };
+    return acc;
+  }, {} as Record<ResourceTypeId, { titles: number; volumes: number }>);
+  const journalTitleTotal = Object.values(journalByType).reduce((a, v) => a + v.titles, 0);
+  const journalVolumeTotal = Object.values(journalByType).reduce((a, v) => a + v.volumes, 0);
+
   const summaryPrograms = new Set(displaySubjects.map((s) => s.program_id)).size;
   const summarySubjects = displaySubjects.length;
-  const summaryTitles = displaySubjects.reduce((a, s) => a + s.total_titles, 0);
-  const summaryVolumes = displaySubjects.reduce((a, s) => a + s.total_volumes, 0);
+  const summaryTitles = displaySubjects.reduce((a, s) => a + s.total_titles, 0) + journalTitleTotal;
+  const summaryVolumes = displaySubjects.reduce((a, s) => a + s.total_volumes, 0) + journalVolumeTotal;
   const byType = RESOURCE_TYPES.reduce<Record<ResourceTypeId, number>>((acc, rt) => {
-    acc[rt.id] = displaySubjects.reduce((a, s) => a + (s.counts[rt.id] ?? 0), 0);
+    acc[rt.id] = rt.kind === "journal"
+      ? (journalByType[rt.id]?.titles ?? 0)
+      : displaySubjects.reduce((a, s) => a + (s.counts[rt.id] ?? 0), 0);
     return acc;
   }, {} as Record<ResourceTypeId, number>);
   const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);

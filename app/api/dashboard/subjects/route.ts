@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
-import type { ResourceTypeId } from "@/lib/resources";
+import { RESOURCE_BY_ID, type ResourceTypeId } from "@/lib/resources";
 import { yearInRange } from "@/lib/years";
 import { getUserPermissions } from "@/lib/permissions";
 import { getAllowedProgramIds } from "@/lib/campus-scope";
@@ -21,6 +21,15 @@ export type SubjectSummaryRow = {
   total_titles: number;
   total_volumes: number;
 };
+
+/** Per program, per journal type: how many distinct journals and how many
+ *  volumes -- deduplicated (a journal matched to several subjects in the
+ *  same program still counts once), matching how Programs & Export and
+ *  ProgramJournalsPanel already count them. Journals aren't in any
+ *  subject's own `counts` (see below) since they're not really "this
+ *  course's" the way a book is; the caller sums this in separately, once
+ *  per program in view, instead of once per subject. */
+export type JournalTotals = Record<number, Partial<Record<ResourceTypeId, { titles: number; volumes: number }>>>;
 
 export async function GET(req: Request) {
   try {
@@ -64,45 +73,76 @@ export async function GET(req: Request) {
     );
 
     if (!subjects.length) {
-      return NextResponse.json({ subjects: [] });
+      return NextResponse.json({ subjects: [], journalTotals: {} });
     }
 
     // Programs map for name lookup.
     const { data: programRows } = await db.from("programs").select("id, name");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
 
-    // Assignments with title format, campus, copies, year.
-    type AssignRow = { subject_id: number; titles: { format: string; campus: string; copies: number; year: string } | null };
+    // Assignments with title format, campus, copies, year. `titles.id` is
+    // needed (not just format) to dedup a journal matched to several
+    // subjects in the same program down to one.
+    type AssignRow = { subject_id: number; titles: { id: number; format: string; campus: string; copies: number; year: string } | null };
     const subjectIds = subjects.map((s) => s.id);
     const assignments: AssignRow[] = [];
     for (let i = 0; i < subjectIds.length; i += 200) {
       const chunk = subjectIds.slice(i, i + 200);
       const rows = await pageThrough<AssignRow>(
         (from, to) => db.from("assignments")
-          .select("subject_id, titles(format, campus, copies, year)")
+          .select("subject_id, titles(id, format, campus, copies, year)")
           .in("subject_id", chunk)
           .range(from, to) as unknown as PromiseLike<{ data: AssignRow[] | null; error: { message: string } | null }>,
       );
       assignments.push(...rows);
     }
 
-    // Aggregate per subject.
+    const programBySubject = new Map(subjects.map((s) => [s.id, s.program_id]));
+
+    // Aggregate per subject (books) and per program (journals, deduplicated).
     const countMap = new Map<number, Record<string, number>>();
     const volumeMap = new Map<number, number>();
+    const journalMap = new Map<number, Map<ResourceTypeId, { titleIds: Set<number>; volumes: number }>>();
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
-      // Campus filter: printed types must match (or campus filter is empty).
-      const isCampusScoped = t.format === "book_printed" || t.format === "journal_printed";
-      if (isCampusScoped && campus && t.campus !== campus) continue;
       if (!yearInRange(t.year, minYear, maxYear)) continue;
+
+      // Journals are program-wide, not tied to one course (a subscription
+      // covers the whole program) -- Programs & Export and
+      // ProgramJournalsPanel both already show them once, deduplicated, at
+      // the program level instead of under whichever subjects Match
+      // happened to attach them to. Folding them into each matched
+      // subject's own total here too double- (or many-times-) counted the
+      // same subscription and made this table disagree with those views
+      // for any program with journal matches -- so they're tallied
+      // separately here, once per program, and the caller adds that in.
+      if (RESOURCE_BY_ID[t.format as ResourceTypeId]?.kind === "journal") {
+        const isCampusScopedJournal = t.format === "journal_printed";
+        if (isCampusScopedJournal && campus && t.campus !== campus) continue;
+        const pid = programBySubject.get(a.subject_id);
+        if (pid == null) continue;
+        if (!journalMap.has(pid)) journalMap.set(pid, new Map());
+        const byFormat = journalMap.get(pid)!;
+        const fmt = t.format as ResourceTypeId;
+        if (!byFormat.has(fmt)) byFormat.set(fmt, { titleIds: new Set(), volumes: 0 });
+        const agg = byFormat.get(fmt)!;
+        if (!agg.titleIds.has(t.id)) {
+          agg.titleIds.add(t.id);
+          agg.volumes += isCampusScopedJournal ? Math.max(1, t.copies ?? 1) : 1;
+        }
+        continue;
+      }
+
+      const isCampusScopedPrintedBook = t.format === "book_printed";
+      if (isCampusScopedPrintedBook && campus && t.campus !== campus) continue;
 
       const sid = a.subject_id;
       if (!countMap.has(sid)) countMap.set(sid, {});
       const c = countMap.get(sid)!;
       c[t.format] = (c[t.format] ?? 0) + 1;
 
-      const vol = isCampusScoped ? Math.max(1, t.copies ?? 1) : 1;
+      const vol = isCampusScopedPrintedBook ? Math.max(1, t.copies ?? 1) : 1;
       volumeMap.set(sid, (volumeMap.get(sid) ?? 0) + vol);
     }
 
@@ -123,7 +163,15 @@ export async function GET(req: Request) {
       };
     });
 
-    return NextResponse.json({ subjects: rows });
+    const journalTotals: JournalTotals = {};
+    for (const [pid, byFormat] of journalMap) {
+      journalTotals[pid] = {};
+      for (const [fmt, agg] of byFormat) {
+        journalTotals[pid][fmt] = { titles: agg.titleIds.size, volumes: agg.volumes };
+      }
+    }
+
+    return NextResponse.json({ subjects: rows, journalTotals });
   } catch (err) {
     const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err));
     return NextResponse.json({ error: msg }, { status: 500 });

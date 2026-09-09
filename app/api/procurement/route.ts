@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { serviceClient } from "@/lib/supabase";
 import { pageThrough } from "@/lib/paging";
-import type { ResourceTypeId } from "@/lib/resources";
+import { RESOURCE_BY_ID, type ResourceTypeId } from "@/lib/resources";
 import { RECENCY_YEARS, countsTowardBookCompliance, isPrintedBook, evaluateBookCompliance } from "@/lib/compliance";
+import type { JournalTotals } from "@/app/api/dashboard/subjects/route";
 import { getUserPermissions } from "@/lib/permissions";
 import { getAllowedProgramIds } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
@@ -72,36 +73,63 @@ export async function GET(req: Request) {
       },
     );
 
-    if (!subjects.length) return NextResponse.json({ rows: [] });
+    if (!subjects.length) return NextResponse.json({ rows: [], journalTotals: {} });
 
     const { data: programRows } = await db.from("programs").select("id, name, cost_per_title");
     const programMap = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.id, p.name]));
     const programCostMap = new Map((programRows ?? []).map((p: { id: number; cost_per_title: number | null }) => [p.id, p.cost_per_title]));
 
     // Include year in title fetch so we can apply recency filter
-    type AssignRow = { subject_id: number; titles: { format: string; campus: string; copies: number; year: string | null } | null };
+    type AssignRow = { subject_id: number; titles: { id: number; format: string; campus: string; copies: number; year: string | null } | null };
     const subjectIds = subjects.map((s) => s.id);
     const assignments: AssignRow[] = [];
     for (let i = 0; i < subjectIds.length; i += 200) {
       const chunk = subjectIds.slice(i, i + 200);
       const rows = await pageThrough<AssignRow>(
         (from, to) => db.from("assignments")
-          .select("subject_id, titles(format, campus, copies, year)")
+          .select("subject_id, titles(id, format, campus, copies, year)")
           .in("subject_id", chunk)
           .range(from, to) as unknown as PromiseLike<{ data: AssignRow[] | null; error: { message: string } | null }>,
       );
       assignments.push(...rows);
     }
 
+    const programBySubject = new Map(subjects.map((s) => [s.id, s.program_id]));
+
     const countMap = new Map<number, Record<string, number>>();
     const recentCountMap = new Map<number, number>(); // recent printed+ebook titles (journals/repository excluded)
     const recentPrintedCountMap = new Map<number, number>(); // of those, printed books specifically
     const volumeMap = new Map<number, number>();
+    // Journals are program-wide, not tied to one course -- Programs & Export
+    // and ProgramJournalsPanel (already shown on this same tab) both count
+    // them once per program, deduplicated, instead of once per subject Match
+    // happened to attach them to. Tallied separately here for the same
+    // reason as /api/dashboard/subjects, so `total_titles` here means the
+    // same thing it does everywhere else this data is shown.
+    const journalMap = new Map<number, Map<ResourceTypeId, { titleIds: Set<number>; volumes: number }>>();
 
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
-      const isCampusScoped = t.format === "book_printed" || t.format === "journal_printed";
+
+      if (RESOURCE_BY_ID[t.format as ResourceTypeId]?.kind === "journal") {
+        const isCampusScopedJournal = t.format === "journal_printed";
+        if (isCampusScopedJournal && campus && t.campus !== campus) continue;
+        const pid = programBySubject.get(a.subject_id);
+        if (pid == null) continue;
+        if (!journalMap.has(pid)) journalMap.set(pid, new Map());
+        const byFormat = journalMap.get(pid)!;
+        const fmt = t.format as ResourceTypeId;
+        if (!byFormat.has(fmt)) byFormat.set(fmt, { titleIds: new Set(), volumes: 0 });
+        const agg = byFormat.get(fmt)!;
+        if (!agg.titleIds.has(t.id)) {
+          agg.titleIds.add(t.id);
+          agg.volumes += isCampusScopedJournal ? Math.max(1, t.copies ?? 1) : 1;
+        }
+        continue;
+      }
+
+      const isCampusScoped = t.format === "book_printed";
       if (isCampusScoped && campus && t.campus !== campus) continue;
 
       const sid = a.subject_id;
@@ -120,6 +148,14 @@ export async function GET(req: Request) {
         if (isPrintedBook(t.format)) {
           recentPrintedCountMap.set(sid, (recentPrintedCountMap.get(sid) ?? 0) + 1);
         }
+      }
+    }
+
+    const journalTotals: JournalTotals = {};
+    for (const [pid, byFormat] of journalMap) {
+      journalTotals[pid] = {};
+      for (const [fmt, agg] of byFormat) {
+        journalTotals[pid][fmt] = { titles: agg.titleIds.size, volumes: agg.volumes };
       }
     }
 
@@ -182,7 +218,7 @@ export async function GET(req: Request) {
       };
     });
 
-    return NextResponse.json({ rows });
+    return NextResponse.json({ rows, journalTotals });
   } catch (err) {
     const msg = err instanceof Error ? err.message : ((err as { message?: string })?.message ?? String(err));
     return NextResponse.json({ error: msg }, { status: 500 });
