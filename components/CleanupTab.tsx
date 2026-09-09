@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import type { SubjectSearchRow } from "@/app/api/subjects/search/route";
+import type { DuplicateSubjectGroup } from "@/app/api/subjects/duplicates/route";
 
 type ProgramSummary = { id: number; name: string; subjects: number };
 type ProgramGroup = { normalized: string; programs: ProgramSummary[] };
@@ -10,6 +11,7 @@ export default function CleanupTab() {
   return (
     <>
       <SubjectFinder />
+      <DuplicateCoursesCleanup />
       <ProgramsCleanup />
     </>
   );
@@ -158,6 +160,169 @@ function SubjectFinder() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Scans for two courses in the same program that could confuse Match or
+ *  the Validate Matches CSV workflow: a shared course code (a real bug --
+ *  re-uploading a reviewed CSV keys off course_code, so two subjects
+ *  sharing one silently collapse to whichever the lookup saw last) and,
+ *  separately, a shared title under different codes (milder, but usually
+ *  a data-entry accident worth catching too). Reuses /api/subjects/merge
+ *  (one course at a time) to fold the extras into whichever one the admin
+ *  picks to keep. */
+function DuplicateCoursesCleanup() {
+  const [codeGroups, setCodeGroups] = useState<DuplicateSubjectGroup[]>([]);
+  const [titleGroups, setTitleGroups] = useState<DuplicateSubjectGroup[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/subjects/duplicates");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setCodeGroups(data.codeGroups ?? []);
+      setTitleGroups(data.titleGroups ?? []);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function merge(keepId: number, dropIds: number[]) {
+    if (!confirm(
+      `Merge ${dropIds.length} course(s) into the chosen one?\n` +
+      `All title matches (locked and auto-matched) move over, then the duplicates are deleted.`,
+    )) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      let totalMoved = 0;
+      for (const dropId of dropIds) {
+        const res = await apiFetch("/api/subjects/merge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_id: dropId, target_id: keepId }),
+        });
+        const text = await res.text();
+        let data: { error?: string; moved?: number } = {};
+        try { data = JSON.parse(text); } catch { /* non-JSON response -- keep raw text */ }
+        if (!res.ok || data.error) throw new Error(data.error || text || `HTTP ${res.status}`);
+        totalMoved += data.moved ?? 0;
+      }
+      await load();
+      alert(`Merged. Moved ${totalMoved} assignment(s).`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(msg);
+      alert(`Merge failed: ${msg}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const total = codeGroups.length + titleGroups.length;
+
+  return (
+    <div className="card">
+      <h2 className="text-psu font-semibold mb-2">Duplicate Courses</h2>
+      <p className="text-xs text-slate-600 mb-3">
+        Courses in the same program that share a code, or share a title under different codes -- either can
+        confuse Match or silently drop one of them from a re-uploaded Validate Matches CSV, since that review
+        keys off the course code. Pick which one to keep and merge the others into it; the course with the
+        most assignments is preselected.
+      </p>
+      <div className="flex gap-2 mb-2">
+        <button className="btn-outline text-xs" onClick={load} disabled={loading || busy}>
+          {loading ? "Scanning…" : "Rescan"}
+        </button>
+      </div>
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {!loading && total === 0 && (
+        <p className="text-sm text-slate-500">No duplicate courses found.</p>
+      )}
+      {codeGroups.length > 0 && (
+        <>
+          <h3 className="text-sm font-semibold text-red-700 mt-2 mb-1">Same course code ({codeGroups.length})</h3>
+          <ul className="space-y-3 mb-3">
+            {codeGroups.map((g) => (
+              <DuplicateSubjectGroupRow key={`code-${g.program_id}-${g.key}`} group={g} onMerge={merge} busy={busy} />
+            ))}
+          </ul>
+        </>
+      )}
+      {titleGroups.length > 0 && (
+        <>
+          <h3 className="text-sm font-semibold text-amber-700 mt-2 mb-1">Same title, different code ({titleGroups.length})</h3>
+          <ul className="space-y-3">
+            {titleGroups.map((g) => (
+              <DuplicateSubjectGroupRow key={`title-${g.program_id}-${g.key}`} group={g} onMerge={merge} busy={busy} />
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DuplicateSubjectGroupRow({
+  group, onMerge, busy,
+}: {
+  group: DuplicateSubjectGroup;
+  onMerge: (keepId: number, dropIds: number[]) => void;
+  busy: boolean;
+}) {
+  const [keep, setKeep] = useState<number>(group.subjects[0]?.id ?? 0);
+
+  return (
+    <li className="border border-slate-200 rounded p-2 text-sm">
+      <div className="font-medium mb-1">{group.program} — {group.subjects.length} entries</div>
+      <table className="w-full text-xs">
+        <thead className="text-slate-500">
+          <tr>
+            <th className="text-left p-1 w-10">Keep</th>
+            <th className="text-left p-1">Code</th>
+            <th className="text-left p-1">Title</th>
+            <th className="text-left p-1 w-28">Assignments</th>
+            <th className="text-left p-1 w-16">ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {group.subjects.map((s) => (
+            <tr key={s.id} className="border-t border-slate-100">
+              <td className="p-1">
+                <input
+                  type="radio"
+                  name={`keep-${group.program_id}-${group.key}`}
+                  checked={keep === s.id}
+                  onChange={() => setKeep(s.id)}
+                />
+              </td>
+              <td className="p-1">{s.course_code || <span className="text-slate-400">(none)</span>}</td>
+              <td className="p-1">{s.course_title}</td>
+              <td className="p-1">{s.total_assignments} total{s.locked_assignments > 0 && `, ${s.locked_assignments} locked`}</td>
+              <td className="p-1 text-slate-400">{s.id}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-2">
+        <button
+          className="btn text-xs"
+          disabled={busy || !keep}
+          onClick={() => onMerge(keep, group.subjects.filter((s) => s.id !== keep).map((s) => s.id))}
+        >
+          Merge other {group.subjects.length - 1} into keeper
+        </button>
+      </div>
+    </li>
   );
 }
 
