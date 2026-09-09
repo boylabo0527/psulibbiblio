@@ -90,6 +90,10 @@ export async function POST(req: Request) {
   const topKDigital = topKDigitalParam != null ? parseInt(topKDigitalParam, 10) : undefined;
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
+  // Narrows a run to exactly one course -- e.g. re-matching a single
+  // subject whose list still needs work without re-running (and
+  // re-scoring) every other subject in the program that's already fine.
+  const subjectId = url.searchParams.get("subject_id");
   // Set by the client when continuing a run that paused for time -- see
   // the "paused" phase below.
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
@@ -113,6 +117,19 @@ export async function POST(req: Request) {
       });
     }
   }
+  if (subjectId) {
+    const { data: subjRow } = await permsDb.from("subjects").select("id, program_id").eq("id", Number(subjectId)).maybeSingle();
+    if (!subjRow) {
+      return new Response(JSON.stringify({ error: "Course not found." }), {
+        status: 404, headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (allowedProgramIds && !allowedProgramIds.has(subjRow.program_id!)) {
+      return new Response(JSON.stringify({ error: "This course isn't offered at any of your assigned campuses." }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
 
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
@@ -121,13 +138,14 @@ export async function POST(req: Request) {
       db, "subjects",
       "id, program_id, course_code, course_title, description",
       "subjects", send,
-      programId ? { col: "program_id", value: Number(programId) } : undefined,
+      subjectId ? { col: "id", value: Number(subjectId) }
+        : programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    // No specific program requested (running "all programs") and the
-    // caller is campus-restricted -- narrow to only their allowed
-    // programs' subjects. When a specific program_id WAS requested, it's
-    // already been verified above and fetchAllWithProgress filtered to it.
-    const subjects = !programId && allowedProgramIds
+    // No specific program or course requested (running "all programs")
+    // and the caller is campus-restricted -- narrow to only their allowed
+    // programs' subjects. A specific program_id or subject_id has already
+    // been verified above and fetchAllWithProgress filtered to it.
+    const subjects = !programId && !subjectId && allowedProgramIds
       ? fetchedSubjects.filter((s) => allowedProgramIds!.has(s.program_id!))
       : fetchedSubjects;
     if (!subjects.length) {
@@ -319,8 +337,8 @@ export async function POST(req: Request) {
     });
     await logActivity(db, {
       userEmail, action: "match_run",
-      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
-      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
+      summary: `Ran matching${subjectId ? " (one course)" : programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
+      detail: { program_id: programId ?? null, subject_id: subjectId ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
     });
   });
 

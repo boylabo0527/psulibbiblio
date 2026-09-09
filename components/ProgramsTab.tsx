@@ -1371,6 +1371,13 @@ function BulkAddPrinted({
         throw new Error(j.error || `HTTP ${res.status}`);
       }
       let done = false;
+      let streamErr: string | null = null;
+      // consumeNdjson wraps each onEvent call in its own try/catch (to
+      // skip a malformed line, not to catch application errors) -- a throw
+      // from in here is silently swallowed, not propagated to the outer
+      // catch below. So on an "error" phase, just record it and check it
+      // once the stream has actually finished, same as everywhere else
+      // this app reads an ndjson stream (see e.g. MatchTab.tsx).
       await consumeNdjson<BulkAddPrintedEvent>(res, (ev) => {
         if (ev.phase === "parsing") setPhase("Reading file…");
         else if (ev.phase === "parsed") setPhase(`Parsed ${ev.total.toLocaleString()} rows…`);
@@ -1385,8 +1392,9 @@ function BulkAddPrinted({
             + (ev.alreadyAssigned > 0 ? `, ${ev.alreadyAssigned} were already on this course` : "")
             + ").",
           );
-        } else if (ev.phase === "error") { throw new Error(ev.error); }
+        } else if (ev.phase === "error") { streamErr = ev.error; }
       });
+      if (streamErr) throw new Error(streamErr);
       if (done) onReload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
