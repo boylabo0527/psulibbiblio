@@ -1,11 +1,121 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import type { SubjectSearchRow } from "@/app/api/subjects/search/route";
 
 type ProgramSummary = { id: number; name: string; subjects: number };
 type ProgramGroup = { normalized: string; programs: ProgramSummary[] };
 
 export default function CleanupTab() {
-  return <ProgramsCleanup />;
+  return (
+    <>
+      <SubjectFinder />
+      <ProgramsCleanup />
+    </>
+  );
+}
+
+/** Diagnostic for "Match said N titles were assigned but they don't show up
+ *  anywhere" -- the usual cause is two subjects with the same or similar
+ *  name (an accidental double upload, or the same course listed under two
+ *  programs), where a run against one doesn't show up under the other.
+ *  Searches by course code/title and shows each match's program, id, and a
+ *  live breakdown of what's actually in `assignments` for it right now, so
+ *  that can be confirmed (or ruled out) without needing database access. */
+function SubjectFinder() {
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState<SubjectSearchRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [searched, setSearched] = useState(false);
+
+  async function search() {
+    if (!q.trim()) { setRows([]); setSearched(false); return; }
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/subjects/search?q=${encodeURIComponent(q.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setRows(data.subjects ?? []);
+      setSearched(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 className="text-psu font-semibold mb-1">Find a Subject</h2>
+      <p className="text-xs text-slate-600 mb-3">
+        Search by course code or title. Shows every matching subject -- across every program -- with its own live
+        count of what&apos;s actually assigned to it (auto-matched vs. locked, by format). If a course name shows up
+        more than once here, that&apos;s almost always why a Match run &quot;succeeded&quot; but the results don&apos;t
+        appear where you expected: the run and the page you were looking at are two different subjects.
+      </p>
+      <div className="flex gap-2 mb-3">
+        <input
+          className="input text-sm flex-1 max-w-md"
+          placeholder="e.g. Arnis, PATH Fit-DEFTAC 2…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") search(); }}
+        />
+        <button className="btn text-xs" disabled={loading} onClick={search}>
+          {loading ? "Searching…" : "Search"}
+        </button>
+      </div>
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {searched && !loading && rows.length === 0 && !err && (
+        <p className="text-sm text-slate-500">No subjects matched.</p>
+      )}
+      {rows.length > 1 && (
+        <p className="text-xs text-amber-700 mb-2">
+          {rows.length} subjects matched &quot;{q}&quot; -- if these are meant to be the same course, that&apos;s the
+          likely cause.
+        </p>
+      )}
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-slate-500">
+              <tr className="border-b border-slate-200 text-left">
+                <th className="py-1 pr-2">Subject ID</th>
+                <th className="py-1 pr-2">Program</th>
+                <th className="py-1 pr-2">Code</th>
+                <th className="py-1 pr-2">Title</th>
+                <th className="py-1 pr-2">Assignments right now</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={s.subject_id} className="border-b border-slate-100 align-top">
+                  <td className="py-1.5 pr-2 text-slate-400">{s.subject_id}</td>
+                  <td className="py-1.5 pr-2">{s.program}</td>
+                  <td className="py-1.5 pr-2">{s.course_code}</td>
+                  <td className="py-1.5 pr-2">{s.course_title}</td>
+                  <td className="py-1.5 pr-2">
+                    {s.assignments.length === 0 ? (
+                      <span className="text-slate-400">none</span>
+                    ) : (
+                      <ul>
+                        {s.assignments.map((a, i) => (
+                          <li key={i}>
+                            {a.format}{a.manual ? " (locked)" : ""}: <strong>{a.count}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ProgramsCleanup() {
