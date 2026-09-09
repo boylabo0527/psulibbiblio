@@ -2,11 +2,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
+import { consumeNdjson } from "@/lib/streaming";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { usePermissions, canEdit } from "@/lib/use-permissions";
 import SearchableSelect from "@/components/SearchableSelect";
 import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { ValidateCsvPreview, ValidateCsvPreviewRow } from "@/app/api/programs/validate-csv/route";
+import type { ValidateApplyEvent } from "@/app/api/programs/validate-csv/apply/route";
+import type { BulkLockEvent } from "@/app/api/match/lock/bulk/route";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -190,11 +193,12 @@ export default function ProgramsTab() {
   }
 
   async function bulkLockAssignments(subjectId: number, titleIds: number[]) {
-    await apiFetch("/api/match/lock/bulk", {
+    const res = await apiFetch("/api/match/lock/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items: titleIds.map((title_id) => ({ subject_id: subjectId, title_id })), lock: true }),
     });
+    await consumeNdjson<BulkLockEvent>(res, () => {});
     load();
   }
 
@@ -382,6 +386,7 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
   const [result, setResult] = useState<string | null>(null);
   const [preview, setPreview] = useState<ValidateCsvPreview | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null);
 
   const rowKey = (r: ValidateCsvPreviewRow) => `${r.subject_id}:${r.title_id}`;
 
@@ -427,15 +432,27 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
     if (!confirm(`Remove ${removals.length} title-course match${removals.length === 1 ? "" : "es"} not confirmed by this upload?`)) return;
     setApplying(true);
     setErr(null);
+    const courseCount = new Set(removals.map((r) => r.subject_id)).size;
+    setProgress({ label: "Removing", done: 0, total: courseCount });
     try {
       const res = await apiFetch("/api/programs/validate-csv/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ removals: removals.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })) }),
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setResult(`Removed ${j.removed} match${j.removed === 1 ? "" : "es"}.`);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let removed = 0;
+      let streamErr: string | null = null;
+      await consumeNdjson<ValidateApplyEvent>(res, (ev) => {
+        if (ev.phase === "removing") setProgress({ label: "Removing", done: ev.done, total: ev.total });
+        else if (ev.phase === "done") removed = ev.removed;
+        else if (ev.phase === "error") streamErr = ev.error;
+      });
+      if (streamErr) throw new Error(streamErr);
+      setResult(`Removed ${removed} match${removed === 1 ? "" : "es"}.`);
       setPreview(null);
       setFile(null);
       onApplied();
@@ -443,6 +460,7 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setApplying(false);
+      setProgress(null);
     }
   }
 
@@ -450,6 +468,8 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
     if (!preview || !preview.confirmed.length) return;
     setLocking(true);
     setErr(null);
+    const courseCount = new Set(preview.confirmed.map((r) => r.subject_id)).size;
+    setProgress({ label: "Locking", done: 0, total: courseCount });
     try {
       const res = await apiFetch("/api/match/lock/bulk", {
         method: "POST",
@@ -459,9 +479,19 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
           lock: true,
         }),
       });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setResult(`Locked ${j.updated} confirmed match${j.updated === 1 ? "" : "es"} -- protected from future Match runs.`);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let updated = 0;
+      let streamErr: string | null = null;
+      await consumeNdjson<BulkLockEvent>(res, (ev) => {
+        if (ev.phase === "locking") setProgress({ label: "Locking", done: ev.done, total: ev.total });
+        else if (ev.phase === "done") updated = ev.updated;
+        else if (ev.phase === "error") streamErr = ev.error;
+      });
+      if (streamErr) throw new Error(streamErr);
+      setResult(`Locked ${updated} confirmed match${updated === 1 ? "" : "es"} -- protected from future Match runs.`);
       setPreview(null);
       setFile(null);
       onApplied();
@@ -469,6 +499,7 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLocking(false);
+      setProgress(null);
     }
   }
 
@@ -495,6 +526,19 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
           {checking ? "Checking…" : "Check"}
         </button>
       </div>
+      {progress && (
+        <div className="mb-2">
+          <div className="flex justify-between text-xs text-slate-600 mb-1">
+            <span>{progress.label}… ({progress.done.toLocaleString()} / {Math.max(progress.total, 1).toLocaleString()} course{progress.total === 1 ? "" : "s"})</span>
+          </div>
+          <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden">
+            <div
+              className="h-full bg-psu transition-all"
+              style={{ width: `${Math.max(8, progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 8)}%` }}
+            />
+          </div>
+        </div>
+      )}
       {err && <p className="text-red-700 text-xs mb-2">{err}</p>}
       {result && <p className="text-emerald-700 text-xs mb-2">{result}</p>}
       {preview && (

@@ -6,6 +6,19 @@ import { isProgramInScope } from "@/lib/campus-scope";
 import { parseValidationRows, type ValidationRow } from "@/lib/parsers";
 import { standardTitleMatches } from "@/lib/standard-titles";
 import { errorMessage } from "@/lib/errors";
+import { pageThrough } from "@/lib/paging";
+
+// Supabase/PostgREST caps a single select at 1000 rows by default. A
+// program with enough courses and assigned titles can blow past that on
+// both queries below -- previously neither was paginated, so whichever
+// rows landed past row 1000 (an arbitrary cut, not "the last courses")
+// silently vanished from the comparison: their courses looked like the
+// upload had "no effect" even though the CSV rows for them were fine.
+// pageThrough re-fetches in 1000-row pages until a short page ends it, and
+// subject ids are additionally chunked (200 at a time, matching the same
+// pattern in /api/standard-titles/compare) to keep the `.in(...)` filter
+// itself from growing unbounded on a program with many courses.
+const SUBJECT_CHUNK = 200;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,10 +92,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No usable rows found -- need at least Course Code and Title columns." }, { status: 400 });
     }
 
-    const { data: subjects, error: subjErr } = await db.from("subjects")
-      .select("id, course_code, course_title").eq("program_id", programId);
-    if (subjErr) throw subjErr;
-    const subjectByCode = new Map((subjects ?? [])
+    type SubjectRow = { id: number; course_code: string | null; course_title: string };
+    const subjects = await pageThrough<SubjectRow>((from, to) =>
+      db.from("subjects")
+        .select("id, course_code, course_title").eq("program_id", programId)
+        .range(from, to) as unknown as PromiseLike<{ data: SubjectRow[] | null; error: { message: string } | null }>,
+    );
+    const subjectByCode = new Map(subjects
       .filter((s) => (s.course_code ?? "").trim())
       .map((s) => [s.course_code!.trim().toLowerCase(), s]));
 
@@ -104,15 +120,29 @@ export async function POST(req: Request) {
     if (!subjectIds.length) return NextResponse.json(preview);
 
     type Joined = { subject_id: number; title_id: number; manual: number; titles: { id: number; title: string; isbn: string } };
-    const { data: assignments, error: assignErr } = await db.from("assignments")
-      .select("subject_id, title_id, manual, titles!inner(id, title, isbn)")
-      .in("subject_id", subjectIds) as unknown as { data: Joined[] | null; error: { message: string } | null };
-    if (assignErr) throw new Error(assignErr.message);
+    const assignments: Joined[] = [];
+    for (let i = 0; i < subjectIds.length; i += SUBJECT_CHUNK) {
+      const chunk = subjectIds.slice(i, i + SUBJECT_CHUNK);
+      const rows = await pageThrough<Joined>((from, to) =>
+        db.from("assignments")
+          .select("subject_id, title_id, manual, titles!inner(id, title, isbn)")
+          .in("subject_id", chunk)
+          .range(from, to) as unknown as PromiseLike<{ data: Joined[] | null; error: { message: string } | null }>,
+      );
+      assignments.push(...rows);
+    }
 
+    const assignmentsBySubject = new Map<number, Joined[]>();
+    for (const a of assignments) {
+      if (!assignmentsBySubject.has(a.subject_id)) assignmentsBySubject.set(a.subject_id, []);
+      assignmentsBySubject.get(a.subject_id)!.push(a);
+    }
+
+    const subjectById = new Map(subjects.map((s) => [s.id, s]));
     for (const subjectId of subjectIds) {
-      const subj = subjects!.find((s) => s.id === subjectId)!;
+      const subj = subjectById.get(subjectId)!;
       const csvRows = rowsBySubject.get(subjectId)!;
-      const current = (assignments ?? []).filter((a) => a.subject_id === subjectId);
+      const current = assignmentsBySubject.get(subjectId) ?? [];
       const matchedRowIdx = new Set<number>();
 
       for (const a of current) {
