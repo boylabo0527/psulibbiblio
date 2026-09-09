@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
 import { consumeNdjson } from "@/lib/streaming";
+import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { usePermissions, canEdit } from "@/lib/use-permissions";
 import SearchableSelect from "@/components/SearchableSelect";
@@ -10,6 +11,7 @@ import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { ValidateCsvPreview, ValidateCsvPreviewRow } from "@/app/api/programs/validate-csv/route";
 import type { ValidateApplyEvent } from "@/app/api/programs/validate-csv/apply/route";
 import type { BulkLockEvent } from "@/app/api/match/lock/bulk/route";
+import type { BulkAddPrintedEvent } from "@/app/api/match/add-printed/bulk/route";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -930,7 +932,7 @@ function SubjectBlock({
           </>
         )}
       </div>
-      <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
+      <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} onReload={onReload} />
     </div>
   );
 }
@@ -1224,12 +1226,15 @@ function EditableTitleRow({
 }
 
 function AddBook({
-  subjectId, programCampus, onAdded,
-}: { subjectId: number; programCampus: string; onAdded: (titleId: number) => void }) {
+  subjectId, programCampus, onAdded, onReload,
+}: { subjectId: number; programCampus: string; onAdded: (titleId: number) => void; onReload: () => void }) {
   const [q, setQ] = useState("");
   const [format, setFormat] = useState<"" | ResourceTypeId>("");
   const [hits, setHits] = useState<Title[]>([]);
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [addingMany, setAddingMany] = useState(false);
+  const [bulkPrintedOpen, setBulkPrintedOpen] = useState(false);
 
   async function search() {
     if (!q.trim()) { setHits([]); return; }
@@ -1238,12 +1243,44 @@ function AddBook({
     if (programCampus) params.set("campus", programCampus);
     const data = await apiFetch(`/api/titles/search?${params}`).then((r) => r.json());
     setHits(data.titles ?? []);
+    setSelected(new Set());
+  }
+
+  function toggleSelect(titleId: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(titleId)) next.delete(titleId);
+      else next.add(titleId);
+      return next;
+    });
+  }
+
+  async function addSelected() {
+    if (selected.size === 0) return;
+    setAddingMany(true);
+    try {
+      await Promise.all(Array.from(selected).map((title_id) =>
+        apiFetch("/api/match/override", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject_id: subjectId, title_id, keep: true }),
+        }),
+      ));
+      setSelected(new Set());
+      onReload();
+    } finally {
+      setAddingMany(false);
+    }
   }
 
   return (
     <div className="mt-2">
       {!open ? (
-        <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add resource to {subjectId}</button>
+        <div className="flex gap-3">
+          <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add resource to {subjectId}</button>
+          <button className="text-xs text-psu" onClick={() => { setBulkPrintedOpen(true); setOpen(true); }}>
+            + bulk add printed books
+          </button>
+        </div>
       ) : (
         <div className="bg-slate-50 rounded p-2">
           <div className="flex flex-wrap gap-2 mb-2">
@@ -1254,23 +1291,140 @@ function AddBook({
               {RESOURCE_TYPES.map((t) => <option key={t.id} value={t.id}>{t.uiLabel}</option>)}
             </select>
             <button className="btn text-xs" onClick={search}>Search</button>
+            <button className="text-xs text-slate-500 underline" onClick={() => setBulkPrintedOpen((v) => !v)}>
+              {bulkPrintedOpen ? "Hide bulk add printed books" : "Bulk add printed books…"}
+            </button>
             <button className="btn-outline text-xs" onClick={() => setOpen(false)}>Close</button>
           </div>
+          {bulkPrintedOpen && (
+            <BulkAddPrinted subjectId={subjectId} programCampus={programCampus} onReload={onReload} />
+          )}
           <ul className="text-xs max-h-40 overflow-auto">
             {hits.map((t) => (
-              <li key={t.id} className="py-0.5 flex justify-between gap-2">
-                <span>
-                  <span className="text-slate-500 mr-1">[{t.format}]</span>
-                  {t.author ? `${t.author} — ` : ""}{t.title}
-                  {t.year ? ` (${t.year})` : ""}
+              <li key={t.id} className="py-0.5 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5">
+                  <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                  <span>
+                    <span className="text-slate-500 mr-1">[{t.format}]</span>
+                    {t.author ? `${t.author} — ` : ""}{t.title}
+                    {t.year ? ` (${t.year})` : ""}
+                  </span>
                 </span>
                 <button className="text-psu underline" onClick={() => onAdded(t.id)}>add</button>
               </li>
             ))}
             {q && hits.length === 0 && <li className="text-slate-500 py-1">No matches.</li>}
           </ul>
+          {selected.size > 0 && (
+            <button className="btn text-xs mt-1" disabled={addingMany} onClick={addSelected}>
+              {addingMany ? "Adding…" : `Add ${selected.size} selected`}
+            </button>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Uploads a printed-books file (same shape as the main catalog upload:
+ *  Call No., Author, Title, Publisher, Year, Copies, optional Barcode) and
+ *  assigns every row straight to this course in one pass, instead of
+ *  uploading to the catalog separately and then searching + adding each
+ *  title by hand -- the workflow that made adding a whole reading list of
+ *  printed books tedious. */
+function BulkAddPrinted({
+  subjectId, programCampus, onReload,
+}: { subjectId: number; programCampus: string; onReload: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<string>("");
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function onFile(file: File) {
+    if (!programCampus) {
+      setErr("Select a campus above first -- printed books are tracked per campus.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    setProgress(null);
+    setPhase("Reading file…");
+    try {
+      let res: Response;
+      if (isSpreadsheet(file)) {
+        const rows = await parseSheetRows(file);
+        res = await apiFetch("/api/match/add-printed/bulk", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject_id: subjectId, campus: programCampus, rows, filename: file.name }),
+        });
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("subject_id", String(subjectId));
+        fd.append("campus", programCampus);
+        res = await apiFetch("/api/match/add-printed/bulk", { method: "POST", body: fd });
+      }
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let done = false;
+      await consumeNdjson<BulkAddPrintedEvent>(res, (ev) => {
+        if (ev.phase === "parsing") setPhase("Reading file…");
+        else if (ev.phase === "parsed") setPhase(`Parsed ${ev.total.toLocaleString()} rows…`);
+        else if (ev.phase === "deduping") setPhase(`Checking against catalog… ${ev.existing.toLocaleString()} scanned`);
+        else if (ev.phase === "inserting") { setPhase("Saving titles…"); setProgress({ done: ev.inserted + ev.skipped, total: ev.total }); }
+        else if (ev.phase === "assigning") { setPhase("Adding to course…"); setProgress({ done: ev.done, total: ev.total }); }
+        else if (ev.phase === "done") {
+          done = true;
+          setResult(
+            `${ev.assigned} title${ev.assigned === 1 ? "" : "s"} added to this course `
+            + `(${ev.inserted} new in the catalog, ${ev.updated} already there had copies updated`
+            + (ev.alreadyAssigned > 0 ? `, ${ev.alreadyAssigned} were already on this course` : "")
+            + ").",
+          );
+        } else if (ev.phase === "error") { throw new Error(ev.error); }
+      });
+      if (done) onReload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setPhase("");
+      setProgress(null);
+    }
+  }
+
+  return (
+    <div className="mb-2 p-2 border border-dashed border-slate-300 rounded">
+      <p className="text-xs text-slate-500 mb-1.5">
+        Upload a Printed Books file (same columns as the main catalog upload: Call No., Author, Title,
+        Publisher, Year, Copies, optional Barcode) to add many titles to this course at once, campus{" "}
+        <strong>{programCampus || "(select a campus above)"}</strong>. Titles already in the catalog get
+        matched by Call No. + Title + Author instead of duplicated.
+      </p>
+      <input
+        type="file" accept=".csv,.xlsx,.xls" disabled={busy}
+        className="text-xs"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }}
+      />
+      {busy && (
+        <div className="mt-1.5">
+          <p className="text-xs text-slate-600">
+            {phase}{progress && progress.total > 0 ? ` (${progress.done.toLocaleString()} / ${progress.total.toLocaleString()})` : ""}
+          </p>
+          <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden mt-0.5">
+            <div
+              className="h-full bg-psu transition-all"
+              style={{ width: `${progress && progress.total > 0 ? Math.max(8, Math.round((progress.done / progress.total) * 100)) : 15}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {err && <p className="text-red-700 text-xs mt-1">{err}</p>}
+      {result && <p className="text-emerald-700 text-xs mt-1">{result}</p>}
     </div>
   );
 }
