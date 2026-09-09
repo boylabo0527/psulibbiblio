@@ -100,6 +100,7 @@ function SubjectFinder() {
                 <th className="py-1 pr-2">Title</th>
                 <th className="py-1 pr-2">Assignments right now</th>
                 <th className="py-1 pr-2">Programs &amp; Export would show</th>
+                <th className="py-1 pr-2">Whole-program fetch (real page)</th>
               </tr>
             </thead>
             <tbody>
@@ -137,6 +138,16 @@ function SubjectFinder() {
                             <div>With &quot;{campus}&quot;: <strong>{s.visibleViaBibliography.withCampusFilter}</strong></div>
                           )}
                         </>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-2">
+                      {s.wholeProgram === null ? (
+                        <span className="text-slate-400">(only checked for the first 3 matches)</span>
+                      ) : (
+                        <div className={s.wholeProgram.thisSubjectCount !== s.visibleViaBibliography.noCampusFilter ? "text-red-700 font-medium" : ""}>
+                          {s.wholeProgram.subjectsInProgram.toLocaleString()} subjects in program, this one:{" "}
+                          <strong>{s.wholeProgram.thisSubjectCount}</strong>
+                        </div>
                       )}
                     </td>
                   </tr>
