@@ -50,13 +50,29 @@ export async function loadProgramBibliography(
     return q;
   });
 
+  // Chunked 200 subject ids at a time (same pattern as
+  // /api/dashboard/subjects, /api/procurement, and /api/standard-titles/
+  // compare) -- a program with enough subjects (General Education, shared
+  // across every degree program, easily has hundreds) can build an
+  // `.in(...)` filter long enough to get silently truncated before it ever
+  // reaches the database, dropping most subjects from the result with no
+  // error at all. That's a much worse failure than one extra round trip:
+  // a course's real, already-matched titles just never show up anywhere
+  // that uses this data (the page itself and every export), and there's
+  // nothing in the response to say why.
   type Joined = { subject_id: number; manual: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
-  const assignments = await paged<Joined>((from, to) =>
-    db.from("assignments")
-      .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
-      .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
-      .range(from, to),
-  );
+  const subjectIds = subjects.length ? subjects.map((s) => s.id!) : [-1];
+  const assignments: Joined[] = [];
+  for (let i = 0; i < subjectIds.length; i += 200) {
+    const chunk = subjectIds.slice(i, i + 200);
+    const chunkRows = await paged<Joined>((from, to) =>
+      db.from("assignments")
+        .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
+        .in("subject_id", chunk)
+        .range(from, to),
+    );
+    assignments.push(...chunkRows);
+  }
 
   const typeSet = types ? new Set(types) : undefined;
 
