@@ -3,6 +3,8 @@ import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { userEmailFromRequest } from "@/lib/activity";
 import { errorMessage } from "@/lib/errors";
+import { loadProgramBibliography } from "@/lib/bibliography";
+import { RESOURCE_TYPES } from "@/lib/resources";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +24,18 @@ export type SubjectSearchRow = {
    *  which is usually the answer when "N matches assigned" doesn't seem
    *  to show up anywhere. */
   assignments: { format: string; manual: number; count: number }[];
+  /** What loadProgramBibliography -- the exact function behind the on-screen
+   *  Programs & Export page and every export format -- actually returns for
+   *  this subject right now, run twice: once with no campus filter at all
+   *  (isolates the raw fetch from any campus-matching question) and once
+   *  with whatever campus this request was called with (?campus=...), if
+   *  any. Comparing these two numbers against `assignments` above (the raw
+   *  table count) pinpoints exactly which stage is dropping titles: if
+   *  noCampusFilter is already short, the bug is in the fetch itself; if
+   *  noCampusFilter is right but withCampusFilter isn't, it's the campus
+   *  match; if both match `assignments`, the data's fine and the problem is
+   *  somewhere client-side instead. */
+  visibleViaBibliography: { noCampusFilter: number; withCampusFilter: number | null };
 };
 
 /** GET /api/subjects/search?q=... -- admin-only diagnostic: finds every
@@ -40,7 +54,9 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Admin access required." }, { status: 403 });
     }
 
-    const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+    const params = new URL(req.url).searchParams;
+    const q = (params.get("q") ?? "").trim();
+    const campusParam = (params.get("campus") ?? "").trim();
     if (!q) return NextResponse.json({ subjects: [] });
 
     const { data: subjects, error } = await db.from("subjects")
@@ -70,21 +86,44 @@ export async function GET(req: Request) {
       m.set(key, (m.get(key) ?? 0) + 1);
     }
 
-    const rows: SubjectSearchRow[] = subjects.map((s) => {
+    // Runs the actual, currently-deployed loadProgramBibliography for just
+    // this one subject and counts how many titles it puts in that
+    // subject's own buckets -- exercising the real production code path
+    // instead of a guess at what it should do. Capped to the first 10
+    // matches so a broad search term can't trigger dozens of extra
+    // round trips.
+    async function countViaBibliography(programId: number, subjectId: number, campus: string): Promise<number> {
+      const biblio = await loadProgramBibliography(programId, campus, subjectId);
+      const subj = biblio.bySection[0]?.subjects[0];
+      if (!subj) return 0;
+      return RESOURCE_TYPES.reduce((sum, t) => sum + (subj.buckets[t.id]?.length ?? 0), 0);
+    }
+
+    const rows: SubjectSearchRow[] = [];
+    for (const [i, s] of subjects.entries()) {
       const m = countsBySubject.get(s.id) ?? new Map();
       const assignmentsOut = Array.from(m.entries()).map(([key, count]) => {
         const [format, manual] = key.split("|");
         return { format, manual: Number(manual), count };
       }).sort((a, b) => a.format.localeCompare(b.format));
-      return {
+
+      let visibleViaBibliography = { noCampusFilter: -1, withCampusFilter: null as number | null };
+      if (i < 10) {
+        const noCampusFilter = await countViaBibliography(s.program_id, s.id, "");
+        const withCampusFilter = campusParam ? await countViaBibliography(s.program_id, s.id, campusParam) : null;
+        visibleViaBibliography = { noCampusFilter, withCampusFilter };
+      }
+
+      rows.push({
         subject_id: s.id,
         program_id: s.program_id,
         program: programMap.get(s.program_id) ?? "",
         course_code: s.course_code ?? "",
         course_title: s.course_title,
         assignments: assignmentsOut,
-      };
-    });
+        visibleViaBibliography,
+      });
+    }
 
     return NextResponse.json({ subjects: rows });
   } catch (err) {

@@ -24,6 +24,7 @@ export default function CleanupTab() {
  *  that can be confirmed (or ruled out) without needing database access. */
 function SubjectFinder() {
   const [q, setQ] = useState("");
+  const [campus, setCampus] = useState("");
   const [rows, setRows] = useState<SubjectSearchRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -34,7 +35,9 @@ function SubjectFinder() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await apiFetch(`/api/subjects/search?q=${encodeURIComponent(q.trim())}`);
+      const p = new URLSearchParams({ q: q.trim() });
+      if (campus.trim()) p.set("campus", campus.trim());
+      const res = await apiFetch(`/api/subjects/search?${p}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRows(data.subjects ?? []);
@@ -54,13 +57,22 @@ function SubjectFinder() {
         count of what&apos;s actually assigned to it (auto-matched vs. locked, by format). If a course name shows up
         more than once here, that&apos;s almost always why a Match run &quot;succeeded&quot; but the results don&apos;t
         appear where you expected: the run and the page you were looking at are two different subjects.
+        The last column runs the exact same code Programs &amp; Export uses and shows what it actually returns for
+        that subject -- type the campus exactly as it appears in the Campus dropdown there to test that too.
       </p>
-      <div className="flex gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-3">
         <input
           className="input text-sm flex-1 max-w-md"
           placeholder="e.g. Arnis, PATH Fit-DEFTAC 2…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") search(); }}
+        />
+        <input
+          className="input text-sm max-w-[220px]"
+          placeholder="Campus (optional, e.g. Main Campus)"
+          value={campus}
+          onChange={(e) => setCampus(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") search(); }}
         />
         <button className="btn text-xs" disabled={loading} onClick={search}>
@@ -87,30 +99,49 @@ function SubjectFinder() {
                 <th className="py-1 pr-2">Code</th>
                 <th className="py-1 pr-2">Title</th>
                 <th className="py-1 pr-2">Assignments right now</th>
+                <th className="py-1 pr-2">Programs &amp; Export would show</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => (
-                <tr key={s.subject_id} className="border-b border-slate-100 align-top">
-                  <td className="py-1.5 pr-2 text-slate-400">{s.subject_id}</td>
-                  <td className="py-1.5 pr-2">{s.program}</td>
-                  <td className="py-1.5 pr-2">{s.course_code}</td>
-                  <td className="py-1.5 pr-2">{s.course_title}</td>
-                  <td className="py-1.5 pr-2">
-                    {s.assignments.length === 0 ? (
-                      <span className="text-slate-400">none</span>
-                    ) : (
-                      <ul>
-                        {s.assignments.map((a, i) => (
-                          <li key={i}>
-                            {a.format}{a.manual ? " (locked)" : ""}: <strong>{a.count}</strong>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((s) => {
+                const rawTotal = s.assignments.reduce((a, x) => a + x.count, 0);
+                const mismatch = s.visibleViaBibliography.noCampusFilter >= 0 && s.visibleViaBibliography.noCampusFilter !== rawTotal;
+                return (
+                  <tr key={s.subject_id} className="border-b border-slate-100 align-top">
+                    <td className="py-1.5 pr-2 text-slate-400">{s.subject_id}</td>
+                    <td className="py-1.5 pr-2">{s.program}</td>
+                    <td className="py-1.5 pr-2">{s.course_code}</td>
+                    <td className="py-1.5 pr-2">{s.course_title}</td>
+                    <td className="py-1.5 pr-2">
+                      {s.assignments.length === 0 ? (
+                        <span className="text-slate-400">none</span>
+                      ) : (
+                        <ul>
+                          {s.assignments.map((a, i) => (
+                            <li key={i}>
+                              {a.format}{a.manual ? " (locked)" : ""}: <strong>{a.count}</strong>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-2">
+                      {s.visibleViaBibliography.noCampusFilter < 0 ? (
+                        <span className="text-slate-400">(only checked for the first 10 matches)</span>
+                      ) : (
+                        <>
+                          <div className={mismatch ? "text-red-700 font-medium" : ""}>
+                            No campus filter: <strong>{s.visibleViaBibliography.noCampusFilter}</strong> of {rawTotal} raw
+                          </div>
+                          {s.visibleViaBibliography.withCampusFilter !== null && (
+                            <div>With &quot;{campus}&quot;: <strong>{s.visibleViaBibliography.withCampusFilter}</strong></div>
+                          )}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
