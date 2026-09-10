@@ -5,6 +5,7 @@ import { consumeNdjson } from "@/lib/streaming";
 import type { MatchProgressEvent } from "@/app/api/match/run/route";
 
 type Program = { id: number; name: string };
+type Course = { subject_id: number; course_code: string; course_title: string };
 
 // Persisted so an interrupted run (laptop sleeps, tab closes, network
 // drops mid-chunk) can be resumed from its last committed batch instead of
@@ -18,7 +19,7 @@ type MatchCheckpoint = {
   matchesSoFar: number;
   failedSoFar: { course_code: string; error: string }[];
   params: {
-    topK: number; minScore: number; programId: string;
+    topK: number; minScore: number; programId: string; subjectId: string;
     balanceFormats: boolean; topKPrinted: number; topKDigital: number;
   };
   savedAt: number;
@@ -59,6 +60,8 @@ function phaseLabel(progress: MatchProgressEvent): string {
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string>("");
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [subjectId, setSubjectId] = useState<string>("");
   const [topK, setTopK] = useState(8);
   const [balanceFormats, setBalanceFormats] = useState(false);
   const [topKPrinted, setTopKPrinted] = useState(4);
@@ -74,6 +77,19 @@ export default function MatchTab() {
   useEffect(() => {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
+
+  // Lets a librarian re-match just one course instead of the whole
+  // program -- some subjects in a program already have a good list and
+  // don't need touching, only the ones that don't. Re-fetched whenever
+  // the program changes; "All programs" has no single course list, so the
+  // course picker only applies with one program selected.
+  useEffect(() => {
+    setSubjectId("");
+    if (!programId) { setCourses([]); return; }
+    apiFetch(`/api/procurement?program_id=${programId}`).then((r) => r.json())
+      .then((d) => setCourses(d.rows ?? []))
+      .catch(() => setCourses([]));
+  }, [programId]);
 
   useEffect(() => {
     setResumable(loadCheckpoint());
@@ -92,7 +108,7 @@ export default function MatchTab() {
     // A resumed run keeps using the ORIGINAL run's settings throughout,
     // even if the form has since been changed -- mixing settings across
     // chunks of the same logical run would produce an incoherent result.
-    const p = resume?.params ?? { topK, minScore, programId, balanceFormats, topKPrinted, topKDigital };
+    const p = resume?.params ?? { topK, minScore, programId, subjectId, balanceFormats, topKPrinted, topKDigital };
     try {
       // A large catalog can take longer to match than a single serverless
       // request is allowed to run. Rather than fail once the platform's
@@ -109,6 +125,7 @@ export default function MatchTab() {
       for (;;) {
         const params = new URLSearchParams({ top_k: String(p.topK), min_score: String(p.minScore) });
         if (p.programId) params.set("program_id", p.programId);
+        if (p.subjectId) params.set("subject_id", p.subjectId);
         if (p.balanceFormats) {
           params.set("top_k_printed", String(p.topKPrinted));
           params.set("top_k_digital", String(p.topKDigital));
@@ -176,6 +193,20 @@ export default function MatchTab() {
             ))}
           </select>
         </label>
+        {programId && (
+          <label className="label">
+            Course
+            <select
+              className="input ml-1" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}
+              title="Re-match just this course instead of the whole program -- useful when most subjects already have a good list and only a few don't"
+            >
+              <option value="">All courses in this program</option>
+              {courses.map((c) => (
+                <option key={c.subject_id} value={c.subject_id}>{c.course_code ? `${c.course_code} — ${c.course_title}` : c.course_title}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {!balanceFormats && (
           <label className="label">
             Top K

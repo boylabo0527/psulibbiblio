@@ -21,7 +21,8 @@
 -- 37_po_delivery_tracking.sql + 38_pr_reminder_tracking.sql +
 -- 39_pr_fund_source.sql + 40_public_title_suggestions.sql +
 -- 41_submitter_role.sql + 42_suggestion_campus.sql +
--- 43_backfill_printed_campus.sql + 44_promote_locked_subject_assignments.sql
+-- 43_backfill_printed_campus.sql + 44_promote_locked_subject_assignments.sql +
+-- 45_app_settings.sql
 -- in order. If you've already run some of those individually, running this
 -- on top is still safe.
 
@@ -775,3 +776,14 @@ from subjects s
 where a.subject_id = s.id
   and s.locked = true
   and a.manual = 0;
+
+-- ---------------------------------------------------------------------------
+-- 45: single-row table of admin-toggleable site settings, starting with
+-- whether Google sign-in is offered on the login screen -- see
+-- 45_app_settings.sql for why.
+-- ---------------------------------------------------------------------------
+create table if not exists app_settings (
+  id int primary key default 1 check (id = 1),
+  google_login_enabled boolean not null default true
+);
+insert into app_settings (id) values (1) on conflict (id) do nothing;

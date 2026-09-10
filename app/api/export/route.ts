@@ -1,4 +1,4 @@
-import { loadProgramBibliography } from "@/lib/bibliography";
+import { loadProgramBibliography, loadCombinedProgramBibliography } from "@/lib/bibliography";
 import {
   programBibliographyCsv,
   programBibliographyDocx,
@@ -45,12 +45,27 @@ export async function GET(req: Request) {
     const types: ResourceTypeId[] | undefined = u.searchParams.has("types")
       ? (u.searchParams.get("types") ?? "").split(",").filter(isResourceTypeId)
       : undefined;
-    const data = await loadProgramBibliography(
-      programId, campus, subjectId,
-      Number.isFinite(minYear) ? minYear : undefined,
-      Number.isFinite(maxYear) ? maxYear : undefined,
-      types,
-    );
+    // Optional: fold one or more other programs' course lists into this
+    // export as extra labeled sections (see loadCombinedProgramBibliography)
+    // -- not offered together with a single-course export (subject_id),
+    // which is already scoped to one course.
+    const combineWith = !subjectId
+      ? (u.searchParams.get("combine_with") ?? "")
+          .split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n !== programId)
+      : [];
+    const data = combineWith.length
+      ? await loadCombinedProgramBibliography(
+          [programId, ...combineWith], campus,
+          Number.isFinite(minYear) ? minYear : undefined,
+          Number.isFinite(maxYear) ? maxYear : undefined,
+          types,
+        )
+      : await loadProgramBibliography(
+          programId, campus, subjectId,
+          Number.isFinite(minYear) ? minYear : undefined,
+          Number.isFinite(maxYear) ? maxYear : undefined,
+          types,
+        );
     const baseName = safeName(
       subjectId && subjectLabel
         ? subjectLabel

@@ -50,13 +50,39 @@ export async function loadProgramBibliography(
     return q;
   });
 
+  // Chunked 200 subject ids at a time (same pattern as
+  // /api/dashboard/subjects, /api/procurement, and /api/standard-titles/
+  // compare) -- a program with enough subjects (General Education, shared
+  // across every degree program, easily has hundreds) can build an
+  // `.in(...)` filter long enough to get silently truncated before it ever
+  // reaches the database, dropping most subjects from the result with no
+  // error at all. That's a much worse failure than one extra round trip:
+  // a course's real, already-matched titles just never show up anywhere
+  // that uses this data (the page itself and every export), and there's
+  // nothing in the response to say why.
   type Joined = { subject_id: number; manual: number; titles: TitleRow & { format: ResourceTypeId; campus?: string } };
-  const assignments = await paged<Joined>((from, to) =>
-    db.from("assignments")
-      .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
-      .in("subject_id", subjects.length ? subjects.map((s) => s.id!) : [-1])
-      .range(from, to),
-  );
+  const subjectIds = subjects.length ? subjects.map((s) => s.id!) : [-1];
+  const assignments: Joined[] = [];
+  for (let i = 0; i < subjectIds.length; i += 200) {
+    const chunk = subjectIds.slice(i, i + 200);
+    // .order("id") is required, not cosmetic: without an explicit,
+    // deterministic sort, Postgres doesn't guarantee the same row lands on
+    // the same page across the repeated .range() calls a multi-page chunk
+    // needs -- a row can fall into a gap between two pages and never come
+    // back at all, with the total row count still looking plausible. This
+    // is exactly how a course's real, already-matched titles could vanish
+    // from every view built on this data with no error anywhere to explain
+    // it (confirmed: the same subject fetched alone came back complete,
+    // but as part of a larger program came back with none of its titles).
+    const chunkRows = await paged<Joined>((from, to) =>
+      db.from("assignments")
+        .select("subject_id, manual, titles!inner(id, format, title, author, publisher, year, isbn, issn, call_no, copies, url, campus)")
+        .in("subject_id", chunk)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+    assignments.push(...chunkRows);
+  }
 
   const typeSet = types ? new Set(types) : undefined;
 
@@ -129,6 +155,62 @@ export async function loadProgramBibliography(
 
   return {
     program: progRow as ProgramBibliography["program"],
+    campus,
+    bySection,
+    journals,
+  };
+}
+
+/** Some curricula split "common"/general-education courses into their own
+ *  program record, separate from each major's program (e.g. a shared "BSED
+ *  Common Courses" program plus "BSED Major in Math", "BSED Major in
+ *  English", ...) so Match/locking for the shared courses isn't repeated
+ *  per major. That split is invisible to an accreditation reviewer, who
+ *  expects one bibliography for "BSED Major in Math" covering everything
+ *  the student actually takes -- this combines two or more programs' own
+ *  loadProgramBibliography results into a single report, one labeled
+ *  section per source program (every export format in lib/exports.ts
+ *  already renders bySection[].section as a heading when it's non-empty,
+ *  so no export-side changes are needed), with journal holdings merged and
+ *  deduplicated by title across the combined set. */
+export async function loadCombinedProgramBibliography(
+  programIds: number[],
+  campus = "",
+  minYear?: number,
+  maxYear?: number,
+  types?: ResourceTypeId[],
+): Promise<ProgramBibliography> {
+  const results = await Promise.all(
+    programIds.map((id) => loadProgramBibliography(id, campus, undefined, minYear, maxYear, types)),
+  );
+
+  const bySection = results.flatMap((r) =>
+    r.bySection.map((sec) => ({ section: sec.section || r.program.name, subjects: sec.subjects })),
+  );
+
+  type Buckets = Record<ResourceTypeId, TitleRow[]>;
+  const journals: Buckets = Object.fromEntries(RESOURCE_TYPES.map((t) => [t.id, [] as TitleRow[]])) as Buckets;
+  const seenByFormat = new Map<ResourceTypeId, Set<number>>();
+  for (const r of results) {
+    for (const t of RESOURCE_TYPES) {
+      if (t.kind !== "journal") continue;
+      if (!seenByFormat.has(t.id)) seenByFormat.set(t.id, new Set());
+      const seen = seenByFormat.get(t.id)!;
+      for (const title of r.journals[t.id]) {
+        if (title.id != null) {
+          if (seen.has(title.id)) continue;
+          seen.add(title.id);
+        }
+        journals[t.id].push(title);
+      }
+    }
+  }
+  const sortBooks = (xs: TitleRow[]) =>
+    xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
+  for (const t of RESOURCE_TYPES) sortBooks(journals[t.id]);
+
+  return {
+    program: { id: programIds[0], name: results.map((r) => r.program.name).join(" + ") },
     campus,
     bySection,
     journals,

@@ -1,6 +1,7 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "./AuthProvider";
+import { apiFetch } from "@/lib/api-client";
 
 export default function LoginScreen() {
   const { signIn, signInWithGoogle } = useAuth();
@@ -9,6 +10,17 @@ export default function LoginScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+  // Defaults to shown -- an admin explicitly disables it via User
+  // Management, so a slow/failed settings fetch shouldn't hide it.
+  const [googleLoginEnabled, setGoogleLoginEnabled] = useState(true);
+
+  useEffect(() => {
+    apiFetch("/api/settings").then((r) => r.json()).then((data) => {
+      if (typeof data?.settings?.google_login_enabled === "boolean") {
+        setGoogleLoginEnabled(data.settings.google_login_enabled);
+      }
+    }).catch(() => {});
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -66,23 +78,22 @@ export default function LoginScreen() {
         </button>
       </form>
 
-      <div className="flex items-center gap-3 my-4">
-        <div className="h-px bg-slate-200 flex-1" />
-        <span className="text-xs text-slate-400">or</span>
-        <div className="h-px bg-slate-200 flex-1" />
-      </div>
+      {googleLoginEnabled && (
+        <>
+          <div className="flex items-center gap-3 my-4">
+            <div className="h-px bg-slate-200 flex-1" />
+            <span className="text-xs text-slate-400">or</span>
+            <div className="h-px bg-slate-200 flex-1" />
+          </div>
 
-      <button
-        type="button" className="btn-outline w-full" disabled={googleBusy}
-        onClick={submitGoogle}
-      >
-        {googleBusy ? "Redirecting…" : "Sign in with Google"}
-      </button>
-      <p className="text-xs text-slate-500 mt-2">
-        Only @psu.palawan.edu.ph Google accounts can sign in this way. First-time sign-ins are
-        automatically given the Faculty Member role with no tab access until an administrator
-        grants some from User Management.
-      </p>
+          <button
+            type="button" className="btn-outline w-full" disabled={googleBusy}
+            onClick={submitGoogle}
+          >
+            {googleBusy ? "Redirecting…" : "Sign in with Google"}
+          </button>
+        </>
+      )}
 
       <p className="text-xs text-slate-500 mt-4">
         Accounts are created by your library administrator in the Supabase dashboard

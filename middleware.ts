@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  *  any of its sub-paths (e.g. "/api/dashboard" also covers
  *  "/api/dashboard/subjects"). The Dashboard tab on the public homepage is
  *  wired to the endpoints listed below. */
-const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api/campuses", "/api/program-campuses"];
+const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api/campuses", "/api/program-campuses", "/api/settings"];
 
 /** Public, but ONLY that exact path -- not sub-paths. "/api/programs" (the
  *  bare program list) is genuinely public for the Dashboard's filter

@@ -2,10 +2,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
+import { consumeNdjson } from "@/lib/streaming";
+import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
-import { usePermissions } from "@/lib/use-permissions";
+import { usePermissions, canEdit } from "@/lib/use-permissions";
 import SearchableSelect from "@/components/SearchableSelect";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import type { ValidateCsvPreview, ValidateCsvPreviewRow } from "@/app/api/programs/validate-csv/route";
+import type { ValidateApplyEvent } from "@/app/api/programs/validate-csv/apply/route";
+import type { BulkLockEvent } from "@/app/api/match/lock/bulk/route";
+import type { BulkAddPrintedEvent } from "@/app/api/match/add-printed/bulk/route";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -53,6 +59,13 @@ export default function ProgramsTab() {
   const campuses = useCampuses();
   const { isProgramAtCampus } = useProgramCampusMap();
   const visiblePrograms = campus ? programs.filter((p) => isProgramAtCampus(p.id, campus)) : programs;
+  // Some curricula keep shared/common courses in their own program record,
+  // separate from each major -- e.g. "BSED Common Courses" alongside "BSED
+  // Major in Math". Picking one or more programs here folds their course
+  // lists into the view/export as extra labeled sections, so a report for
+  // one major reads as the complete bibliography a reviewer expects instead
+  // of two separate ones.
+  const [combineIds, setCombineIds] = useState<Set<number>>(new Set());
 
   // Default to a real campus as soon as the list loads -- an "All campuses"
   // option made the title counts/exports here look like one campus's
@@ -92,6 +105,23 @@ export default function ProgramsTab() {
     return enabledTypes.size < RESOURCE_TYPES.length ? Array.from(enabledTypes).join(",") : undefined;
   }
 
+  function combineParam(): string | undefined {
+    return combineIds.size > 0 ? Array.from(combineIds).join(",") : undefined;
+  }
+
+  // A program combined with itself doesn't mean anything -- if the primary
+  // selection changes to one already in the combine set, drop it from there
+  // instead of silently sending a no-op id to the server.
+  useEffect(() => {
+    if (selected == null) return;
+    setCombineIds((prev) => {
+      if (!prev.has(selected)) return prev;
+      const next = new Set(prev);
+      next.delete(selected);
+      return next;
+    });
+  }, [selected]);
+
   function toggleType(id: ResourceTypeId) {
     setEnabledTypes((prev) => {
       const next = new Set(prev);
@@ -113,6 +143,8 @@ export default function ProgramsTab() {
       if (toYear) params.set("to_year", toYear);
       const types = typesParam();
       if (types !== undefined) params.set("types", types);
+      const combine = combineParam();
+      if (combine !== undefined) params.set("combine_with", combine);
       const url = `/api/programs/${selected}/bibliography${params.toString() ? "?" + params.toString() : ""}`;
       const res = await apiFetch(url);
       const data = await res.json().catch(() => ({}));
@@ -127,7 +159,7 @@ export default function ProgramsTab() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, campus, fromYear, toYear, enabledTypes]);
+  }, [selected, campus, fromYear, toYear, enabledTypes, combineIds]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -139,6 +171,8 @@ export default function ProgramsTab() {
     if (toYear) p.set("to_year", toYear);
     const types = typesParam();
     if (types !== undefined) p.set("types", types);
+    const combine = combineParam();
+    if (combine !== undefined) p.set("combine_with", combine);
     if (fmt.startsWith("citations-")) p.set("style", citationStyle);
     try {
       const res = await apiFetch(`/api/export?${p.toString()}`);
@@ -188,6 +222,16 @@ export default function ProgramsTab() {
     load();
   }
 
+  async function bulkLockAssignments(subjectId: number, titleIds: number[]) {
+    const res = await apiFetch("/api/match/lock/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: titleIds.map((title_id) => ({ subject_id: subjectId, title_id })), lock: true }),
+    });
+    await consumeNdjson<BulkLockEvent>(res, () => {});
+    load();
+  }
+
   return (
     <>
       <div className="card">
@@ -202,6 +246,43 @@ export default function ProgramsTab() {
               ))}
             </select>
           </label>
+          <label className="label">
+            Combine with
+            <select
+              className="input ml-1 min-w-[220px]"
+              value=""
+              title="Fold another program's courses into this view/export as an extra labeled section -- e.g. a shared Common Courses program alongside this major"
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                if (id) setCombineIds((prev) => new Set(prev).add(id));
+                e.target.value = "";
+              }}
+            >
+              <option value="">+ add a program…</option>
+              {visiblePrograms.filter((p) => p.id !== selected && !combineIds.has(p.id)).map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          {combineIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1">
+              {Array.from(combineIds).map((id) => {
+                const p = programs.find((pp) => pp.id === id);
+                return (
+                  <span key={id} className="text-[11px] pl-2 pr-1 py-0.5 rounded-full bg-slate-100 border border-slate-300 flex items-center gap-1">
+                    {p?.name ?? `#${id}`}
+                    <button
+                      className="text-slate-500 hover:text-red-600 leading-none"
+                      title="Remove from combined report"
+                      onClick={() => setCombineIds((prev) => { const next = new Set(prev); next.delete(id); return next; })}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           <label className="label">
             Campus
             <select
@@ -314,6 +395,7 @@ export default function ProgramsTab() {
                   onAdd={(titleId) => changeAssignment(sub.subject.id, titleId, true)}
                   onToggleLock={(titleId, lock) => toggleAssignmentLock(sub.subject.id, titleId, lock)}
                   onBulkRemove={(titleIds) => bulkRemoveAssignments(sub.subject.id, titleIds)}
+                  onBulkLock={(titleIds) => bulkLockAssignments(sub.subject.id, titleIds)}
                   onReload={load}
                 />
               ))}
@@ -345,8 +427,308 @@ export default function ProgramsTab() {
         </div>
       )}
 
+      {canEdit(perms, "programs") && selected && (
+        <ValidateCsvPanel programId={selected} onApplied={load} />
+      )}
+
       {perms.isAdmin && <PerlegoSearchPanel />}
     </>
+  );
+}
+
+/** Upload a Programs & Export CSV (optionally reviewed by an outside AI or
+ *  a person) to validate which title-to-course matches on the currently
+ *  selected program actually belong -- the app's own Match run only scores
+ *  title + description text, so a second, better-informed pass over the
+ *  exported list is often needed before the matches are trustworthy. Only
+ *  courses present in the file are touched; anything the file doesn't
+ *  confirm for those courses is proposed for removal (never added --
+ *  this prunes bad matches, it doesn't invent new ones). */
+function ValidateCsvPanel({ programId, onApplied }: { programId: number; onApplied: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [locking, setLocking] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ValidateCsvPreview | null>(null);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null);
+
+  const rowKey = (r: ValidateCsvPreviewRow) => `${r.subject_id}:${r.title_id}`;
+
+  function reset() {
+    setPreview(null);
+    setResult(null);
+    setErr(null);
+    setExcluded(new Set());
+  }
+
+  async function check() {
+    if (!file) return;
+    setChecking(true);
+    reset();
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("program_id", String(programId));
+      const res = await apiFetch("/api/programs/validate-csv", { method: "POST", body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setPreview(j as ValidateCsvPreview);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  function toggleExclude(key: string) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function apply() {
+    if (!preview) return;
+    const removals = preview.toRemove.filter((r) => !excluded.has(rowKey(r)));
+    if (!removals.length) return;
+    if (!confirm(`Remove ${removals.length} title-course match${removals.length === 1 ? "" : "es"} not confirmed by this upload?`)) return;
+    setApplying(true);
+    setErr(null);
+    const courseCount = new Set(removals.map((r) => r.subject_id)).size;
+    setProgress({ label: "Removing", done: 0, total: courseCount });
+    try {
+      const res = await apiFetch("/api/programs/validate-csv/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ removals: removals.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })) }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let removed = 0;
+      let streamErr: string | null = null;
+      await consumeNdjson<ValidateApplyEvent>(res, (ev) => {
+        if (ev.phase === "removing") setProgress({ label: "Removing", done: ev.done, total: ev.total });
+        else if (ev.phase === "done") removed = ev.removed;
+        else if (ev.phase === "error") streamErr = ev.error;
+      });
+      if (streamErr) throw new Error(streamErr);
+      setResult(`Removed ${removed} match${removed === 1 ? "" : "es"}.`);
+      setPreview(null);
+      setFile(null);
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplying(false);
+      setProgress(null);
+    }
+  }
+
+  async function lockConfirmed() {
+    if (!preview || !preview.confirmed.length) return;
+    setLocking(true);
+    setErr(null);
+    const confirmedNow = preview.confirmed;
+    const courseCount = new Set(confirmedNow.map((r) => r.subject_id)).size;
+    setProgress({ label: "Locking", done: 0, total: courseCount });
+    try {
+      const res = await apiFetch("/api/match/lock/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: confirmedNow.map((r) => ({ subject_id: r.subject_id, title_id: r.title_id })),
+          lock: true,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let updated = 0;
+      let skipped: { subject_id: number; title_id: number }[] = [];
+      let streamErr: string | null = null;
+      await consumeNdjson<BulkLockEvent>(res, (ev) => {
+        if (ev.phase === "locking") setProgress({ label: "Locking", done: ev.done, total: ev.total });
+        else if (ev.phase === "done") { updated = ev.updated; skipped = ev.skipped; }
+        else if (ev.phase === "error") streamErr = ev.error;
+      });
+      if (streamErr) throw new Error(streamErr);
+      // A skipped item was in the confirmed list when this request was
+      // built but no longer had a matching assignment row by the time the
+      // lock ran (removed elsewhere in the meantime) -- keep it in
+      // `confirmed` (instead of clearing the whole preview) so it's still
+      // visible and exportable rather than silently disappearing.
+      const skippedKeys = new Set(skipped.map((s) => `${s.subject_id}:${s.title_id}`));
+      const stillUnlocked = confirmedNow.filter((r) => skippedKeys.has(rowKey(r)));
+      setResult(
+        `Locked ${updated} confirmed match${updated === 1 ? "" : "es"} -- protected from future Match runs.`
+        + (stillUnlocked.length
+          ? ` ${stillUnlocked.length} could no longer be found in their course and were skipped -- export them below to re-check.`
+          : ""),
+      );
+      setPreview((prev) => (prev ? { ...prev, confirmed: stillUnlocked } : prev));
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLocking(false);
+      setProgress(null);
+    }
+  }
+
+  /** Downloads whatever's currently in `confirmed` (validated by the
+   *  upload but not locked in the system -- either never locked yet, or
+   *  skipped by a lock attempt because the match had since vanished) as a
+   *  small CSV with the same Course Code / Title columns
+   *  parseValidationRows expects, so it can go through another AI review
+   *  pass and come back in through Check again. */
+  function downloadNotYetLocked() {
+    if (!preview || !preview.confirmed.length) return;
+    const escape = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const lines = ["Course Code,Course Title,Title"];
+    for (const r of preview.confirmed) {
+      lines.push([r.course_code, r.course_title, r.title].map(escape).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `not_yet_locked_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const keptCount = preview ? preview.toRemove.length - excluded.size : 0;
+
+  return (
+    <div className="card">
+      <h2 className="text-psu font-semibold mb-1">Validate Matches (CSV)</h2>
+      <p className="text-xs text-slate-500 mb-3">
+        Export the master CSV above, have it reviewed for accuracy -- Match here only scores title and
+        description text -- then upload the reviewed copy here. Only courses that appear in the file
+        are touched; for those, any current match the file doesn&apos;t confirm is proposed for removal.
+        Delete the rows that don&apos;t belong before uploading, or add a column such as
+        &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <input
+          type="file"
+          accept=".csv,.xlsx,.xls"
+          onChange={(e) => { setFile(e.target.files?.[0] ?? null); reset(); }}
+          className="text-xs"
+        />
+        <button className="btn text-xs" disabled={!file || checking} onClick={check}>
+          {checking ? "Checking…" : "Check"}
+        </button>
+      </div>
+      {progress && (
+        <div className="mb-2">
+          <div className="flex justify-between text-xs text-slate-600 mb-1">
+            <span>{progress.label}… ({progress.done.toLocaleString()} / {Math.max(progress.total, 1).toLocaleString()} course{progress.total === 1 ? "" : "s"})</span>
+          </div>
+          <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden">
+            <div
+              className="h-full bg-psu transition-all"
+              style={{ width: `${Math.max(8, progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 8)}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {err && <p className="text-red-700 text-xs mb-2">{err}</p>}
+      {result && <p className="text-emerald-700 text-xs mb-2">{result}</p>}
+      {preview && (
+        <div className="text-xs">
+          <p className="text-slate-600 mb-2 flex flex-wrap items-center gap-2">
+            <span>
+              {preview.coursesReviewed} course{preview.coursesReviewed === 1 ? "" : "s"} reviewed · {preview.confirmedCount} confirmed · {preview.toRemove.length} to remove
+              {preview.lockedSkipped.length > 0 && ` · ${preview.lockedSkipped.length} locked (kept)`}
+            </span>
+            {preview.confirmed.length > 0 && (
+              <button
+                className="text-xs text-amber-700 font-medium underline disabled:opacity-40"
+                disabled={locking}
+                title="Protect every confirmed match from being deleted/replaced by future Match runs"
+                onClick={lockConfirmed}
+              >
+                {locking ? "Locking…" : `🔒 Lock ${preview.confirmed.length} confirmed match${preview.confirmed.length === 1 ? "" : "es"}`}
+              </button>
+            )}
+            {preview.confirmed.length > 0 && (
+              <button
+                className="text-xs text-slate-600 font-medium underline disabled:opacity-40"
+                disabled={locking}
+                title="Download the confirmed-but-not-yet-locked matches as a CSV, for another AI review pass -- re-upload the result with Check to validate again"
+                onClick={downloadNotYetLocked}
+              >
+                ⬇ Export {preview.confirmed.length} not-yet-locked (CSV)
+              </button>
+            )}
+          </p>
+          {preview.unknownCourses.length > 0 && (
+            <p className="text-amber-700 mb-2">
+              Course code{preview.unknownCourses.length === 1 ? "" : "s"} not found in this program: {preview.unknownCourses.join(", ")}
+            </p>
+          )}
+          {preview.toRemove.length === 0 ? (
+            <p className="text-slate-500">Nothing to remove — every current match in the reviewed courses is confirmed.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs mb-2">
+                  <thead className="text-slate-500">
+                    <tr className="text-left border-b border-slate-200">
+                      <th className="p-1 w-6"></th>
+                      <th className="p-1">Course</th>
+                      <th className="p-1">Title</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.toRemove.map((r) => {
+                      const key = rowKey(r);
+                      return (
+                        <tr key={key} className="border-b border-slate-100">
+                          <td className="p-1">
+                            <input type="checkbox" checked={!excluded.has(key)} onChange={() => toggleExclude(key)} />
+                          </td>
+                          <td className="p-1">{r.course_code || r.course_title}</td>
+                          <td className="p-1">{r.title}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <button className="btn text-xs" disabled={applying || keptCount === 0} onClick={apply}>
+                {applying ? "Removing…" : `Remove ${keptCount} checked match${keptCount === 1 ? "" : "es"}`}
+              </button>
+            </>
+          )}
+          {preview.lockedSkipped.length > 0 && (
+            <p className="text-slate-500 mt-2">🔒 Locked, kept as-is: {preview.lockedSkipped.map((r) => r.title).join(", ")}</p>
+          )}
+          {preview.unresolvedRows.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-slate-500">
+                {preview.unresolvedRows.length} row{preview.unresolvedRows.length === 1 ? "" : "s"} in the file didn&apos;t match a current title
+              </summary>
+              <ul className="mt-1 text-slate-500">
+                {preview.unresolvedRows.map((r, i) => (
+                  <li key={i}>{r.course_code} — {r.title}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -525,7 +907,7 @@ function PerlegoSearchPanel() {
 }
 
 function SubjectBlock({
-  detail, programCampus, onRemove, onAdd, onToggleLock, onBulkRemove, onReload,
+  detail, programCampus, onRemove, onAdd, onToggleLock, onBulkRemove, onBulkLock, onReload,
 }: {
   detail: SubjectDetail;
   programCampus: string;
@@ -533,19 +915,29 @@ function SubjectBlock({
   onAdd: (titleId: number) => void;
   onToggleLock: (titleId: number, lock: boolean) => void;
   onBulkRemove: (titleIds: number[]) => void;
+  onBulkLock: (titleIds: number[]) => void;
   onReload: () => void;
 }) {
   const buckets = detail.buckets ?? ({} as Buckets);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // "Titles"/"Volumes" count only locked (validated) matches -- an
+  // auto-match is a candidate, not a confirmed answer, until a librarian
+  // has reviewed and locked it (directly, or via Validate Matches CSV).
+  // matchedTitles/matchedVolumes track everything (validated or not) so
+  // the difference is visible instead of the count just looking low with
+  // no explanation, since the rows below still list every match either
+  // way -- that full list is what there is to review.
   let totalTitles = 0;
   let totalVolumes = 0;
+  let matchedTitles = 0;
+  let matchedVolumes = 0;
   for (const t of RESOURCE_TYPES) {
     const list = buckets[t.id] ?? [];
-    totalTitles += list.length;
-    if (t.medium === "print") {
-      for (const b of list) totalVolumes += Math.max(1, b.copies ?? 1);
-    } else {
-      totalVolumes += list.length;
+    matchedTitles += list.length;
+    for (const b of list) {
+      const vol = t.medium === "print" ? Math.max(1, b.copies ?? 1) : 1;
+      matchedVolumes += vol;
+      if (b.manual) { totalTitles += 1; totalVolumes += vol; }
     }
   }
 
@@ -562,6 +954,12 @@ function SubjectBlock({
     if (selected.size === 0) return;
     if (!confirm(`Remove ${selected.size} selected title${selected.size === 1 ? "" : "s"} from this course?`)) return;
     onBulkRemove(Array.from(selected));
+    setSelected(new Set());
+  }
+
+  function bulkLock() {
+    if (selected.size === 0) return;
+    onBulkLock(Array.from(selected));
     setSelected(new Set());
   }
 
@@ -587,11 +985,21 @@ function SubjectBlock({
         />
       ))}
       <div className="flex items-center gap-3 mt-1 flex-wrap">
-        <p className="text-xs text-slate-700">
-          <strong>Titles:</strong> {totalTitles} · <strong>Volumes:</strong> {totalVolumes}
+        <p className="text-xs text-slate-700" title="Locked (validated) matches only -- auto-matches shown below still count toward neither until reviewed and locked">
+          <strong>Validated:</strong> {totalTitles} title{totalTitles === 1 ? "" : "s"} / {totalVolumes} volume{totalVolumes === 1 ? "" : "s"}
+          {matchedTitles > totalTitles && (
+            <span className="text-slate-500"> · {matchedTitles - totalTitles} more matched, not yet validated</span>
+          )}
         </p>
         {selected.size > 0 && (
           <>
+            <button
+              className="text-xs text-amber-700 font-medium"
+              title="Protect the selected matches from being deleted/replaced by future Match runs"
+              onClick={bulkLock}
+            >
+              🔒 Lock selected ({selected.size})
+            </button>
             <button className="text-xs text-red-600 font-medium" onClick={bulkRemove}>
               Remove selected ({selected.size})
             </button>
@@ -601,7 +1009,7 @@ function SubjectBlock({
           </>
         )}
       </div>
-      <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} />
+      <AddBook subjectId={detail.subject.id} programCampus={programCampus} onAdded={onAdd} onReload={onReload} />
     </div>
   );
 }
@@ -895,12 +1303,15 @@ function EditableTitleRow({
 }
 
 function AddBook({
-  subjectId, programCampus, onAdded,
-}: { subjectId: number; programCampus: string; onAdded: (titleId: number) => void }) {
+  subjectId, programCampus, onAdded, onReload,
+}: { subjectId: number; programCampus: string; onAdded: (titleId: number) => void; onReload: () => void }) {
   const [q, setQ] = useState("");
   const [format, setFormat] = useState<"" | ResourceTypeId>("");
   const [hits, setHits] = useState<Title[]>([]);
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [addingMany, setAddingMany] = useState(false);
+  const [bulkPrintedOpen, setBulkPrintedOpen] = useState(false);
 
   async function search() {
     if (!q.trim()) { setHits([]); return; }
@@ -909,12 +1320,44 @@ function AddBook({
     if (programCampus) params.set("campus", programCampus);
     const data = await apiFetch(`/api/titles/search?${params}`).then((r) => r.json());
     setHits(data.titles ?? []);
+    setSelected(new Set());
+  }
+
+  function toggleSelect(titleId: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(titleId)) next.delete(titleId);
+      else next.add(titleId);
+      return next;
+    });
+  }
+
+  async function addSelected() {
+    if (selected.size === 0) return;
+    setAddingMany(true);
+    try {
+      await Promise.all(Array.from(selected).map((title_id) =>
+        apiFetch("/api/match/override", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject_id: subjectId, title_id, keep: true }),
+        }),
+      ));
+      setSelected(new Set());
+      onReload();
+    } finally {
+      setAddingMany(false);
+    }
   }
 
   return (
     <div className="mt-2">
       {!open ? (
-        <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add resource to {subjectId}</button>
+        <div className="flex gap-3">
+          <button className="text-xs text-psu" onClick={() => setOpen(true)}>+ add resource to {subjectId}</button>
+          <button className="text-xs text-psu" onClick={() => { setBulkPrintedOpen(true); setOpen(true); }}>
+            + bulk add printed books
+          </button>
+        </div>
       ) : (
         <div className="bg-slate-50 rounded p-2">
           <div className="flex flex-wrap gap-2 mb-2">
@@ -925,23 +1368,148 @@ function AddBook({
               {RESOURCE_TYPES.map((t) => <option key={t.id} value={t.id}>{t.uiLabel}</option>)}
             </select>
             <button className="btn text-xs" onClick={search}>Search</button>
+            <button className="text-xs text-slate-500 underline" onClick={() => setBulkPrintedOpen((v) => !v)}>
+              {bulkPrintedOpen ? "Hide bulk add printed books" : "Bulk add printed books…"}
+            </button>
             <button className="btn-outline text-xs" onClick={() => setOpen(false)}>Close</button>
           </div>
+          {bulkPrintedOpen && (
+            <BulkAddPrinted subjectId={subjectId} programCampus={programCampus} onReload={onReload} />
+          )}
           <ul className="text-xs max-h-40 overflow-auto">
             {hits.map((t) => (
-              <li key={t.id} className="py-0.5 flex justify-between gap-2">
-                <span>
-                  <span className="text-slate-500 mr-1">[{t.format}]</span>
-                  {t.author ? `${t.author} — ` : ""}{t.title}
-                  {t.year ? ` (${t.year})` : ""}
+              <li key={t.id} className="py-0.5 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5">
+                  <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                  <span>
+                    <span className="text-slate-500 mr-1">[{t.format}]</span>
+                    {t.author ? `${t.author} — ` : ""}{t.title}
+                    {t.year ? ` (${t.year})` : ""}
+                  </span>
                 </span>
                 <button className="text-psu underline" onClick={() => onAdded(t.id)}>add</button>
               </li>
             ))}
             {q && hits.length === 0 && <li className="text-slate-500 py-1">No matches.</li>}
           </ul>
+          {selected.size > 0 && (
+            <button className="btn text-xs mt-1" disabled={addingMany} onClick={addSelected}>
+              {addingMany ? "Adding…" : `Add ${selected.size} selected`}
+            </button>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Uploads a printed-books file (same shape as the main catalog upload:
+ *  Call No., Author, Title, Publisher, Year, Copies, optional Barcode) and
+ *  assigns every row straight to this course in one pass, instead of
+ *  uploading to the catalog separately and then searching + adding each
+ *  title by hand -- the workflow that made adding a whole reading list of
+ *  printed books tedious. */
+function BulkAddPrinted({
+  subjectId, programCampus, onReload,
+}: { subjectId: number; programCampus: string; onReload: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<string>("");
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function onFile(file: File) {
+    if (!programCampus) {
+      setErr("Select a campus above first -- printed books are tracked per campus.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    setProgress(null);
+    setPhase("Reading file…");
+    try {
+      let res: Response;
+      if (isSpreadsheet(file)) {
+        const rows = await parseSheetRows(file);
+        res = await apiFetch("/api/match/add-printed/bulk", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subject_id: subjectId, campus: programCampus, rows, filename: file.name }),
+        });
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("subject_id", String(subjectId));
+        fd.append("campus", programCampus);
+        res = await apiFetch("/api/match/add-printed/bulk", { method: "POST", body: fd });
+      }
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      let done = false;
+      let streamErr: string | null = null;
+      // consumeNdjson wraps each onEvent call in its own try/catch (to
+      // skip a malformed line, not to catch application errors) -- a throw
+      // from in here is silently swallowed, not propagated to the outer
+      // catch below. So on an "error" phase, just record it and check it
+      // once the stream has actually finished, same as everywhere else
+      // this app reads an ndjson stream (see e.g. MatchTab.tsx).
+      await consumeNdjson<BulkAddPrintedEvent>(res, (ev) => {
+        if (ev.phase === "parsing") setPhase("Reading file…");
+        else if (ev.phase === "parsed") setPhase(`Parsed ${ev.total.toLocaleString()} rows…`);
+        else if (ev.phase === "deduping") setPhase(`Checking against catalog… ${ev.existing.toLocaleString()} scanned`);
+        else if (ev.phase === "inserting") { setPhase("Saving titles…"); setProgress({ done: ev.inserted + ev.skipped, total: ev.total }); }
+        else if (ev.phase === "assigning") { setPhase("Adding to course…"); setProgress({ done: ev.done, total: ev.total }); }
+        else if (ev.phase === "done") {
+          done = true;
+          setResult(
+            `${ev.assigned} title${ev.assigned === 1 ? "" : "s"} added to this course `
+            + `(${ev.inserted} new in the catalog, ${ev.updated} already there had copies updated`
+            + (ev.alreadyAssigned > 0 ? `, ${ev.alreadyAssigned} were already on this course` : "")
+            + ").",
+          );
+        } else if (ev.phase === "error") { streamErr = ev.error; }
+      });
+      if (streamErr) throw new Error(streamErr);
+      if (done) onReload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setPhase("");
+      setProgress(null);
+    }
+  }
+
+  return (
+    <div className="mb-2 p-2 border border-dashed border-slate-300 rounded">
+      <p className="text-xs text-slate-500 mb-1.5">
+        Upload a Printed Books file (same columns as the main catalog upload: Call No., Author, Title,
+        Publisher, Year, Copies, optional Barcode) to add many titles to this course at once, campus{" "}
+        <strong>{programCampus || "(select a campus above)"}</strong>. Titles already in the catalog get
+        matched by Call No. + Title + Author instead of duplicated.
+      </p>
+      <input
+        type="file" accept=".csv,.xlsx,.xls" disabled={busy}
+        className="text-xs"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }}
+      />
+      {busy && (
+        <div className="mt-1.5">
+          <p className="text-xs text-slate-600">
+            {phase}{progress && progress.total > 0 ? ` (${progress.done.toLocaleString()} / ${progress.total.toLocaleString()})` : ""}
+          </p>
+          <div className="h-1.5 w-full bg-slate-200 rounded overflow-hidden mt-0.5">
+            <div
+              className="h-full bg-psu transition-all"
+              style={{ width: `${progress && progress.total > 0 ? Math.max(8, Math.round((progress.done / progress.total) * 100)) : 15}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {err && <p className="text-red-700 text-xs mt-1">{err}</p>}
+      {result && <p className="text-emerald-700 text-xs mt-1">{result}</p>}
     </div>
   );
 }
