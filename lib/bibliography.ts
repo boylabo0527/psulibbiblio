@@ -160,3 +160,59 @@ export async function loadProgramBibliography(
     journals,
   };
 }
+
+/** Some curricula split "common"/general-education courses into their own
+ *  program record, separate from each major's program (e.g. a shared "BSED
+ *  Common Courses" program plus "BSED Major in Math", "BSED Major in
+ *  English", ...) so Match/locking for the shared courses isn't repeated
+ *  per major. That split is invisible to an accreditation reviewer, who
+ *  expects one bibliography for "BSED Major in Math" covering everything
+ *  the student actually takes -- this combines two or more programs' own
+ *  loadProgramBibliography results into a single report, one labeled
+ *  section per source program (every export format in lib/exports.ts
+ *  already renders bySection[].section as a heading when it's non-empty,
+ *  so no export-side changes are needed), with journal holdings merged and
+ *  deduplicated by title across the combined set. */
+export async function loadCombinedProgramBibliography(
+  programIds: number[],
+  campus = "",
+  minYear?: number,
+  maxYear?: number,
+  types?: ResourceTypeId[],
+): Promise<ProgramBibliography> {
+  const results = await Promise.all(
+    programIds.map((id) => loadProgramBibliography(id, campus, undefined, minYear, maxYear, types)),
+  );
+
+  const bySection = results.flatMap((r) =>
+    r.bySection.map((sec) => ({ section: sec.section || r.program.name, subjects: sec.subjects })),
+  );
+
+  type Buckets = Record<ResourceTypeId, TitleRow[]>;
+  const journals: Buckets = Object.fromEntries(RESOURCE_TYPES.map((t) => [t.id, [] as TitleRow[]])) as Buckets;
+  const seenByFormat = new Map<ResourceTypeId, Set<number>>();
+  for (const r of results) {
+    for (const t of RESOURCE_TYPES) {
+      if (t.kind !== "journal") continue;
+      if (!seenByFormat.has(t.id)) seenByFormat.set(t.id, new Set());
+      const seen = seenByFormat.get(t.id)!;
+      for (const title of r.journals[t.id]) {
+        if (title.id != null) {
+          if (seen.has(title.id)) continue;
+          seen.add(title.id);
+        }
+        journals[t.id].push(title);
+      }
+    }
+  }
+  const sortBooks = (xs: TitleRow[]) =>
+    xs.sort((a, b) => (b.year || "").localeCompare(a.year || "") || a.title.localeCompare(b.title));
+  for (const t of RESOURCE_TYPES) sortBooks(journals[t.id]);
+
+  return {
+    program: { id: programIds[0], name: results.map((r) => r.program.name).join(" + ") },
+    campus,
+    bySection,
+    journals,
+  };
+}

@@ -59,6 +59,13 @@ export default function ProgramsTab() {
   const campuses = useCampuses();
   const { isProgramAtCampus } = useProgramCampusMap();
   const visiblePrograms = campus ? programs.filter((p) => isProgramAtCampus(p.id, campus)) : programs;
+  // Some curricula keep shared/common courses in their own program record,
+  // separate from each major -- e.g. "BSED Common Courses" alongside "BSED
+  // Major in Math". Picking one or more programs here folds their course
+  // lists into the view/export as extra labeled sections, so a report for
+  // one major reads as the complete bibliography a reviewer expects instead
+  // of two separate ones.
+  const [combineIds, setCombineIds] = useState<Set<number>>(new Set());
 
   // Default to a real campus as soon as the list loads -- an "All campuses"
   // option made the title counts/exports here look like one campus's
@@ -98,6 +105,23 @@ export default function ProgramsTab() {
     return enabledTypes.size < RESOURCE_TYPES.length ? Array.from(enabledTypes).join(",") : undefined;
   }
 
+  function combineParam(): string | undefined {
+    return combineIds.size > 0 ? Array.from(combineIds).join(",") : undefined;
+  }
+
+  // A program combined with itself doesn't mean anything -- if the primary
+  // selection changes to one already in the combine set, drop it from there
+  // instead of silently sending a no-op id to the server.
+  useEffect(() => {
+    if (selected == null) return;
+    setCombineIds((prev) => {
+      if (!prev.has(selected)) return prev;
+      const next = new Set(prev);
+      next.delete(selected);
+      return next;
+    });
+  }, [selected]);
+
   function toggleType(id: ResourceTypeId) {
     setEnabledTypes((prev) => {
       const next = new Set(prev);
@@ -119,6 +143,8 @@ export default function ProgramsTab() {
       if (toYear) params.set("to_year", toYear);
       const types = typesParam();
       if (types !== undefined) params.set("types", types);
+      const combine = combineParam();
+      if (combine !== undefined) params.set("combine_with", combine);
       const url = `/api/programs/${selected}/bibliography${params.toString() ? "?" + params.toString() : ""}`;
       const res = await apiFetch(url);
       const data = await res.json().catch(() => ({}));
@@ -133,7 +159,7 @@ export default function ProgramsTab() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, campus, fromYear, toYear, enabledTypes]);
+  }, [selected, campus, fromYear, toYear, enabledTypes, combineIds]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -145,6 +171,8 @@ export default function ProgramsTab() {
     if (toYear) p.set("to_year", toYear);
     const types = typesParam();
     if (types !== undefined) p.set("types", types);
+    const combine = combineParam();
+    if (combine !== undefined) p.set("combine_with", combine);
     if (fmt.startsWith("citations-")) p.set("style", citationStyle);
     try {
       const res = await apiFetch(`/api/export?${p.toString()}`);
@@ -218,6 +246,43 @@ export default function ProgramsTab() {
               ))}
             </select>
           </label>
+          <label className="label">
+            Combine with
+            <select
+              className="input ml-1 min-w-[220px]"
+              value=""
+              title="Fold another program's courses into this view/export as an extra labeled section -- e.g. a shared Common Courses program alongside this major"
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                if (id) setCombineIds((prev) => new Set(prev).add(id));
+                e.target.value = "";
+              }}
+            >
+              <option value="">+ add a program…</option>
+              {visiblePrograms.filter((p) => p.id !== selected && !combineIds.has(p.id)).map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          {combineIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1">
+              {Array.from(combineIds).map((id) => {
+                const p = programs.find((pp) => pp.id === id);
+                return (
+                  <span key={id} className="text-[11px] pl-2 pr-1 py-0.5 rounded-full bg-slate-100 border border-slate-300 flex items-center gap-1">
+                    {p?.name ?? `#${id}`}
+                    <button
+                      className="text-slate-500 hover:text-red-600 leading-none"
+                      title="Remove from combined report"
+                      onClick={() => setCombineIds((prev) => { const next = new Set(prev); next.delete(id); return next; })}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
           <label className="label">
             Campus
             <select
