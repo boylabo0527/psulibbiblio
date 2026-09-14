@@ -38,6 +38,14 @@ export type ValidateSampleRow = { program: string; course: string; title: string
 export type ValidatePayload = {
   programsTotal: number;
   programsScanned: number;
+  // Row-level counterpart to programsTotal/programsScanned -- programs
+  // vary hugely in how many CSV rows (and Supabase round trips) they
+  // actually involve, so "3 of 57 programs" alone can look stalled for a
+  // long time while a single huge program is mid-scan. Counted from the
+  // CSV rows themselves (courseRows+journalRows per program), known at
+  // job creation, not from anything that requires re-deriving later.
+  rowsTotal: number;
+  rowsScanned: number;
   unknownPrograms: string[];
   applyTotal: number;
   applyDone: number;
@@ -54,7 +62,10 @@ export type ValidatePayload = {
   };
 };
 
-type ScanOp = { type: "scan_program"; program_id: number; program_name: string; courseRows: ValidationRow[]; journalRows: ValidationRow[] };
+type ScanOp = {
+  type: "scan_program"; program_id: number; program_name: string;
+  courseRows: ValidationRow[]; journalRows: ValidationRow[]; rowCount: number;
+};
 type ApplyOp = { type: "lock" | "remove"; subject_id: number; title_id: number };
 type ValidateOp = ScanOp | ApplyOp;
 
@@ -71,9 +82,9 @@ export type ValidateJobRow = {
 
 export const VALIDATE_JOB_KIND = "validate_matches";
 
-function emptyPayload(programsTotal: number): ValidatePayload {
+function emptyPayload(programsTotal: number, rowsTotal: number): ValidatePayload {
   return {
-    programsTotal, programsScanned: 0, unknownPrograms: [],
+    programsTotal, programsScanned: 0, rowsTotal, rowsScanned: 0, unknownPrograms: [],
     applyTotal: 0, applyDone: 0, locked: 0, removed: 0,
     lockedSkippedCount: 0, unresolvedCount: 0, nextSeq: programsTotal,
     sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
@@ -96,7 +107,7 @@ export async function createValidateJob(
   db: ReturnType<typeof serviceClient>,
   rows: ValidationRow[],
   createdBy: string,
-): Promise<{ jobId: string; programsTotal: number; unknownPrograms: string[] }> {
+): Promise<{ jobId: string; programsTotal: number; rowsTotal: number; unknownPrograms: string[] }> {
   const { data: programRows, error } = await db.from("programs").select("id, name");
   if (error) throw error;
   const byName = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.name.trim().toLowerCase(), p.id]));
@@ -121,8 +132,9 @@ export async function createValidateJob(
   }
 
   const programEntries = Array.from(byProgramId.entries());
+  const rowsTotal = programEntries.reduce((n, [, v]) => n + v.courseRows.length + v.journalRows.length, 0);
   const jobId = randomUUID();
-  const payload = emptyPayload(programEntries.length);
+  const payload = emptyPayload(programEntries.length, rowsTotal);
   payload.unknownPrograms = Array.from(unknownPrograms);
 
   const { error: jobErr } = await db.from("sync_jobs").insert({
@@ -133,14 +145,18 @@ export async function createValidateJob(
 
   const items: { job_id: string; seq: number; op: ScanOp }[] = programEntries.map(([program_id, v], i) => ({
     job_id: jobId, seq: i,
-    op: { type: "scan_program", program_id, program_name: v.name, courseRows: v.courseRows, journalRows: v.journalRows },
+    op: {
+      type: "scan_program", program_id, program_name: v.name,
+      courseRows: v.courseRows, journalRows: v.journalRows,
+      rowCount: v.courseRows.length + v.journalRows.length,
+    },
   }));
   for (let i = 0; i < items.length; i += ITEM_INSERT_BATCH) {
     const { error: itemErr } = await db.from("sync_job_items").insert(items.slice(i, i + ITEM_INSERT_BATCH));
     if (itemErr) throw itemErr;
   }
 
-  return { jobId, programsTotal: programEntries.length, unknownPrograms: payload.unknownPrograms };
+  return { jobId, programsTotal: programEntries.length, rowsTotal, unknownPrograms: payload.unknownPrograms };
 }
 
 export async function getValidateJob(db: ReturnType<typeof serviceClient>, jobId: string): Promise<ValidateJobRow | null> {
@@ -157,7 +173,20 @@ export type ValidateChunkResult = { done: boolean; payload: ValidatePayload };
 /** Works through as much of a job's queue as fits in budgetMs -- a
  *  scan_program item checks that program's rows against its current
  *  matches and queues a lock/remove op per result; a lock/remove item
- *  performs that one write. Safe to call again with the same jobId. */
+ *  performs that one write. Safe to call again with the same jobId.
+ *
+ *  Both the deadline check and the persisted save happen per item, not
+ *  once for the whole call: a page can hold up to ITEM_FETCH_BATCH scan_
+ *  program items, and one huge program's own scan (its own handful of
+ *  paginated Supabase queries) can by itself take longer than a single
+ *  item "should". Without checking the deadline between items too, a
+ *  call would try to push through every item already fetched regardless
+ *  of how long that actually takes -- and since progress used to be
+ *  saved only once, at the very end of the whole call, a page that ran
+ *  long enough to hit the *function's* real timeout (not just budgetMs)
+ *  saved nothing at all: the next call re-fetched the exact same items
+ *  and repeated the same slow failure, forever, with the job stuck
+ *  reporting the same counts no matter how many times it was retried. */
 export async function processValidateJobChunk(
   db: ReturnType<typeof serviceClient>,
   job: ValidateJobRow,
@@ -179,12 +208,15 @@ export async function processValidateJobChunk(
     if (!items.length) { remaining = 0; break; }
 
     const newItems: { job_id: string; seq: number; op: ApplyOp }[] = [];
+    const processedIds: number[] = [];
 
     for (const item of items) {
+      if (Date.now() >= deadline) break;
       const op = item.op;
       if (op.type === "scan_program") {
         const preview = await buildProgramValidationPreview(db, op.program_id, op.courseRows, op.journalRows);
         payload.programsScanned++;
+        payload.rowsScanned += op.rowCount;
         for (const r of preview.confirmed) {
           newItems.push({ job_id: job.id, seq: payload.nextSeq++, op: { type: "lock", subject_id: r.subject_id, title_id: r.title_id } });
           pushSample(payload.sample.confirmed, toSample(op.program_name, r));
@@ -211,6 +243,7 @@ export async function processValidateJobChunk(
         payload.removed++;
         payload.applyDone++;
       }
+      processedIds.push(item.id);
     }
 
     if (newItems.length) {
@@ -219,18 +252,33 @@ export async function processValidateJobChunk(
         if (insErr) throw insErr;
       }
     }
-    const ids = items.map((i) => i.id);
-    const { error: delErr } = await db.from("sync_job_items").delete().in("id", ids);
-    if (delErr) throw delErr;
+    if (processedIds.length) {
+      const { error: delErr } = await db.from("sync_job_items").delete().in("id", processedIds);
+      if (delErr) throw delErr;
+    }
+    remaining = remaining - processedIds.length + newItems.length;
 
-    remaining = remaining - items.length + newItems.length;
+    // Saved after every page (not just once at the very end) so a call
+    // that runs out of budget mid-page still leaves this page's work
+    // durably recorded -- both the actual queue state (already true the
+    // moment the delete/insert above commit) and the counts/samples
+    // shown in the UI, which otherwise would have under-reported
+    // whatever this page did until the job finished or failed.
+    const { error: updErr } = await db.from("sync_jobs").update({
+      payload, status: "running", updated_at: new Date().toISOString(),
+    }).eq("id", job.id);
+    if (updErr) throw updErr;
+
+    if (processedIds.length < items.length) break; // stopped early on the deadline
   }
 
   const done = remaining <= 0;
-  const { error: updErr } = await db.from("sync_jobs").update({
-    payload, status: done ? "done" : "running", updated_at: new Date().toISOString(),
-  }).eq("id", job.id);
-  if (updErr) throw updErr;
+  if (done) {
+    const { error: updErr } = await db.from("sync_jobs").update({
+      payload, status: "done", updated_at: new Date().toISOString(),
+    }).eq("id", job.id);
+    if (updErr) throw updErr;
+  }
 
   return { done, payload };
 }

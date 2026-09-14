@@ -6,7 +6,9 @@ import { parseSheetRows, isSpreadsheet, buildValidationRowsFromRaw } from "@/lib
 
 type ValidateSampleRow = { program: string; course: string; title: string };
 type ValidatePayload = {
-  programsTotal: number; programsScanned: number; unknownPrograms: string[];
+  programsTotal: number; programsScanned: number;
+  rowsTotal: number; rowsScanned: number;
+  unknownPrograms: string[];
   applyTotal: number; applyDone: number;
   locked: number; removed: number; lockedSkippedCount: number; unresolvedCount: number;
   sample: {
@@ -18,6 +20,8 @@ type ValidatePayload = {
 type State =
   | { status: "idle" }
   | { status: "running" | "done" | "error"; jobId: string; payload: ValidatePayload; error?: string };
+
+const STORAGE_KEY = "validate-all-programs-job-id";
 
 /** Validate Matches CSV, but for every program the uploaded file mentions
  *  (via its own Program column) at once, instead of one chosen program at
@@ -56,6 +60,32 @@ export default function ValidateAllProgramsAdmin() {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [state.status]);
+
+  // The job itself only advances when a /continue call actually lands --
+  // there's no server-side cron driving it -- so if this tab is closed,
+  // reloaded, or a phone's browser suspends/kills a backgrounded tab
+  // (all real possibilities for a job that can run long), the job just
+  // sits paused wherever it was, not lost: its progress is durably saved
+  // after every page of work now, not just once at the end. Stashing the
+  // jobId here means reopening this same page picks the polling back up
+  // instead of leaving it paused with no way to reconnect to it.
+  useEffect(() => {
+    let storedJobId: string | null = null;
+    try { storedJobId = localStorage.getItem(STORAGE_KEY); } catch { /* private mode, etc. */ }
+    if (!storedJobId) return;
+    startedAtRef.current = Date.now();
+    lastPolledAtRef.current = Date.now();
+    setState({
+      status: "running", jobId: storedJobId, payload: {
+        programsTotal: 0, programsScanned: 0, rowsTotal: 0, rowsScanned: 0,
+        unknownPrograms: [], applyTotal: 0, applyDone: 0,
+        locked: 0, removed: 0, lockedSkippedCount: 0, unresolvedCount: 0,
+        sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
+      },
+    });
+    pollUntilDone(storedJobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function toggleType(id: ResourceTypeId) {
     setEnabledTypes((prev) => {
@@ -103,6 +133,12 @@ export default function ValidateAllProgramsAdmin() {
     }
   }
 
+  function clearStoredJob(jobId: string) {
+    try {
+      if (localStorage.getItem(STORAGE_KEY) === jobId) localStorage.removeItem(STORAGE_KEY);
+    } catch { /* private mode, etc. */ }
+  }
+
   const MAX_CONSECUTIVE_FAILURES = 5;
   async function pollUntilDone(jobId: string) {
     activeJobRef.current = jobId;
@@ -143,7 +179,7 @@ export default function ValidateAllProgramsAdmin() {
       }
       consecutiveFailures = 0;
       setState({ status: j.done ? "done" : "running", jobId, payload: j.payload });
-      if (j.done) return;
+      if (j.done) { clearStoredJob(jobId); return; }
     }
   }
 
@@ -176,15 +212,18 @@ export default function ValidateAllProgramsAdmin() {
         res = await apiFetch("/api/validate-csv/start", { method: "POST", body: fd });
       }
       const text = await res.text().catch(() => "");
-      let j: { jobId?: string; programsTotal?: number; unknownPrograms?: string[]; error?: string } = {};
+      let j: { jobId?: string; programsTotal?: number; rowsTotal?: number; unknownPrograms?: string[]; error?: string } = {};
       try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
       if (!res.ok || j.error || !j.jobId) {
         const message = typeof j.error === "string" && j.error ? j.error : (text || `HTTP ${res.status}`);
         throw new Error(message);
       }
       const jobId = j.jobId;
+      try { localStorage.setItem(STORAGE_KEY, jobId); } catch { /* private mode, etc. */ }
       const payload: ValidatePayload = {
-        programsTotal: j.programsTotal ?? 0, programsScanned: 0, unknownPrograms: j.unknownPrograms ?? [],
+        programsTotal: j.programsTotal ?? 0, programsScanned: 0,
+        rowsTotal: j.rowsTotal ?? 0, rowsScanned: 0,
+        unknownPrograms: j.unknownPrograms ?? [],
         applyTotal: 0, applyDone: 0, locked: 0, removed: 0, lockedSkippedCount: 0, unresolvedCount: 0,
         sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
       };
@@ -192,7 +231,8 @@ export default function ValidateAllProgramsAdmin() {
       await pollUntilDone(jobId);
     } catch (e) {
       setState({ status: "error", jobId: "", payload: {
-        programsTotal: 0, programsScanned: 0, unknownPrograms: [], applyTotal: 0, applyDone: 0,
+        programsTotal: 0, programsScanned: 0, rowsTotal: 0, rowsScanned: 0,
+        unknownPrograms: [], applyTotal: 0, applyDone: 0,
         locked: 0, removed: 0, lockedSkippedCount: 0, unresolvedCount: 0,
         sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
       }, error: e instanceof Error ? e.message : String(e) });
@@ -219,12 +259,16 @@ export default function ValidateAllProgramsAdmin() {
     state.status === "error" ? `Error: ${state.error}` :
     state.status === "done" ? (
       p.programsTotal === 0 ? "Nothing to check -- no rows in the file resolved to a real program."
-        : `Done -- ${p.programsTotal} program(s) checked, ${p.locked} match(es) locked, ${p.removed} removed`
+        : `Done -- ${p.programsTotal} program(s), ${p.rowsTotal.toLocaleString()} row(s) checked, ${p.locked} match(es) locked, ${p.removed} removed`
     ) :
-    (scanning ? `Checking programs… ${p.programsScanned} / ${p.programsTotal}`
+    (scanning
+      ? `Checking programs… ${p.programsScanned} / ${p.programsTotal} (${p.rowsScanned.toLocaleString()} / ${p.rowsTotal.toLocaleString()} rows)`
       : `Applying changes… ${p.applyDone} / ${p.applyTotal}`) + heartbeat;
+  // Rows, not programs, drive the percentage -- programs vary hugely in
+  // size, so "1 of 57 programs" can sit at 2% for a long time even after
+  // genuinely checking thousands of rows in that one program.
   const pct = !p ? 0 :
-    scanning ? (p.programsTotal > 0 ? Math.round((p.programsScanned / p.programsTotal) * 100) : 0)
+    scanning ? (p.rowsTotal > 0 ? Math.round((p.rowsScanned / p.rowsTotal) * 100) : 0)
       : (p.applyTotal > 0 ? Math.round((p.applyDone / p.applyTotal) * 100) : 100);
 
   const renderSample = (rows: ValidateSampleRow[]) => rows.map((r, i) => (

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export type ValidateStartResponse =
-  | { jobId: string; programsTotal: number; unknownPrograms: string[] }
+  | { jobId: string; programsTotal: number; rowsTotal: number; unknownPrograms: string[] }
   | { error: string };
 
 /** POST /api/validate-csv/start -- the system-wide counterpart to
@@ -55,8 +55,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No usable rows found -- need at least Course Code (or Program, for journal rows) and Title columns." }, { status: 400 });
     }
 
-    const { jobId, programsTotal, unknownPrograms } = await createValidateJob(db, rows, userEmail);
-    return NextResponse.json({ jobId, programsTotal, unknownPrograms } satisfies ValidateStartResponse);
+    const { jobId, programsTotal, rowsTotal, unknownPrograms } = await createValidateJob(db, rows, userEmail);
+    return NextResponse.json({ jobId, programsTotal, rowsTotal, unknownPrograms } satisfies ValidateStartResponse);
   } catch (err) {
     return NextResponse.json({ error: errorMessage(err) } satisfies ValidateStartResponse, { status: 500 });
   }
