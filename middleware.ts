@@ -16,6 +16,14 @@ const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api
  *  campus-scope check at all. */
 const PUBLIC_API_EXACT = ["/api/programs"];
 
+/** "/api/programs/:id/journals" specifically (any program id) -- unlike
+ *  ":id/bibliography" above, this route returns only a program's journal
+ *  subscriptions (see its own comment), not per-course book detail, so it's
+ *  safe to expose the same way the rest of the public Dashboard/Procurement
+ *  Analysis is. A regex, not a prefix, so it can't accidentally also match
+ *  ":id/bibliography" or any other sub-path under "/api/programs/:id/". */
+const PUBLIC_PROGRAM_JOURNALS_RE = /^\/api\/programs\/[^/]+\/journals$/;
+
 /** Exact paths where an unauthenticated POST is allowed too, not just GET
  *  -- kept to a tiny, explicit allowlist (currently just the public title
  *  suggestion form) rather than folding into PUBLIC_API_EXACT, since every
@@ -24,6 +32,7 @@ const PUBLIC_API_POST_EXACT = ["/api/title-recommendations/public"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_API_EXACT.includes(pathname)) return true;
+  if (PUBLIC_PROGRAM_JOURNALS_RE.test(pathname)) return true;
   for (const p of PUBLIC_API_PREFIX) {
     if (pathname === p || pathname.startsWith(p + "/")) return true;
   }

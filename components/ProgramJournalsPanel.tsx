@@ -23,7 +23,14 @@ const JOURNAL_TYPES = RESOURCE_TYPES.filter((t) => t.kind === "journal");
  *  in lib/bibliography.ts), so this fetches the same program-wide,
  *  deduplicated list Programs & Export shows, for the Dashboard and
  *  Procurement Analysis tabs where a librarian is checking a program's
- *  overall standing rather than editing individual titles. */
+ *  overall standing rather than editing individual titles.
+ *
+ *  Both of those tabs are meant to work signed out, so this calls
+ *  /api/programs/[id]/journals -- a narrow, deliberately public slice of
+ *  the same data -- rather than /api/programs/[id]/bibliography, which
+ *  also returns full per-course book detail and stays behind sign-in (see
+ *  middleware.ts). Using the bibliography route here would 401 for every
+ *  anonymous visitor. */
 export default function ProgramJournalsPanel({
   programId, campus,
 }: { programId: number | string | null; campus: string }) {
@@ -37,7 +44,7 @@ export default function ProgramJournalsPanel({
     setErr(null);
     const p = new URLSearchParams();
     if (campus) p.set("campus", campus);
-    apiFetch(`/api/programs/${programId}/bibliography${p.toString() ? "?" + p.toString() : ""}`)
+    apiFetch(`/api/programs/${programId}/journals${p.toString() ? "?" + p.toString() : ""}`)
       .then((r) => r.json())
       .then((j) => {
         if (j.error) setErr(j.error);
