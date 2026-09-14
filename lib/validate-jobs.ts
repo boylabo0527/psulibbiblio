@@ -26,7 +26,14 @@ import type { ValidationRow } from "./parsers";
 import { buildProgramValidationPreview, type MatchPreviewRow } from "./validate-matches";
 
 const ITEM_INSERT_BATCH = 500;
-const ITEM_FETCH_BATCH = 200;
+// Higher than you might expect for a single "page": now that lock/remove
+// ops are applied as one bulk RPC call per page (see processValidateJobChunk)
+// rather than one write per item, the real per-page cost is a handful of
+// fixed round trips (select + up to two RPCs + delete + update), not one
+// round trip per item -- so a bigger page means fewer of those fixed costs
+// per item, not a slower or riskier one. Comfortably under any reasonable
+// URL/array-size limit even for a full ~10k-row catalog run.
+const ITEM_FETCH_BATCH = 1000;
 // Capped so the job row itself (payload jsonb) stays a sane, constant
 // size no matter how big the uploaded file or how many programs it
 // covers -- this is only ever used to render a representative sample in
@@ -209,6 +216,13 @@ export async function processValidateJobChunk(
 
     const newItems: { job_id: string; seq: number; op: ApplyOp }[] = [];
     const processedIds: number[] = [];
+    // lock/remove ops are cheap, trivial writes -- buffered here and
+    // applied as one bulk RPC call each per page (below) instead of one
+    // update/delete round trip per item, which was the apply phase's real
+    // bottleneck: thousands of tiny sequential writes, each paying full
+    // network latency to Supabase, for work a single statement can do.
+    const lockItems: { id: number; op: ApplyOp }[] = [];
+    const removeItems: { id: number; op: ApplyOp }[] = [];
 
     for (const item of items) {
       if (Date.now() >= deadline) break;
@@ -230,20 +244,33 @@ export async function processValidateJobChunk(
         for (const r of preview.lockedSkipped) pushSample(payload.sample.lockedSkipped, toSample(op.program_name, r));
         payload.unresolvedCount += preview.unresolvedRows.length;
         for (const r of preview.unresolvedRows) pushSample(payload.sample.unresolved, { program: op.program_name, course: r.course_code, title: r.title });
+        processedIds.push(item.id);
       } else if (op.type === "lock") {
-        const { error: lockErr } = await db.from("assignments").update({ manual: 1 })
-          .eq("subject_id", op.subject_id).eq("title_id", op.title_id);
-        if (lockErr) throw lockErr;
-        payload.locked++;
-        payload.applyDone++;
+        lockItems.push({ id: item.id, op });
       } else {
-        const { error: rmErr } = await db.from("assignments").delete()
-          .eq("subject_id", op.subject_id).eq("title_id", op.title_id).eq("manual", 0);
-        if (rmErr) throw rmErr;
-        payload.removed++;
-        payload.applyDone++;
+        removeItems.push({ id: item.id, op });
       }
-      processedIds.push(item.id);
+    }
+
+    if (lockItems.length) {
+      const { error: lockErr } = await db.rpc("validate_apply_locks", {
+        p_subject_ids: lockItems.map((x) => x.op.subject_id),
+        p_title_ids: lockItems.map((x) => x.op.title_id),
+      });
+      if (lockErr) throw lockErr;
+      payload.locked += lockItems.length;
+      payload.applyDone += lockItems.length;
+      for (const x of lockItems) processedIds.push(x.id);
+    }
+    if (removeItems.length) {
+      const { error: rmErr } = await db.rpc("validate_apply_removes", {
+        p_subject_ids: removeItems.map((x) => x.op.subject_id),
+        p_title_ids: removeItems.map((x) => x.op.title_id),
+      });
+      if (rmErr) throw rmErr;
+      payload.removed += removeItems.length;
+      payload.applyDone += removeItems.length;
+      for (const x of removeItems) processedIds.push(x.id);
     }
 
     if (newItems.length) {
