@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
+import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 
 type ValidateSampleRow = { program: string; course: string; title: string };
 type ValidatePayload = {
@@ -31,20 +32,40 @@ export default function ValidateAllProgramsAdmin() {
   const [state, setState] = useState<State>({ status: "idle" });
   const [exportBusy, setExportBusy] = useState(false);
   const [exportErr, setExportErr] = useState<string | null>(null);
+  // Starts with everything on, same convention as the Materials filter in
+  // Programs & Export -- the default export is unchanged (every type)
+  // until someone actually narrows it.
+  const [enabledTypes, setEnabledTypes] = useState<Set<ResourceTypeId>>(
+    () => new Set(RESOURCE_TYPES.map((t) => t.id)),
+  );
   const activeJobRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function toggleType(id: ResourceTypeId) {
+    setEnabledTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   /** The CSV this tool needs isn't produced anywhere else -- Programs &
    *  Export's own download is per-program (or a few combined via
    *  combine_with). This hits /api/export with program_id=all, which folds
    *  every program into one combined report the same way combine_with
    *  does, so every row -- including journals -- already carries the
-   *  right Program column for the check above to route it by. */
+   *  right Program column for the check above to route it by. Only sent
+   *  when narrowed to a strict subset of every type, same as Programs &
+   *  Export's own typesParam -- with everything checked, omitting it
+   *  entirely keeps the request identical to before this filter existed. */
   async function exportAll() {
     setExportBusy(true);
     setExportErr(null);
     try {
-      const res = await apiFetch("/api/export?program_id=all&fmt=csv");
+      const p = new URLSearchParams({ program_id: "all", fmt: "csv" });
+      if (enabledTypes.size < RESOURCE_TYPES.length) p.set("types", Array.from(enabledTypes).join(","));
+      const res = await apiFetch(`/api/export?${p.toString()}`);
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         let message = text || `HTTP ${res.status}`;
@@ -165,6 +186,37 @@ export default function ValidateAllProgramsAdmin() {
         in the background so a large file doesn&apos;t hit Vercel&apos;s free-plan request time limit. To check
         just one program without applying anything until you review it, use Validate Matches (CSV) above instead.
       </p>
+
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        <span className="text-xs text-slate-600 mr-1">Materials to export:</span>
+        {RESOURCE_TYPES.map((t) => {
+          const on = enabledTypes.has(t.id);
+          return (
+            <button
+              key={t.id}
+              className={
+                "text-[11px] px-2 py-0.5 rounded-full border font-medium " +
+                (on
+                  ? "bg-psu-light text-psu border-psu"
+                  : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
+              }
+              title={on ? `Leave ${t.uiLabel} out of the export` : `Include ${t.uiLabel} in the export`}
+              onClick={() => toggleType(t.id)}
+            >
+              {t.uiLabel}
+            </button>
+          );
+        })}
+        <button className="text-[11px] text-psu underline ml-1" onClick={() => setEnabledTypes(new Set(RESOURCE_TYPES.map((t) => t.id)))}>
+          All
+        </button>
+        <button className="text-[11px] text-slate-400 underline" onClick={() => setEnabledTypes(new Set())}>
+          None
+        </button>
+        {enabledTypes.size === 0 && (
+          <span className="text-xs text-amber-700 ml-1">No material types selected — the export will be empty.</span>
+        )}
+      </div>
 
       <div className="flex items-center gap-2 flex-wrap mb-3">
         <button className="btn-outline text-xs" disabled={exportBusy} onClick={exportAll}>
