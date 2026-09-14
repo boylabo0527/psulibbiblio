@@ -986,6 +986,7 @@ function SubjectBlock({
   let totalVolumes = 0;
   let matchedTitles = 0;
   let matchedVolumes = 0;
+  const unlockedIds: number[] = [];
   for (const t of RESOURCE_TYPES) {
     const list = buckets[t.id] ?? [];
     matchedTitles += list.length;
@@ -993,7 +994,15 @@ function SubjectBlock({
       const vol = t.medium === "print" ? Math.max(1, b.copies ?? 1) : 1;
       matchedVolumes += vol;
       if (b.manual) { totalTitles += 1; totalVolumes += vol; }
+      else unlockedIds.push(b.id);
     }
+  }
+
+  function removeUnlocked() {
+    if (unlockedIds.length === 0) return;
+    if (!confirm(`Remove ${unlockedIds.length} not-yet-validated match${unlockedIds.length === 1 ? "" : "es"} from this course? Locked matches are kept.`)) return;
+    onBulkRemove(unlockedIds);
+    setSelected(new Set());
   }
 
   function toggleSelect(titleId: number) {
@@ -1046,6 +1055,15 @@ function SubjectBlock({
             <span className="text-slate-500"> · {matchedTitles - totalTitles} more matched, not yet validated</span>
           )}
         </p>
+        {unlockedIds.length > 0 && (
+          <button
+            className="text-xs text-red-600 font-medium"
+            title="Remove every currently matched title in this course that hasn't been locked/validated yet -- locked matches are kept"
+            onClick={removeUnlocked}
+          >
+            Remove {unlockedIds.length} not-locked
+          </button>
+        )}
         {selected.size > 0 && (
           <>
             <button
