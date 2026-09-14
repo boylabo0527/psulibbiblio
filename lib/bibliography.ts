@@ -192,9 +192,21 @@ export async function loadCombinedProgramBibliography(
   maxYear?: number,
   types?: ResourceTypeId[],
 ): Promise<ProgramBibliography> {
-  const results = await Promise.all(
-    programIds.map((id) => loadProgramBibliography(id, campus, undefined, minYear, maxYear, types)),
-  );
+  // Bounded, not a single Promise.all across every id -- combine_with is
+  // normally just a couple of programs, but exporting literally every
+  // program in the system (see /api/export's `program_id=all`) reuses
+  // this same function, and firing that many concurrent per-program
+  // queries (each already several of its own round trips) at once risks
+  // exactly the kind of Supabase/Vercel overload this app is otherwise
+  // careful to chunk around.
+  const CONCURRENCY = 8;
+  const results: ProgramBibliography[] = [];
+  for (let i = 0; i < programIds.length; i += CONCURRENCY) {
+    const batch = programIds.slice(i, i + CONCURRENCY);
+    results.push(...await Promise.all(
+      batch.map((id) => loadProgramBibliography(id, campus, undefined, minYear, maxYear, types)),
+    ));
+  }
 
   const bySection = results.flatMap((r) =>
     r.bySection.map((sec) => ({ section: sec.section || r.program.name, subjects: sec.subjects })),

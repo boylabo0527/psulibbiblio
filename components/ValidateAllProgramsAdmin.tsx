@@ -29,8 +29,42 @@ type State =
 export default function ValidateAllProgramsAdmin() {
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<State>({ status: "idle" });
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportErr, setExportErr] = useState<string | null>(null);
   const activeJobRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /** The CSV this tool needs isn't produced anywhere else -- Programs &
+   *  Export's own download is per-program (or a few combined via
+   *  combine_with). This hits /api/export with program_id=all, which folds
+   *  every program into one combined report the same way combine_with
+   *  does, so every row -- including journals -- already carries the
+   *  right Program column for the check above to route it by. */
+  async function exportAll() {
+    setExportBusy(true);
+    setExportErr(null);
+    try {
+      const res = await apiFetch("/api/export?program_id=all&fmt=csv");
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let message = text || `HTTP ${res.status}`;
+        try { message = JSON.parse(text).error ?? message; } catch { /* not JSON */ }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `all_programs_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      setExportErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportBusy(false);
+    }
+  }
 
   const MAX_CONSECUTIVE_FAILURES = 5;
   async function pollUntilDone(jobId: string) {
@@ -131,6 +165,14 @@ export default function ValidateAllProgramsAdmin() {
         in the background so a large file doesn&apos;t hit Vercel&apos;s free-plan request time limit. To check
         just one program without applying anything until you review it, use Validate Matches (CSV) above instead.
       </p>
+
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <button className="btn-outline text-xs" disabled={exportBusy} onClick={exportAll}>
+          {exportBusy ? "Exporting…" : "⬇ Export CSV of every program"}
+        </button>
+        <span className="text-xs text-slate-500">Review/edit it, then upload the (same or edited) file below.</span>
+      </div>
+      {exportErr && <p className="text-red-700 text-xs mb-2">{exportErr}</p>}
 
       <div className="flex items-center gap-2 flex-wrap">
         <input

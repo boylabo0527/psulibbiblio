@@ -9,6 +9,7 @@ import {
 } from "@/lib/exports";
 import type { CitationStyle } from "@/lib/types";
 import { isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
+import { serviceClient } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,19 +24,25 @@ const VALID_STYLES: CitationStyle[] = ["apa7", "mla9", "chicago", "harvard"];
 export async function GET(req: Request) {
   try {
     const u = new URL(req.url);
-    const programId = parseInt(u.searchParams.get("program_id") ?? "", 10);
+    const programIdParam = (u.searchParams.get("program_id") ?? "").trim();
+    // "all" means every program in the system, combined into one report --
+    // the counterpart to ValidateAllProgramsAdmin's system-wide check,
+    // which needs a CSV whose rows already span every program to validate
+    // against (see programBibliographyCsv's Program column).
+    const allPrograms = programIdParam.toLowerCase() === "all";
+    const programId = allPrograms ? NaN : parseInt(programIdParam, 10);
     const fmt = (u.searchParams.get("fmt") ?? "xlsx").toLowerCase();
     const campus = (u.searchParams.get("campus") ?? "").trim();
     const styleParam = (u.searchParams.get("style") ?? "apa7").toLowerCase() as CitationStyle;
     const style = VALID_STYLES.includes(styleParam) ? styleParam : "apa7";
 
-    if (!Number.isFinite(programId)) {
+    if (!allPrograms && !Number.isFinite(programId)) {
       return new Response(JSON.stringify({ error: "program_id is required" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
     const subjectIdParam = parseInt(u.searchParams.get("subject_id") ?? "", 10);
-    const subjectId = Number.isFinite(subjectIdParam) ? subjectIdParam : undefined;
+    const subjectId = !allPrograms && Number.isFinite(subjectIdParam) ? subjectIdParam : undefined;
     const subjectLabel = u.searchParams.get("subject_label") ?? "";
     const minYear = parseInt(u.searchParams.get("from_year") ?? "", 10);
     const maxYear = parseInt(u.searchParams.get("to_year") ?? "", 10);
@@ -49,27 +56,43 @@ export async function GET(req: Request) {
     // export as extra labeled sections (see loadCombinedProgramBibliography)
     // -- not offered together with a single-course export (subject_id),
     // which is already scoped to one course.
-    const combineWith = !subjectId
+    const combineWith = !subjectId && !allPrograms
       ? (u.searchParams.get("combine_with") ?? "")
           .split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n !== programId)
       : [];
-    const data = combineWith.length
-      ? await loadCombinedProgramBibliography(
-          [programId, ...combineWith], campus,
-          Number.isFinite(minYear) ? minYear : undefined,
-          Number.isFinite(maxYear) ? maxYear : undefined,
-          types,
-        )
-      : await loadProgramBibliography(
-          programId, campus, subjectId,
-          Number.isFinite(minYear) ? minYear : undefined,
-          Number.isFinite(maxYear) ? maxYear : undefined,
-          types,
-        );
+
+    let data;
+    if (allPrograms) {
+      const { data: programRows, error } = await serviceClient().from("programs").select("id");
+      if (error) throw error;
+      const allIds = (programRows ?? []).map((p: { id: number }) => p.id);
+      data = await loadCombinedProgramBibliography(
+        allIds, campus,
+        Number.isFinite(minYear) ? minYear : undefined,
+        Number.isFinite(maxYear) ? maxYear : undefined,
+        types,
+      );
+    } else if (combineWith.length) {
+      data = await loadCombinedProgramBibliography(
+        [programId, ...combineWith], campus,
+        Number.isFinite(minYear) ? minYear : undefined,
+        Number.isFinite(maxYear) ? maxYear : undefined,
+        types,
+      );
+    } else {
+      data = await loadProgramBibliography(
+        programId, campus, subjectId,
+        Number.isFinite(minYear) ? minYear : undefined,
+        Number.isFinite(maxYear) ? maxYear : undefined,
+        types,
+      );
+    }
     const baseName = safeName(
-      subjectId && subjectLabel
-        ? subjectLabel
-        : `${data.program.name}${campus ? "_" + campus : ""}`,
+      allPrograms
+        ? `all_programs${campus ? "_" + campus : ""}`
+        : subjectId && subjectLabel
+          ? subjectLabel
+          : `${data.program.name}${campus ? "_" + campus : ""}`,
     );
 
     let body: Buffer; let media: string; let ext: string;
