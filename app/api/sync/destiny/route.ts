@@ -95,14 +95,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ jobId: null, total: 0 } satisfies DestinyStartResponse);
     }
 
-    const rt = RESOURCE_BY_ID.book_printed;
-    const plan = await planIngestOps(db, rt, records, batchId, "");
+    // Main Campus's own barcode convention: a periodical's copy barcode is
+    // prefixed "PSUMLJ" (checked first, since "PSUML" is literally a
+    // prefix of it too), a book's just "PSUML". Destiny has no separate
+    // material-type field confirmed reliable enough to split on (see the
+    // query's own comment), so everything used to come through as
+    // book_printed regardless -- silently losing every periodical into the
+    // book list instead of showing up as a journal anywhere. Other
+    // campuses' barcodes don't follow this convention, so they're left as
+    // book_printed exactly as before.
+    const journalRecords: TitleRow[] = [];
+    const bookRecords: TitleRow[] = [];
+    for (const r of records) {
+      const bc = (r.barcode ?? "").toUpperCase();
+      if (r.campus === "Main Campus" && bc.startsWith("PSUMLJ")) journalRecords.push(r);
+      else bookRecords.push(r);
+    }
+
+    const bookPlan = bookRecords.length
+      ? await planIngestOps(db, RESOURCE_BY_ID.book_printed, bookRecords, batchId, "")
+      : { ops: [], duplicates: 0, noCampusTitles: [] as string[], received: 0, mode: "standard" as const };
+    const journalPlan = journalRecords.length
+      ? await planIngestOps(db, RESOURCE_BY_ID.journal_printed, journalRecords, batchId, "")
+      : { ops: [], duplicates: 0, noCampusTitles: [] as string[], received: 0, mode: "standard" as const };
+
+    const ops = [...bookPlan.ops, ...journalPlan.ops];
+    const duplicates = (bookPlan.duplicates ?? 0) + (journalPlan.duplicates ?? 0);
+    const noCampusTitles = [...bookPlan.noCampusTitles, ...journalPlan.noCampusTitles];
 
     const jobId = await createSyncJob(db, {
       kind: DESTINY_SYNC_KIND,
-      ops: plan.ops,
-      duplicates: plan.duplicates,
-      noCampusTitles: plan.noCampusTitles,
+      ops,
+      duplicates,
+      noCampusTitles,
       unmappedCampuses: Array.from(unmapped),
       batchId,
       createdBy: userEmail,
@@ -110,12 +135,14 @@ export async function POST(req: Request) {
 
     await logActivity(db, {
       userEmail, action: "sync_destiny",
-      summary: `Destiny sync started: ${plan.ops.length.toLocaleString()} row(s) queued (${records.length.toLocaleString()} fetched, ${(plan.duplicates ?? 0).toLocaleString()} already up to date)`,
-      detail: { jobId, total: plan.ops.length, fetched: records.length },
+      summary: `Destiny sync started: ${ops.length.toLocaleString()} row(s) queued`
+        + ` (${records.length.toLocaleString()} fetched -- ${journalRecords.length.toLocaleString()} as printed journals, `
+        + `${bookRecords.length.toLocaleString()} as printed books -- ${duplicates.toLocaleString()} already up to date)`,
+      detail: { jobId, total: ops.length, fetched: records.length, journals: journalRecords.length, books: bookRecords.length },
       batchId,
     });
 
-    return NextResponse.json({ jobId, total: plan.ops.length } satisfies DestinyStartResponse);
+    return NextResponse.json({ jobId, total: ops.length } satisfies DestinyStartResponse);
   } catch (err) {
     const message = errorMessage(err);
     await logActivity(db, {

@@ -23,8 +23,8 @@ export const RESOURCE_TYPES = [
   },
   {
     id: "ebook_open",
-    uiLabel: "Open Source eBooks",
-    sectionLabel: "Open Source eBooks",
+    uiLabel: "Open Access eBooks",
+    sectionLabel: "Open Access eBooks",
     kind: "book",  access: "open", medium: "digital",
     campusScoped: false,
     dedupBy: "isbn-or-tuple",
@@ -67,8 +67,8 @@ export const RESOURCE_TYPES = [
   },
   {
     id: "journal_online_open",
-    uiLabel: "Open Source Online Journals",
-    sectionLabel: "Open Source Online Journals",
+    uiLabel: "Open Access Online Journals",
+    sectionLabel: "Open Access Online Journals",
     kind: "journal", access: "open", medium: "digital",
     campusScoped: false,
     dedupBy: "issn-or-title",
