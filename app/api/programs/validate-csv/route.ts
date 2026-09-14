@@ -56,14 +56,19 @@ export type ValidateCsvPreview = {
 };
 
 /** POST /api/programs/validate-csv -- preview only, no writes. Body:
- *  multipart/form-data with `file` (the CSV/XLSX) and `program_id`.
+ *  multipart/form-data with `file` (the CSV/XLSX), `program_id`, and an
+ *  optional `subject_id` to scope the check to just that one course
+ *  instead of every course in the program -- useful when only a single
+ *  course's matches were sent out for review, or when re-checking one
+ *  course after fixing it, rather than re-reviewing the whole program.
  *
  *  Workflow this supports: a librarian exports the Programs & Export CSV
  *  (title+description matching only gets you so far), has it reviewed --
  *  by an outside AI or a person -- for which matches actually belong, then
  *  re-uploads the reviewed copy here. Only courses that appear in the
- *  upload are touched; every current (non-locked) assignment for those
- *  courses that the upload doesn't confirm is proposed for removal. */
+ *  upload (and, if scoped, match the selected course) are touched; every
+ *  current (non-locked) assignment for those courses that the upload
+ *  doesn't confirm is proposed for removal. */
 export async function POST(req: Request) {
   try {
     const db = serviceClient();
@@ -76,6 +81,8 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const file = form.get("file") as File | null;
     const programId = Number(form.get("program_id"));
+    const subjectIdParam = Number(form.get("subject_id"));
+    const scopedSubjectId = Number.isFinite(subjectIdParam) && subjectIdParam > 0 ? subjectIdParam : undefined;
     if (!file) return NextResponse.json({ error: "No file uploaded." }, { status: 400 });
     if (!programId) return NextResponse.json({ error: "program_id is required." }, { status: 400 });
     if (!(await isProgramInScope(db, perms, programId))) {
@@ -92,12 +99,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No usable rows found -- need at least Course Code and Title columns." }, { status: 400 });
     }
 
-    type SubjectRow = { id: number; course_code: string | null; course_title: string };
-    const subjects = await pageThrough<SubjectRow>((from, to) =>
-      db.from("subjects")
-        .select("id, course_code, course_title").eq("program_id", programId)
-        .range(from, to) as unknown as PromiseLike<{ data: SubjectRow[] | null; error: { message: string } | null }>,
-    );
+    type SubjectRow = { id: number; course_code: string | null; course_title: string; program_id: number };
+    let subjects: SubjectRow[];
+    if (scopedSubjectId) {
+      const { data: subj, error } = await db.from("subjects")
+        .select("id, course_code, course_title, program_id").eq("id", scopedSubjectId).maybeSingle();
+      if (error) throw error;
+      if (!subj || subj.program_id !== programId) {
+        return NextResponse.json({ error: "Course not found in this program." }, { status: 404 });
+      }
+      subjects = [subj];
+      // Rows for any other course in the file are out of scope, not
+      // "unknown" -- silently ignored instead of reported, since a
+      // course-scoped check is normally run against the same full-program
+      // export, not a file trimmed to just this course.
+      rows = (subj.course_code ?? "").trim()
+        ? rows.filter((r) => r.course_code.trim().toLowerCase() === subj.course_code!.trim().toLowerCase())
+        : [];
+    } else {
+      subjects = await pageThrough<SubjectRow>((from, to) =>
+        db.from("subjects")
+          .select("id, course_code, course_title, program_id").eq("program_id", programId)
+          .range(from, to) as unknown as PromiseLike<{ data: SubjectRow[] | null; error: { message: string } | null }>,
+      );
+    }
     const subjectByCode = new Map(subjects
       .filter((s) => (s.course_code ?? "").trim())
       .map((s) => [s.course_code!.trim().toLowerCase(), s]));

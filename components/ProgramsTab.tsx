@@ -428,7 +428,12 @@ export default function ProgramsTab() {
       )}
 
       {canEdit(perms, "programs") && selected && (
-        <ValidateCsvPanel programId={selected} onApplied={load} />
+        <ValidateCsvPanel
+          key={selected}
+          programId={selected}
+          courses={biblio?.bySection.flatMap((sec) => sec.subjects.map((s) => s.subject)) ?? []}
+          onApplied={load}
+        />
       )}
 
       {perms.isAdmin && <PerlegoSearchPanel />}
@@ -444,8 +449,15 @@ export default function ProgramsTab() {
  *  courses present in the file are touched; anything the file doesn't
  *  confirm for those courses is proposed for removal (never added --
  *  this prunes bad matches, it doesn't invent new ones). */
-function ValidateCsvPanel({ programId, onApplied }: { programId: number; onApplied: () => void }) {
+function ValidateCsvPanel({
+  programId, courses, onApplied,
+}: {
+  programId: number;
+  courses: { id: number; course_code: string; course_title: string }[];
+  onApplied: () => void;
+}) {
   const [file, setFile] = useState<File | null>(null);
+  const [courseScope, setCourseScope] = useState<number | "">("");
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -472,6 +484,7 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
       const fd = new FormData();
       fd.append("file", file);
       fd.append("program_id", String(programId));
+      if (courseScope) fd.append("subject_id", String(courseScope));
       const res = await apiFetch("/api/programs/validate-csv", { method: "POST", body: fd });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
@@ -616,7 +629,8 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
         description text -- then upload the reviewed copy here. Only courses that appear in the file
         are touched; for those, any current match the file doesn&apos;t confirm is proposed for removal.
         Delete the rows that don&apos;t belong before uploading, or add a column such as
-        &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly.
+        &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly. Scope to one course below to check
+        just that course instead of the whole program -- other courses in the file are left untouched.
       </p>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <input
@@ -625,6 +639,17 @@ function ValidateCsvPanel({ programId, onApplied }: { programId: number; onAppli
           onChange={(e) => { setFile(e.target.files?.[0] ?? null); reset(); }}
           className="text-xs"
         />
+        <select
+          className="input text-xs min-w-[220px]"
+          value={courseScope}
+          title="Check the upload against just one course instead of the whole program"
+          onChange={(e) => { setCourseScope(e.target.value ? Number(e.target.value) : ""); reset(); }}
+        >
+          <option value="">Whole program</option>
+          {courses.map((c) => (
+            <option key={c.id} value={c.id}>{c.course_code ? `${c.course_code} — ${c.course_title}` : c.course_title}</option>
+          ))}
+        </select>
         <button className="btn text-xs" disabled={!file || checking} onClick={check}>
           {checking ? "Checking…" : "Check"}
         </button>
