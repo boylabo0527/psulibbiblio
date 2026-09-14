@@ -8,6 +8,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import type { DestinyDiagnostics } from "@/lib/destiny";
 import BulkDeleteAdmin from "@/components/BulkDeleteAdmin";
 import DedupeBarcodesAdmin from "@/components/DedupeBarcodesAdmin";
+import ReclassifyJournalsAdmin from "@/components/ReclassifyJournalsAdmin";
 import MigrateToHostingerAdmin from "@/components/MigrateToHostingerAdmin";
 
 // A Destiny catalog sync can involve tens of thousands of rows -- far more
@@ -188,13 +189,16 @@ function DestinySyncCard() {
 
   return (
     <div className="card border-2 border-psu-light">
-      <h2 className="text-psu font-semibold mb-1">Sync Printed Books from Destiny</h2>
+      <h2 className="text-psu font-semibold mb-1">Sync Printed Books &amp; Journals from Destiny</h2>
       <p className="text-sm text-slate-600 mb-2">
-        Pulls the printed-book catalog directly from your Destiny database instead of exporting and uploading a
-        file. Uses the same duplicate/copy-count logic as a manual Printed Books upload above. Runs in the
-        background across several short requests (so a large catalog doesn't hit Vercel's free-plan request time
-        limit) -- progress is saved, so it's safe to leave this page and come back. Admin-only, since it uses
-        org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.) rather than a per-tab permission.
+        Pulls the printed catalog directly from your Destiny database instead of exporting and uploading a file.
+        Uses the same duplicate/copy-count logic as a manual upload above. For Main Campus, a copy barcode
+        starting with &quot;PSUMLJ&quot; is filed as a printed journal instead of a printed book (everything
+        else, and every other campus, stays a printed book -- Destiny has no reliable material-type field to
+        split on otherwise). Runs in the background across several short requests (so a large catalog doesn't
+        hit Vercel's free-plan request time limit) -- progress is saved, so it's safe to leave this page and come
+        back. Admin-only, since it uses org-wide database credentials configured in Vercel (DESTINY_DB_HOST etc.)
+        rather than a per-tab permission.
       </p>
       <div className="flex items-center gap-2">
         <button className="btn text-xs" disabled={busy} onClick={runStart}>
@@ -656,6 +660,7 @@ export default function UploadTab() {
       />
       <BulkDeleteAdmin />
       <DedupeBarcodesAdmin />
+      <ReclassifyJournalsAdmin />
       <MigrateToHostingerAdmin />
     </>
   );

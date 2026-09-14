@@ -24,7 +24,8 @@ export type ActivityAction =
   | "purchase_order_delivery_status"
   | "pr_overdue_reminder_sent"
   | "tor_generate"
-  | "settings_update";
+  | "settings_update"
+  | "reclassify_journals";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed
