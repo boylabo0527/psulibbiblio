@@ -653,9 +653,12 @@ function ValidateCsvPanel({
         Export the master CSV above, have it reviewed for accuracy -- Match here only scores title and
         description text -- then upload the reviewed copy here. Only courses that appear in the file
         are touched; for those, any current match the file doesn&apos;t confirm is proposed for removal.
-        Delete the rows that don&apos;t belong before uploading, or add a column such as
-        &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly. Scope to one course below to check
-        just that course instead of the whole program -- other courses in the file are left untouched.
+        Journal rows (Program-wide, no course code) are checked too -- against every journal currently
+        matched anywhere in the program -- as long as the file still has its Program column and the
+        check isn&apos;t scoped to a single course. Delete the rows that don&apos;t belong before
+        uploading, or add a column such as &quot;Applicable&quot; (Yes/No) to mark verdicts explicitly.
+        Scope to one course below to check just that course instead of the whole program (and its
+        journals) -- other courses in the file are left untouched.
       </p>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <input
