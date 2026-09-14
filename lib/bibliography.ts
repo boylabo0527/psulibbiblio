@@ -124,6 +124,10 @@ export async function loadProgramBibliography(
     const title = { ...a.titles, manual: a.manual };
     const journalMap = journalsById.get(fmt);
     if (journalMap) {
+      // A journal has no course of its own to say which program it belongs
+      // to the way a book's Course Code/Title does -- tag it explicitly so
+      // exports (see programBibliographyCsv) can still show it.
+      title.program = progRow.name;
       if (title.id != null) {
         const existing = journalMap.get(title.id);
         // A journal can be matched to several courses in the same program;
@@ -213,9 +217,17 @@ export async function loadCombinedProgramBibliography(
         // Same journal matched under more than one of the combined
         // programs -- only counts as locked/validated once every one of
         // those programs has it locked, same AND-across-duplicates rule
-        // loadProgramBibliography applies within a single program.
+        // loadProgramBibliography applies within a single program. Its
+        // `program` (each source result tagged its own name onto its own
+        // journals) is combined too, so the export still says every
+        // program the journal is actually assigned to, not just the first.
         if (!existing) { seen.set(title.id, title); journals[t.id].push(title); }
-        else existing.manual = existing.manual && title.manual ? 1 : 0;
+        else {
+          existing.manual = existing.manual && title.manual ? 1 : 0;
+          if (title.program && title.program !== existing.program) {
+            existing.program = existing.program ? `${existing.program} + ${title.program}` : title.program;
+          }
+        }
       }
     }
   }
