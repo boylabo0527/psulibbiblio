@@ -2,6 +2,7 @@
 import { useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
+import { parseSheetRows, isSpreadsheet, buildValidationRowsFromRaw } from "@/lib/parse-client";
 
 type ValidateSampleRow = { program: string; course: string; title: string };
 type ValidatePayload = {
@@ -133,18 +134,42 @@ export default function ValidateAllProgramsAdmin() {
     if (!file) return;
     setState({ status: "idle" });
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await apiFetch("/api/validate-csv/start", { method: "POST", body: fd });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      // Parse in the browser and send just the few fields validation
+      // actually needs (course_code/program/title/isbn/verdict), not
+      // every export column -- a CSV covering every program can be large
+      // enough in its full multi-column form to land close to (or over) a
+      // serverless function's request body limit. Same reasoning as the
+      // batched upload in UploadTab.tsx, minus the batching: this file's
+      // rows, narrowed to those few fields, are already far smaller than
+      // the original.
+      let res: Response;
+      if (isSpreadsheet(file)) {
+        const rows = buildValidationRowsFromRaw(await parseSheetRows(file));
+        res = await apiFetch("/api/validate-csv/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows }),
+        });
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        res = await apiFetch("/api/validate-csv/start", { method: "POST", body: fd });
+      }
+      const text = await res.text().catch(() => "");
+      let j: { jobId?: string; programsTotal?: number; unknownPrograms?: string[]; error?: string } = {};
+      try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+      if (!res.ok || j.error || !j.jobId) {
+        const message = typeof j.error === "string" && j.error ? j.error : (text || `HTTP ${res.status}`);
+        throw new Error(message);
+      }
+      const jobId = j.jobId;
       const payload: ValidatePayload = {
-        programsTotal: j.programsTotal, programsScanned: 0, unknownPrograms: j.unknownPrograms ?? [],
+        programsTotal: j.programsTotal ?? 0, programsScanned: 0, unknownPrograms: j.unknownPrograms ?? [],
         applyTotal: 0, applyDone: 0, locked: 0, removed: 0, lockedSkippedCount: 0, unresolvedCount: 0,
         sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
       };
-      setState({ status: "running", jobId: j.jobId, payload });
-      await pollUntilDone(j.jobId);
+      setState({ status: "running", jobId, payload });
+      await pollUntilDone(jobId);
     } catch (e) {
       setState({ status: "error", jobId: "", payload: {
         programsTotal: 0, programsScanned: 0, unknownPrograms: [], applyTotal: 0, applyDone: 0,

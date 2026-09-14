@@ -320,43 +320,16 @@ export function buildSubjectRowsFromRaw(rows: Record<string, string>[]): ParsedS
 // ---------------------------------------------------------------------------
 // Validation rows: re-upload of a Programs & Export CSV (possibly reviewed
 // by an outside AI) to confirm/prune which title-to-course matches belong.
+// The actual field-extraction (buildValidationRowsFromRaw) lives in
+// lib/parse-client.ts, a dependency-free module safe to import from a
+// "use client" component too -- ValidateAllProgramsAdmin calls it directly
+// on rows it already parsed in the browser, to narrow a large multi-
+// program export down to just these fields before sending it anywhere.
+// Re-exported here so every existing server-side import of these from
+// "@/lib/parsers" keeps working unchanged.
 // ---------------------------------------------------------------------------
-const VALIDATE_ALIASES: Record<string, string[]> = {
-  course_code: ["course code", "code", "course_code", "subject code"],
-  // Only load-bearing for a journal row (course_code blank) -- it's the
-  // only way to say which program to check the row against, since a
-  // journal has no course of its own the way a book does.
-  program: ["program", "programme", "program name"],
-  title: ["title"],
-  isbn: ["isbn", "isbn-13", "isbn13", "issn"],
-  // Whatever column the reviewer (human or AI) used to record its verdict --
-  // its exact name doesn't matter, only that it holds one of the yes/no
-  // values recognized below.
-  verdict: [
-    "applicable", "applicable to course", "applicable?",
-    "valid", "keep", "keep?", "match", "matched", "ai match", "ai verdict",
-    "verdict", "decision", "status", "correct", "relevant", "result",
-  ],
-};
-
-const VERDICT_YES = new Set(["yes", "y", "true", "1", "keep", "valid", "correct", "applicable", "match", "matched", "relevant", "ok", "pass"]);
-const VERDICT_NO = new Set(["no", "n", "false", "0", "remove", "invalid", "incorrect", "not applicable", "no match", "not matched", "irrelevant", "drop", "delete", "fail"]);
-
-export type ValidationRow = {
-  /** Blank on a journal row -- see `program` below. */
-  course_code: string;
-  /** From the CSV's "Program" column. Blank on a course row (course_code
-   *  says which program already, via the course) and on an export that
-   *  predates this column; load-bearing only for a journal row. */
-  program: string;
-  /** Title of the matched resource (book/ebook/journal/etc.), not the course. */
-  title: string;
-  isbn: string;
-  /** true = confirmed applicable, false = confirmed NOT applicable,
-   *  null = no verdict column (or an unrecognized value) -- the row's mere
-   *  presence in the file is the only signal. */
-  verdict: boolean | null;
-};
+export { buildValidationRowsFromRaw, type ValidationRow } from "./parse-client";
+import { buildValidationRowsFromRaw } from "./parse-client";
 
 /** Parses a Programs & Export CSV/XLSX re-upload into per-row course/program
  *  + title + verdict. Course Code and Title are the usual columns, but a
@@ -365,30 +338,6 @@ export type ValidationRow = {
  *  value, since that's the only thing that says what to check it against.
  *  Every other export column (Section, Description, Resource Type, Author,
  *  ...) is ignored. */
-export async function parseValidationRows(filename: string, buf: Buffer): Promise<ValidationRow[]> {
-  const rows = rowsFromWorkbook(readSheet(filename, buf));
-  if (rows.length === 0) return [];
-  const map = buildHeaderMap(Object.keys(rows[0]), VALIDATE_ALIASES);
-  if (!map.course_code || !map.title) {
-    throw new Error(`Could not find Course Code and Title columns. Headers: ${Object.keys(rows[0]).join(", ")}`);
-  }
-  const out: ValidationRow[] = [];
-  for (const r of rows) {
-    const course_code = (r[map.course_code] || "").trim();
-    const program = map.program ? (r[map.program] || "").trim() : "";
-    const title = (r[map.title] || "").trim();
-    if (!title || (!course_code && !program)) continue;
-    let verdict: boolean | null = null;
-    if (map.verdict) {
-      const raw = norm(r[map.verdict]);
-      if (VERDICT_YES.has(raw)) verdict = true;
-      else if (VERDICT_NO.has(raw)) verdict = false;
-    }
-    out.push({
-      course_code, program, title,
-      isbn: map.isbn ? (r[map.isbn] || "").trim() : "",
-      verdict,
-    });
-  }
-  return out;
+export async function parseValidationRows(filename: string, buf: Buffer) {
+  return buildValidationRowsFromRaw(rowsFromWorkbook(readSheet(filename, buf)));
 }
