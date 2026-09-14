@@ -589,7 +589,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="4. Open Source eBooks"
+        title="4. Open Access eBooks"
         hint="Open Access eBook lists (OAPEN, DOAB, etc.). Same recognized columns as the paid template."
         endpoint="/api/upload/ebook_open"
         templates={[
@@ -650,7 +650,7 @@ export default function UploadTab() {
         ]}
       />
       <FileCard
-        title="10. Open Source Online Journals"
+        title="10. Open Access Online Journals"
         hint="Open Access online journals (DOAJ, etc.). Same recognized columns as the subscribed template."
         endpoint="/api/upload/journal_online_open"
         templates={[
