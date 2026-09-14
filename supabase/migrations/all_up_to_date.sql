@@ -22,7 +22,8 @@
 -- 39_pr_fund_source.sql + 40_public_title_suggestions.sql +
 -- 41_submitter_role.sql + 42_suggestion_campus.sql +
 -- 43_backfill_printed_campus.sql + 44_promote_locked_subject_assignments.sql +
--- 45_app_settings.sql + 46_match_candidates_format_filter.sql
+-- 45_app_settings.sql + 46_match_candidates_format_filter.sql +
+-- 47_validate_jobs_payload.sql
 -- in order. If you've already run some of those individually, running this
 -- on top is still safe.
 
@@ -837,3 +838,10 @@ as $$
   order by g.is_must_match desc, g.lexical_rank desc
   limit limit_n;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 47: generic scratch-space column reusing sync_jobs/sync_job_items for a
+-- second, structurally different job kind (the system-wide Validate
+-- Matches CSV job) -- see 47_validate_jobs_payload.sql.
+-- ---------------------------------------------------------------------------
+alter table sync_jobs add column if not exists payload jsonb not null default '{}'::jsonb;

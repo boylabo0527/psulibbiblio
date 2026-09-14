@@ -12,6 +12,7 @@ import type { ValidateCsvPreview, ValidateCsvPreviewRow } from "@/app/api/progra
 import type { ValidateApplyEvent } from "@/app/api/programs/validate-csv/apply/route";
 import type { BulkLockEvent } from "@/app/api/match/lock/bulk/route";
 import type { BulkAddPrintedEvent } from "@/app/api/match/add-printed/bulk/route";
+import ValidateAllProgramsAdmin from "@/components/ValidateAllProgramsAdmin";
 
 type Program = { id: number; name: string };
 type Title = {
@@ -461,6 +462,7 @@ export default function ProgramsTab() {
         />
       )}
 
+      {canEdit(perms, "programs") && <ValidateAllProgramsAdmin />}
       {perms.isAdmin && <PerlegoSearchPanel />}
     </>
   );
