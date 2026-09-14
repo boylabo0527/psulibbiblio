@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { parseSheetRows, isSpreadsheet, buildValidationRowsFromRaw } from "@/lib/parse-client";
@@ -41,6 +41,21 @@ export default function ValidateAllProgramsAdmin() {
   );
   const activeJobRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // A single program with a lot of subjects/assignments can eat a whole
+  // /continue call's time budget without programsScanned moving at all --
+  // that's still real progress, not a hang, but the progress bar alone
+  // can't tell the two apart. These timestamps back a "last response Ns
+  // ago" heartbeat so it's visible either way: it keeps resetting near 0
+  // while a poll is actually landing, and only grows if one truly stalls.
+  const startedAtRef = useRef<number | null>(null);
+  const lastPolledAtRef = useRef<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (state.status !== "running") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state.status]);
 
   function toggleType(id: ResourceTypeId) {
     setEnabledTypes((prev) => {
@@ -101,6 +116,8 @@ export default function ValidateAllProgramsAdmin() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jobId }),
         });
+        lastPolledAtRef.current = Date.now();
+        setNow(Date.now());
       } catch (e) {
         consecutiveFailures++;
         if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
@@ -133,6 +150,9 @@ export default function ValidateAllProgramsAdmin() {
   async function start() {
     if (!file) return;
     setState({ status: "idle" });
+    startedAtRef.current = Date.now();
+    lastPolledAtRef.current = Date.now();
+    setNow(Date.now());
     try {
       // Parse in the browser and send just the few fields validation
       // actually needs (course_code/program/title/isbn/verdict), not
@@ -182,14 +202,27 @@ export default function ValidateAllProgramsAdmin() {
   const busy = state.status === "running";
   const p = state.status !== "idle" ? state.payload : null;
   const scanning = !!p && p.programsScanned < p.programsTotal;
+  const secondsSince = (ref: number | null) => ref == null ? null : Math.max(0, Math.round((now - ref) / 1000));
+  const sinceLastPoll = busy ? secondsSince(lastPolledAtRef.current) : null;
+  const elapsed = busy ? secondsSince(startedAtRef.current) : null;
+  // A poll landing (whatever it found) resets sinceLastPoll near 0 -- as
+  // long as that keeps happening, the job is alive even while
+  // programsScanned sits still on one big program. It only climbing
+  // instead is the actual sign something's stuck: the current /continue
+  // call hasn't come back yet well past when one normally would.
+  const heartbeat = busy && sinceLastPoll != null
+    ? (sinceLastPoll <= 12
+        ? ` (still working -- checked in ${elapsed}s, last response ${sinceLastPoll}s ago)`
+        : ` (waiting on a response -- ${sinceLastPoll}s since the last one; still fine unless this keeps climbing)`)
+    : "";
   const label = !p ? "" :
     state.status === "error" ? `Error: ${state.error}` :
     state.status === "done" ? (
       p.programsTotal === 0 ? "Nothing to check -- no rows in the file resolved to a real program."
         : `Done -- ${p.programsTotal} program(s) checked, ${p.locked} match(es) locked, ${p.removed} removed`
     ) :
-    scanning ? `Checking programs… ${p.programsScanned} / ${p.programsTotal}`
-      : `Applying changes… ${p.applyDone} / ${p.applyTotal}`;
+    (scanning ? `Checking programs… ${p.programsScanned} / ${p.programsTotal}`
+      : `Applying changes… ${p.applyDone} / ${p.applyTotal}`) + heartbeat;
   const pct = !p ? 0 :
     scanning ? (p.programsTotal > 0 ? Math.round((p.programsScanned / p.programsTotal) * 100) : 0)
       : (p.applyTotal > 0 ? Math.round((p.applyDone / p.applyTotal) * 100) : 100);
