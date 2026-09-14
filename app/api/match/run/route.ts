@@ -1,5 +1,6 @@
 import { scoreCandidates, subjectText, subjectQueryTerms, subjectMustQuery, titleText } from "@/lib/matcher";
 import type { Candidate } from "@/lib/matcher";
+import { isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import { ndjsonStream } from "@/lib/streaming";
@@ -94,6 +95,17 @@ export async function POST(req: Request) {
   // subject whose list still needs work without re-running (and
   // re-scoring) every other subject in the program that's already fine.
   const subjectId = url.searchParams.get("subject_id");
+  // Restricts which resource types are even considered as match candidates
+  // -- e.g. only "journal_online_paid"/"journal_online_open" to specifically
+  // build out a course's journal list without the run also re-scoring (and
+  // silently overwriting) its existing book matches. Filtered inside the
+  // match_titles_candidates RPC itself (see supabase/migrations/
+  // 46_match_candidates_format_filter.sql for why it can't just be a
+  // post-hoc filter on the results).
+  const formatsParam = url.searchParams.get("formats");
+  const formats: ResourceTypeId[] | undefined = formatsParam
+    ? formatsParam.split(",").filter(isResourceTypeId)
+    : undefined;
   // Set by the client when continuing a run that paused for time -- see
   // the "paused" phase below.
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
@@ -212,7 +224,29 @@ export async function POST(req: Request) {
       // than all subjects up front) so a paused/resumed run never touches
       // subjects a prior chunk already finished.
       const batchIds = batch.map((s) => s.id!);
-      { const { error } = await db.from("assignments").delete().in("subject_id", batchIds).eq("manual", 0); if (error) throw error; }
+      if (!formats) {
+        const { error } = await db.from("assignments").delete().in("subject_id", batchIds).eq("manual", 0);
+        if (error) throw error;
+      } else {
+        // A format-restricted run (e.g. "only online journals") must only
+        // replace THAT slice of the course's existing matches -- deleting
+        // every manual=0 row here (the unrestricted path above) would wipe
+        // out its book matches too, even though this run never touches or
+        // re-scores books at all. Two round trips instead of one delete:
+        // find which of this batch's current auto-matches are actually in
+        // the restricted formats, then delete only those by id.
+        const { data: existing, error: selErr } = await db.from("assignments")
+          .select("id, titles!inner(format)")
+          .in("subject_id", batchIds).eq("manual", 0)
+          .in("titles.format", formats) as unknown as
+          { data: { id: number }[] | null; error: { message: string } | null };
+        if (selErr) throw selErr;
+        const idsToDelete = (existing ?? []).map((a) => a.id);
+        if (idsToDelete.length) {
+          const { error } = await db.from("assignments").delete().in("id", idsToDelete);
+          if (error) throw error;
+        }
+      }
 
       const batchCandidates = await Promise.all(batch.map(async (subject) => {
         const terms = subjectQueryTerms(subject);
@@ -228,6 +262,7 @@ export async function POST(req: Request) {
               query_text: terms.join(" | "),
               must_text: subjectMustQuery(subject),
               limit_n: CANDIDATE_LIMIT,
+              formats: formats ?? null,
             });
             if (error) throw new Error(error.message);
             return { subject, candidates: (data ?? []) as Candidate[] };
@@ -337,8 +372,8 @@ export async function POST(req: Request) {
     });
     await logActivity(db, {
       userEmail, action: "match_run",
-      summary: `Ran matching${subjectId ? " (one course)" : programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
-      detail: { program_id: programId ?? null, subject_id: subjectId ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
+      summary: `Ran matching${subjectId ? " (one course)" : programId ? " (one program)" : " (all programs)"}${formats ? ` [${formats.join(", ")} only]` : ""}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
+      detail: { program_id: programId ?? null, subject_id: subjectId ?? null, formats: formats ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
     });
   });
 
