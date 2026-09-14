@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api-client";
 import { JOURNAL_MIN_UNDERGRAD, JOURNAL_MIN_GRADUATE_ADDITIONAL } from "@/lib/compliance";
 
 type JournalTitle = {
-  id: number; format: ResourceTypeId; title: string;
+  id: number; format: ResourceTypeId; title: string; publisher?: string;
   call_no: string; issn: string; year: string; copies: number; url?: string;
   /** Whether every course this journal is matched to in the program has had
    *  that match locked (assignments.manual) -- see toggleJournalLock in
@@ -104,6 +104,7 @@ export default function ProgramJournalsPanel({
                     <th className="py-1 pr-2">Type</th>
                     <th className="py-1 pr-2">Call No. / ISSN</th>
                     <th className="py-1 pr-2">Title</th>
+                    <th className="py-1 pr-2">Publisher</th>
                     <th className="py-1 pr-2">Year</th>
                   </tr>
                 </thead>
@@ -118,6 +119,7 @@ export default function ProgramJournalsPanel({
                           <a href={j.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-psu" title={j.url}>🔗</a>
                         )}
                       </td>
+                      <td className="py-1 pr-2">{j.publisher}</td>
                       <td className="py-1 pr-2">{j.year}</td>
                     </tr>
                   )))}
