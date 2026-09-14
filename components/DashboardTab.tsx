@@ -224,7 +224,8 @@ export default function DashboardTab() {
           )}
         </h2>
         <p className="text-xs text-slate-500 mb-3" title="Auto-matches don't count here until a librarian locks them, directly or via Validate Matches CSV in Programs & Export">
-          Title/volume counts below are validated (locked) matches only -- journal subscriptions are counted as confirmed on entry since they aren't matched per title.
+          Title/volume counts below are validated (locked) matches only -- a journal counts once its match is
+          locked across every course it's assigned to in the program, same as a book match.
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           {[

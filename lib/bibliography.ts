@@ -124,7 +124,15 @@ export async function loadProgramBibliography(
     const title = { ...a.titles, manual: a.manual };
     const journalMap = journalsById.get(fmt);
     if (journalMap) {
-      if (title.id != null && !journalMap.has(title.id)) journalMap.set(title.id, title);
+      if (title.id != null) {
+        const existing = journalMap.get(title.id);
+        // A journal can be matched to several courses in the same program;
+        // it only counts as locked/validated once every one of those
+        // matches has been confirmed, so this is an AND across duplicates
+        // rather than "first one wins".
+        if (!existing) journalMap.set(title.id, title);
+        else existing.manual = existing.manual && title.manual ? 1 : 0;
+      }
       continue;
     }
     const bucket = bySubject.get(a.subject_id);
@@ -190,18 +198,24 @@ export async function loadCombinedProgramBibliography(
 
   type Buckets = Record<ResourceTypeId, TitleRow[]>;
   const journals: Buckets = Object.fromEntries(RESOURCE_TYPES.map((t) => [t.id, [] as TitleRow[]])) as Buckets;
-  const seenByFormat = new Map<ResourceTypeId, Set<number>>();
+  const seenByFormat = new Map<ResourceTypeId, Map<number, TitleRow>>();
   for (const r of results) {
     for (const t of RESOURCE_TYPES) {
       if (t.kind !== "journal") continue;
-      if (!seenByFormat.has(t.id)) seenByFormat.set(t.id, new Set());
+      if (!seenByFormat.has(t.id)) seenByFormat.set(t.id, new Map());
       const seen = seenByFormat.get(t.id)!;
       for (const title of r.journals[t.id]) {
-        if (title.id != null) {
-          if (seen.has(title.id)) continue;
-          seen.add(title.id);
+        if (title.id == null) {
+          journals[t.id].push(title);
+          continue;
         }
-        journals[t.id].push(title);
+        const existing = seen.get(title.id);
+        // Same journal matched under more than one of the combined
+        // programs -- only counts as locked/validated once every one of
+        // those programs has it locked, same AND-across-duplicates rule
+        // loadProgramBibliography applies within a single program.
+        if (!existing) { seen.set(title.id, title); journals[t.id].push(title); }
+        else existing.manual = existing.manual && title.manual ? 1 : 0;
       }
     }
   }

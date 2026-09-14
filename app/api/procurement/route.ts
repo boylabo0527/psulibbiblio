@@ -117,15 +117,37 @@ export async function GET(req: Request) {
     // same thing it does everywhere else this data is shown.
     const journalMap = new Map<number, Map<ResourceTypeId, { titleIds: Set<number>; volumes: number }>>();
 
+    // A journal can be matched to several courses in the same program;
+    // toggleJournalLock in ProgramsTab locks/unlocks it across all of them
+    // at once, but a newly-matched course can still add a fresh manual=0
+    // row before that happens -- so "locked" for a journal means every one
+    // of its matches in the program is locked, not just the row this loop
+    // happens to be looking at. Folded (AND) across every row for the same
+    // program+title before the main loop below decides what counts.
+    const journalLocked = new Map<string, boolean>();
+    for (const a of assignments) {
+      const t = a.titles;
+      if (!t || RESOURCE_BY_ID[t.format as ResourceTypeId]?.kind !== "journal") continue;
+      const pid = programBySubject.get(a.subject_id);
+      if (pid == null) continue;
+      const key = `${pid}:${t.id}`;
+      journalLocked.set(key, (journalLocked.get(key) ?? true) && !!a.manual);
+    }
+
     for (const a of assignments) {
       const t = a.titles;
       if (!t) continue;
 
       if (RESOURCE_BY_ID[t.format as ResourceTypeId]?.kind === "journal") {
-        const isCampusScopedJournal = t.format === "journal_printed";
-        if (isCampusScopedJournal && campus && t.campus !== campus) continue;
         const pid = programBySubject.get(a.subject_id);
         if (pid == null) continue;
+        // Same lock/validate gate as every other format below: a journal
+        // only counts once a librarian has locked its match on every
+        // course it's assigned to in the program (toggleJournalLock in
+        // ProgramsTab locks them all together for exactly this reason).
+        if (!journalLocked.get(`${pid}:${t.id}`)) continue;
+        const isCampusScopedJournal = t.format === "journal_printed";
+        if (isCampusScopedJournal && campus && t.campus !== campus) continue;
         if (!journalMap.has(pid)) journalMap.set(pid, new Map());
         const byFormat = journalMap.get(pid)!;
         const fmt = t.format as ResourceTypeId;
@@ -140,8 +162,6 @@ export async function GET(req: Request) {
 
       // Non-journal titles only count once a librarian has locked (validated)
       // the match -- an auto-match is a candidate, not a confirmed answer.
-      // No per-journal lock UI exists yet, so journals (handled above) are
-      // deliberately exempt from this filter.
       if (!a.manual) continue;
 
       const isCampusScoped = t.format === "book_printed";

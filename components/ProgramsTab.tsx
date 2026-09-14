@@ -232,6 +232,29 @@ export default function ProgramsTab() {
     load();
   }
 
+  /** A journal is program-wide, so "locking" it means confirming its match
+   *  on every course it's assigned to in this program at once, not just
+   *  one -- toggleAssignmentLock above only ever touches a single course.
+   *  Until every one of those matches is locked, the journal stays
+   *  unvalidated and Dashboard/Procurement Analysis won't count or show
+   *  it (see ProgramJournalsPanel and /api/dashboard/subjects), even
+   *  though it still appears here for review. */
+  async function toggleJournalLock(titleId: number, lock: boolean) {
+    if (!biblio) return;
+    const subjectIds = biblio.bySection.flatMap((sec) => sec.subjects.map((s) => s.subject.id));
+    if (!subjectIds.length) return;
+    const res = await apiFetch("/api/match/lock/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: subjectIds.map((subject_id) => ({ subject_id, title_id: titleId })),
+        lock,
+      }),
+    });
+    await consumeNdjson<BulkLockEvent>(res, () => {});
+    load();
+  }
+
   return (
     <>
       <div className="card">
@@ -406,7 +429,8 @@ export default function ProgramsTab() {
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold">Journals</span>
                 <span className="text-xs text-slate-500">
-                  program-wide -- applies to every course, listed once instead of repeated per course
+                  program-wide -- applies to every course, listed once instead of repeated per course. Lock a
+                  journal once it's been checked; the Dashboard and Procurement Analysis only count locked ones.
                 </span>
               </div>
               {RESOURCE_TYPES.filter((t) => t.kind === "journal").map((t) => (
@@ -420,6 +444,7 @@ export default function ProgramsTab() {
                   hideRemove
                   hideAuthor
                   showProvider={t.id === "journal_online_paid" || t.id === "journal_complementary"}
+                  onToggleLock={toggleJournalLock}
                 />
               ))}
             </div>

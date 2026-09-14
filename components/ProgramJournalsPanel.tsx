@@ -7,6 +7,12 @@ import { JOURNAL_MIN_UNDERGRAD, JOURNAL_MIN_GRADUATE_ADDITIONAL } from "@/lib/co
 type JournalTitle = {
   id: number; format: ResourceTypeId; title: string;
   call_no: string; issn: string; year: string; copies: number; url?: string;
+  /** Whether every course this journal is matched to in the program has had
+   *  that match locked (assignments.manual) -- see toggleJournalLock in
+   *  ProgramsTab. Only locked/validated journals count here; an
+   *  auto-matched title nobody has reviewed yet stays invisible to the
+   *  Dashboard and Procurement Analysis until it's locked. */
+  manual?: number;
 };
 type Buckets = Record<ResourceTypeId, JournalTitle[]>;
 
@@ -43,7 +49,14 @@ export default function ProgramJournalsPanel({
 
   if (!programId) return null;
 
-  const rows = journals ? JOURNAL_TYPES.flatMap((t) => journals[t.id] ?? []) : [];
+  const allRows = journals ? JOURNAL_TYPES.flatMap((t) => journals[t.id] ?? []) : [];
+  // Only a journal whose match has been locked (validated by a librarian --
+  // see toggleJournalLock in ProgramsTab) counts here or shows in the table
+  // below; an auto-matched title nobody has confirmed yet doesn't count
+  // toward CMO No. 15 compliance or appear on the Dashboard/Procurement
+  // Analysis, even though it's visible for review in Programs & Export.
+  const rows = allRows.filter((j) => j.manual === 1);
+  const pending = allRows.length - rows.length;
   const total = rows.length;
   const meetsUndergrad = total >= JOURNAL_MIN_UNDERGRAD;
   const meetsGraduate = total >= JOURNAL_MIN_UNDERGRAD + JOURNAL_MIN_GRADUATE_ADDITIONAL;
@@ -68,8 +81,14 @@ export default function ProgramJournalsPanel({
                 : `; a graduate program needs ${JOURNAL_MIN_GRADUATE_ADDITIONAL} more on top of that (${JOURNAL_MIN_UNDERGRAD + JOURNAL_MIN_GRADUATE_ADDITIONAL} total)`
             )}.
           </p>
+          {pending > 0 && (
+            <p className="text-xs text-slate-500 mb-2">
+              {pending} more journal title{pending === 1 ? "" : "s"} matched but not yet locked/validated in
+              Programs &amp; Export -- not counted here until confirmed.
+            </p>
+          )}
           {total === 0 ? (
-            <p className="text-slate-500 text-sm">No journals matched to this program yet.</p>
+            <p className="text-slate-500 text-sm">No validated journals matched to this program yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -82,7 +101,7 @@ export default function ProgramJournalsPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {JOURNAL_TYPES.flatMap((t) => (journals?.[t.id] ?? []).map((j) => (
+                  {JOURNAL_TYPES.flatMap((t) => rows.filter((j) => j.format === t.id).map((j) => (
                     <tr key={j.id} className="border-b border-slate-100">
                       <td className="py-1 pr-2">{t.sectionLabel}</td>
                       <td className="py-1 pr-2">{j.call_no || j.issn}</td>
