@@ -5,6 +5,7 @@ import type { ResourceTypeId } from "@/lib/resources";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { apiFetch } from "@/lib/api-client";
 import type { ProcurementRow } from "@/app/api/procurement/route";
+import type { JournalTotals } from "@/app/api/dashboard/subjects/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
 import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS, MIN_PRINTED_BOOKS } from "@/lib/compliance";
@@ -44,6 +45,7 @@ export default function ProcurementTab() {
   const [campus, setCampus] = useState("");
   const [view, setView] = useState<ViewFilter>("needs");
   const [rows, setRows] = useState<ProcurementRow[]>([]);
+  const [journalTotals, setJournalTotals] = useState<JournalTotals>({});
   const [loading, setLoading] = useState(true); // true only until the very first fetch resolves
   const [refreshing, setRefreshing] = useState(false); // true for every fetch after that
   const [err, setErr] = useState<string | null>(null);
@@ -80,7 +82,7 @@ export default function ProcurementTab() {
     if (campus) p.set("campus", campus);
     apiFetch(`/api/procurement?${p}`)
       .then((r) => r.json())
-      .then((j) => { if (j.error) setErr(j.error); else setRows(j.rows ?? []); })
+      .then((j) => { if (j.error) setErr(j.error); else { setRows(j.rows ?? []); setJournalTotals(j.journalTotals ?? {}); } })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => { setRefreshing(false); setLoading(false); });
   }
@@ -121,8 +123,20 @@ export default function ProcurementTab() {
   const totalGap = displayRows.reduce((a, r) => a + r.gap, 0);
   const complianceRate = total > 0 ? Math.round((compliantCount / total) * 100) : 0;
 
+  // Journals aren't in any row's own `counts` (see /api/procurement --
+  // they're program-wide, same treatment as Programs & Export and the
+  // ProgramJournalsPanel already shown on this tab). Summed in here
+  // separately, once per program actually in view, instead of once per
+  // subject Match happened to attach them to.
+  const journalProgramIds = programId
+    ? [Number(programId)]
+    : (validProgramIds ? Array.from(validProgramIds) : programs.map((p) => p.id));
   const byType = RESOURCE_TYPES.reduce<Record<ResourceTypeId, number>>((acc, rt) => {
-    acc[rt.id] = displayRows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
+    if (rt.kind === "journal") {
+      acc[rt.id] = journalProgramIds.reduce((a, pid) => a + (journalTotals[pid]?.[rt.id]?.titles ?? 0), 0);
+    } else {
+      acc[rt.id] = displayRows.reduce((a, r) => a + (r.counts[rt.id] ?? 0), 0);
+    }
     return acc;
   }, {} as Record<ResourceTypeId, number>);
   const totalPrinted = RESOURCE_TYPES.filter((rt) => rt.medium === "print").reduce((a, rt) => a + (byType[rt.id] ?? 0), 0);
@@ -168,6 +182,8 @@ export default function ProcurementTab() {
           including <span className="font-semibold">at least {MIN_PRINTED_BOOKS} recent printed book</span> -- {ACCREDITATION_MIN} recent
           eBooks alone is not compliant. Titles with no publication year or older than {cutoffYear} do not count toward compliance.
           Subjects with at least <span className="font-semibold">{PARTIAL_MIN}</span> recent titles count as partial compliance.
+          Only <span className="font-semibold">locked (validated)</span> matches count toward these numbers -- an auto-match from
+          Match doesn't count until a librarian reviews and locks it, directly or via Validate Matches CSV in Programs & Export.
         </div>
 
         {/* Filters */}

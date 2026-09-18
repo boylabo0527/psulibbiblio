@@ -58,16 +58,19 @@ export default function UserManagementTab() {
   const [newRoleName, setNewRoleName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserRoleId, setNewUserRoleId] = useState<string>("");
+  const [googleLoginEnabled, setGoogleLoginEnabled] = useState(true);
+  const [savingGoogleLogin, setSavingGoogleLogin] = useState(false);
 
   async function load() {
     setLoading(true);
     setErr(null);
     try {
-      const [rolesRes, usersRes, campusesRes, userCampusesRes] = await Promise.all([
+      const [rolesRes, usersRes, campusesRes, userCampusesRes, settingsRes] = await Promise.all([
         apiFetch("/api/admin/roles").then((r) => r.json()),
         apiFetch("/api/admin/users").then((r) => r.json()),
         apiFetch("/api/campuses").then((r) => r.json()),
         apiFetch("/api/admin/user-campuses").then((r) => r.json()),
+        apiFetch("/api/settings").then((r) => r.json()),
       ]);
       if (rolesRes.error) throw new Error(rolesRes.error);
       if (usersRes.error) throw new Error(usersRes.error);
@@ -78,10 +81,32 @@ export default function UserManagementTab() {
       setUsers(usersRes.users ?? []);
       setCampuses(campusesRes.campuses ?? []);
       setUserCampuses(userCampusesRes.user_campuses ?? {});
+      if (typeof settingsRes.settings?.google_login_enabled === "boolean") {
+        setGoogleLoginEnabled(settingsRes.settings.google_login_enabled);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function toggleGoogleLogin(next: boolean) {
+    setSavingGoogleLogin(true);
+    setErr(null);
+    try {
+      const res = await apiFetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ google_login_enabled: next }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setGoogleLoginEnabled(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingGoogleLogin(false);
     }
   }
 
@@ -232,6 +257,17 @@ export default function UserManagementTab() {
 
       {!loading && (
         <>
+          <div className="card">
+            <h2 className="text-psu font-semibold mb-1">Sign-in Settings</h2>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox" checked={googleLoginEnabled} disabled={savingGoogleLogin}
+                onChange={(e) => toggleGoogleLogin(e.target.checked)}
+              />
+              <span>Allow signing in with Google on the login screen</span>
+            </label>
+          </div>
+
           <div className="card">
             <h2 className="text-psu font-semibold mb-1">Roles &amp; Permissions</h2>
             <p className="text-xs text-slate-500 mb-3">

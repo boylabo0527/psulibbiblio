@@ -2,9 +2,11 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { consumeNdjson } from "@/lib/streaming";
+import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import type { MatchProgressEvent } from "@/app/api/match/run/route";
 
 type Program = { id: number; name: string };
+type Course = { subject_id: number; course_code: string; course_title: string };
 
 // Persisted so an interrupted run (laptop sleeps, tab closes, network
 // drops mid-chunk) can be resumed from its last committed batch instead of
@@ -18,8 +20,9 @@ type MatchCheckpoint = {
   matchesSoFar: number;
   failedSoFar: { course_code: string; error: string }[];
   params: {
-    topK: number; minScore: number; programId: string;
+    topK: number; minScore: number; programId: string; subjectId: string;
     balanceFormats: boolean; topKPrinted: number; topKDigital: number;
+    formats: string | undefined;
   };
   savedAt: number;
 };
@@ -59,11 +62,21 @@ function phaseLabel(progress: MatchProgressEvent): string {
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string>("");
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [subjectId, setSubjectId] = useState<string>("");
   const [topK, setTopK] = useState(8);
   const [balanceFormats, setBalanceFormats] = useState(false);
   const [topKPrinted, setTopKPrinted] = useState(4);
   const [topKDigital, setTopKDigital] = useState(4);
   const [minScore, setMinScore] = useState(0.06);
+  // Restricts which resource types are even considered as match candidates
+  // -- e.g. checking just "Online Journals (Paid)"/"Online Journals (Open)"
+  // to specifically build out a course's journal list, without the run also
+  // re-scoring/touching its book matches. Starts with everything on so the
+  // default run is unchanged from before this filter existed.
+  const [enabledFormats, setEnabledFormats] = useState<Set<ResourceTypeId>>(
+    () => new Set(RESOURCE_TYPES.map((t) => t.id)),
+  );
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -75,11 +88,40 @@ export default function MatchTab() {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
 
+  // Lets a librarian re-match just one course instead of the whole
+  // program -- some subjects in a program already have a good list and
+  // don't need touching, only the ones that don't. Re-fetched whenever
+  // the program changes; "All programs" has no single course list, so the
+  // course picker only applies with one program selected.
+  useEffect(() => {
+    setSubjectId("");
+    if (!programId) { setCourses([]); return; }
+    apiFetch(`/api/procurement?program_id=${programId}`).then((r) => r.json())
+      .then((d) => setCourses(d.rows ?? []))
+      .catch(() => setCourses([]));
+  }, [programId]);
+
   useEffect(() => {
     setResumable(loadCheckpoint());
   }, []);
 
   useEffect(() => () => { if (tickerRef.current) clearInterval(tickerRef.current); }, []);
+
+  function toggleFormat(id: ResourceTypeId) {
+    setEnabledFormats((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Only sent when the selection is a strict subset of every type (possibly
+  // empty) -- with everything checked, omitting the param entirely keeps
+  // the request identical to before this filter existed.
+  function formatsParam(): string | undefined {
+    return enabledFormats.size < RESOURCE_TYPES.length ? Array.from(enabledFormats).join(",") : undefined;
+  }
 
   async function run(resume?: MatchCheckpoint) {
     setBusy(true);
@@ -92,7 +134,7 @@ export default function MatchTab() {
     // A resumed run keeps using the ORIGINAL run's settings throughout,
     // even if the form has since been changed -- mixing settings across
     // chunks of the same logical run would produce an incoherent result.
-    const p = resume?.params ?? { topK, minScore, programId, balanceFormats, topKPrinted, topKDigital };
+    const p = resume?.params ?? { topK, minScore, programId, subjectId, balanceFormats, topKPrinted, topKDigital, formats: formatsParam() };
     try {
       // A large catalog can take longer to match than a single serverless
       // request is allowed to run. Rather than fail once the platform's
@@ -109,10 +151,12 @@ export default function MatchTab() {
       for (;;) {
         const params = new URLSearchParams({ top_k: String(p.topK), min_score: String(p.minScore) });
         if (p.programId) params.set("program_id", p.programId);
+        if (p.subjectId) params.set("subject_id", p.subjectId);
         if (p.balanceFormats) {
           params.set("top_k_printed", String(p.topKPrinted));
           params.set("top_k_digital", String(p.topKDigital));
         }
+        if (p.formats) params.set("formats", p.formats);
         if (offset > 0) {
           params.set("offset", String(offset));
           params.set("matches_so_far", String(matchesSoFar));
@@ -176,6 +220,20 @@ export default function MatchTab() {
             ))}
           </select>
         </label>
+        {programId && (
+          <label className="label">
+            Course
+            <select
+              className="input ml-1" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}
+              title="Re-match just this course instead of the whole program -- useful when most subjects already have a good list and only a few don't"
+            >
+              <option value="">All courses in this program</option>
+              {courses.map((c) => (
+                <option key={c.subject_id} value={c.subject_id}>{c.course_code ? `${c.course_code} — ${c.course_title}` : c.course_title}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {!balanceFormats && (
           <label className="label">
             Top K
@@ -189,6 +247,42 @@ export default function MatchTab() {
             value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
         <button className="btn" onClick={() => run()} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5 mb-3">
+        <span className="text-sm text-slate-600 mr-1">Materials:</span>
+        {RESOURCE_TYPES.map((t) => {
+          const on = enabledFormats.has(t.id);
+          return (
+            <button
+              key={t.id}
+              className={
+                "text-[11px] px-2 py-0.5 rounded-full border font-medium " +
+                (on
+                  ? "bg-psu-light text-psu border-psu"
+                  : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
+              }
+              title={on ? `Exclude ${t.uiLabel} from candidates this run` : `Only consider ${t.uiLabel} as candidates this run`}
+              onClick={() => toggleFormat(t.id)}
+            >
+              {t.uiLabel}
+            </button>
+          );
+        })}
+        <button className="text-[11px] text-psu underline ml-1" onClick={() => setEnabledFormats(new Set(RESOURCE_TYPES.map((t) => t.id)))}>
+          All
+        </button>
+        <button className="text-[11px] text-slate-400 underline" onClick={() => setEnabledFormats(new Set())}>
+          None
+        </button>
+        {enabledFormats.size === 0 && (
+          <span className="text-xs text-amber-700 ml-1">No material types selected — matching will find nothing.</span>
+        )}
+        {enabledFormats.size > 0 && enabledFormats.size < RESOURCE_TYPES.length && (
+          <span className="text-xs text-slate-500 ml-1">
+            Only these types are considered as candidates -- e.g. narrow a run to just Online Journals to build out a course&apos;s journal list without touching its book matches.
+          </span>
+        )}
       </div>
 
       {resumable && !busy && (

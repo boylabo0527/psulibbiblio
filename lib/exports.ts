@@ -295,16 +295,22 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   };
   const lines = [
     [
-      "Section", "Course Code", "Course Title", "Description",
+      "Program", "Section", "Course Code", "Course Title", "Description",
       "Resource Type", "Call No.", "ISSN", "Author", "Title", "Publisher", "Year", "Copies", "Link",
     ].join(","),
   ];
   for (const sec of b.bySection) {
+    // A combined-programs report (see loadCombinedProgramBibliography)
+    // labels each section with its source program's name; a single-program
+    // report leaves section blank, so the report's own program is the
+    // right fallback -- either way this is the specific program the row
+    // belongs to, not just whichever program the report happens to be for.
+    const program = sec.section || b.program.name;
     for (const sub of sec.subjects) {
       for (const t of RESOURCE_TYPES) {
         for (const tt of sub.buckets[t.id]) {
           lines.push([
-            sec.section, sub.subject.course_code, sub.subject.course_title,
+            program, sec.section, sub.subject.course_code, sub.subject.course_title,
             sub.subject.description, t.sectionLabel,
             tt.call_no, tt.issn, tt.author, tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
           ].map(escape).join(","));
@@ -316,11 +322,14 @@ export function programBibliographyCsv(b: ProgramBibliography): Buffer {
   // here (blank course code/title) instead of repeated per subject.
   // Author is left blank -- a journal doesn't have one the way a book
   // does -- rather than dropping the shared Author column outright and
-  // making book vs. journal rows a different shape.
+  // making book vs. journal rows a different shape. Program comes from
+  // the journal's own tag (loadProgramBibliography/loadCombinedProgram-
+  // Bibliography), not the report's, since a combined report can merge
+  // the same journal in from more than one source program.
   for (const t of RESOURCE_TYPES) {
     for (const tt of b.journals[t.id]) {
       lines.push([
-        "", "", "(Program-wide)",
+        tt.program || b.program.name, "", "", "(Program-wide)",
         "", t.sectionLabel,
         tt.call_no, tt.issn, "", tt.title, tt.publisher, tt.year, tt.copies ?? 1, tt.url ?? "",
       ].map(escape).join(","));

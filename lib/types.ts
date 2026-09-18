@@ -32,6 +32,14 @@ export type TitleRow = {
    *  runs never delete a protected assignment, so it survives even
    *  though the course itself keeps getting re-matched. */
   manual?: number;
+  /** Set on a journal returned from a program bibliography: the name of
+   *  the program(s) it's assigned to (" + "-joined when a combined-programs
+   *  report merges the same journal in from more than one source program).
+   *  A journal has no course of its own to say this the way a book's
+   *  Course Code/Title does, so exports need it spelled out explicitly --
+   *  see loadProgramBibliography/loadCombinedProgramBibliography in
+   *  lib/bibliography.ts and programBibliographyCsv in lib/exports.ts. */
+  program?: string;
 };
 
 export type ProgramRow = {

@@ -193,8 +193,20 @@ export function scoreCandidates(
   const balanced = opts.topKPrinted != null || opts.topKDigital != null;
   let selected: typeof scored;
   if (balanced) {
-    const printed = scored.filter((s) => s.printed).slice(0, opts.topKPrinted ?? 0);
-    const digital = scored.filter((s) => !s.printed).slice(0, opts.topKDigital ?? 0);
+    // "printed"/"digital" here specifically means what actually shows
+    // under THIS course in Programs & Export -- journals never do (a
+    // subscription is program-wide, so it's always pulled out into the
+    // program's own Journals section regardless of which course's search
+    // happened to find it). journal_printed shares medium:"print" with
+    // book_printed, so without this exclusion a "guarantee N printed"
+    // quota could get filled with journal matches that then silently
+    // vanish from the course's own list -- the course looks like matching
+    // did nothing even though titles really were assigned, just not to a
+    // slot this course's page will ever display them in.
+    const isJournal = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.kind === "journal";
+    const eligible = scored.filter((s) => !isJournal(s.c.format));
+    const printed = eligible.filter((s) => s.c.format === "book_printed").slice(0, opts.topKPrinted ?? 0);
+    const digital = eligible.filter((s) => s.c.format !== "book_printed").slice(0, opts.topKDigital ?? 0);
     selected = [...printed, ...digital]
       .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
   } else {
