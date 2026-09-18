@@ -116,6 +116,16 @@ export async function middleware(req: NextRequest) {
       nonce,
     );
   }
+  // The Destiny push script (see scripts/destiny-push.mjs) has no
+  // Supabase session either -- it authenticates via DESTINY_INGEST_SECRET
+  // instead (checked in the route itself), same reasoning as the cron
+  // bypass just above.
+  if (pathname === "/api/sync/destiny/ingest" || pathname.startsWith("/api/sync/destiny/ingest/")) {
+    return withSecurityHeaders(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      nonce,
+    );
+  }
   // The public bypass only applies to GET — POST/PUT/PATCH/DELETE on these
   // paths still require a signed-in user, even though anyone can read them.
   // The one exception is the tiny explicit POST allowlist above.
