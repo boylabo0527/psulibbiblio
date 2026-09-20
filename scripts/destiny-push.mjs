@@ -13,10 +13,15 @@
  * the internet.
  *
  * Requires Node.js 18+ (for the built-in `fetch`) and the `mssql`
- * package. Simplest way to get both: run this from inside a checkout of
- * this repo after `npm install`, e.g.:
+ * package. This folder has its own package.json for exactly that --
+ * you don't need the rest of the app's dependencies (Next.js, PDF/DOCX
+ * parsing, etc) on whatever machine runs this. Deploy just this
+ * `scripts/` folder (copy it, or clone the whole repo and ignore the
+ * rest) to that machine, then:
  *
- *   node scripts/destiny-push.mjs
+ *   cd scripts
+ *   npm install
+ *   node destiny-push.mjs
  *
  * Configure via environment variables -- the DESTINY_DB_* ones are the
  * exact same names and meaning as the app's own pull-based sync (see
