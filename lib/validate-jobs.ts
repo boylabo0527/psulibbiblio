@@ -79,7 +79,13 @@ type ValidateOp = ScanOp | ApplyOp;
 export type ValidateJobRow = {
   id: string;
   kind: string;
-  status: "running" | "done" | "error";
+  // "collecting": the upload is still arriving in chunks (see
+  // createCollectingValidateJob/appendValidateJobRows/finalizeValidateJob
+  // below) -- not yet queued for scanning. /api/validate-csv/continue
+  // treats it the same as any other non-"running" status (reports
+  // done:false and does nothing), so a client that polls before finalizing
+  // just harmlessly no-ops instead of erroring.
+  status: "collecting" | "running" | "done" | "error";
   error: string | null;
   created_by: string;
   created_at: string;
@@ -102,19 +108,23 @@ function pushSample(list: ValidateSampleRow[], row: ValidateSampleRow) {
   if (list.length < SAMPLE_CAP) list.push(row);
 }
 
-/** Groups already-parsed CSV rows by their Program column, resolves each
+/** Groups already-parsed CSV rows by their Program column, resolving each
  *  name to a program_id (case-insensitive exact match against the
  *  programs table -- combined-programs exports label a shared journal
  *  "Program A + Program B", so that literal string is split back apart
- *  first), and creates the job with one scan_program item per resolved
- *  program. A row whose Program value doesn't resolve (blank, a typo, or
+ *  first). A row whose Program value doesn't resolve (blank, a typo, or
  *  an export from before the Program column existed) is reported in
- *  unknownPrograms instead of silently dropped. */
-export async function createValidateJob(
+ *  unknownPrograms instead of silently dropped. Shared by createValidateJob
+ *  (small file, one shot) and finalizeValidateJob (chunked upload, rows
+ *  collected across several requests first) so they can't drift apart on
+ *  how a row gets grouped. */
+async function groupRowsByProgram(
   db: ReturnType<typeof serviceClient>,
   rows: ValidationRow[],
-  createdBy: string,
-): Promise<{ jobId: string; programsTotal: number; rowsTotal: number; unknownPrograms: string[] }> {
+): Promise<{
+  programEntries: [number, { name: string; courseRows: ValidationRow[]; journalRows: ValidationRow[] }][];
+  unknownPrograms: string[];
+}> {
   const { data: programRows, error } = await db.from("programs").select("id, name");
   if (error) throw error;
   const byName = new Map((programRows ?? []).map((p: { id: number; name: string }) => [p.name.trim().toLowerCase(), p.id]));
@@ -138,18 +148,18 @@ export async function createValidateJob(
     if (!matchedAny) unknownPrograms.add(r.program || "(blank)");
   }
 
-  const programEntries = Array.from(byProgramId.entries());
-  const rowsTotal = programEntries.reduce((n, [, v]) => n + v.courseRows.length + v.journalRows.length, 0);
-  const jobId = randomUUID();
-  const payload = emptyPayload(programEntries.length, rowsTotal);
-  payload.unknownPrograms = Array.from(unknownPrograms);
+  return { programEntries: Array.from(byProgramId.entries()), unknownPrograms: Array.from(unknownPrograms) };
+}
 
-  const { error: jobErr } = await db.from("sync_jobs").insert({
-    id: jobId, kind: VALIDATE_JOB_KIND, status: "running",
-    created_by: createdBy, payload,
-  });
-  if (jobErr) throw jobErr;
-
+/** Writes the resolved program groups as one scan_program item each,
+ *  starting at seq 0 -- the ops processValidateJobChunk actually works
+ *  through. Separate from groupRowsByProgram so finalizeValidateJob can
+ *  group first, then write, without creating the job row twice. */
+async function queueScanItems(
+  db: ReturnType<typeof serviceClient>,
+  jobId: string,
+  programEntries: [number, { name: string; courseRows: ValidationRow[]; journalRows: ValidationRow[] }][],
+): Promise<void> {
   const items: { job_id: string; seq: number; op: ScanOp }[] = programEntries.map(([program_id, v], i) => ({
     job_id: jobId, seq: i,
     op: {
@@ -162,8 +172,143 @@ export async function createValidateJob(
     const { error: itemErr } = await db.from("sync_job_items").insert(items.slice(i, i + ITEM_INSERT_BATCH));
     if (itemErr) throw itemErr;
   }
+}
 
-  return { jobId, programsTotal: programEntries.length, rowsTotal, unknownPrograms: payload.unknownPrograms };
+/** Single-request path: the whole file's rows are already in hand (a
+ *  moderate single-program file, or a JSON body small enough to arrive in
+ *  one call). For a file large enough that even narrowed-to-5-fields rows
+ *  don't fit in one request body, use createCollectingValidateJob/
+ *  appendValidateJobRows/finalizeValidateJob instead -- see
+ *  ValidateAllProgramsAdmin.tsx. */
+export async function createValidateJob(
+  db: ReturnType<typeof serviceClient>,
+  rows: ValidationRow[],
+  createdBy: string,
+): Promise<{ jobId: string; programsTotal: number; rowsTotal: number; unknownPrograms: string[] }> {
+  const { programEntries, unknownPrograms } = await groupRowsByProgram(db, rows);
+  const rowsTotal = programEntries.reduce((n, [, v]) => n + v.courseRows.length + v.journalRows.length, 0);
+  const jobId = randomUUID();
+  const payload = emptyPayload(programEntries.length, rowsTotal);
+  payload.unknownPrograms = unknownPrograms;
+
+  const { error: jobErr } = await db.from("sync_jobs").insert({
+    id: jobId, kind: VALIDATE_JOB_KIND, status: "running",
+    created_by: createdBy, payload,
+  });
+  if (jobErr) throw jobErr;
+
+  await queueScanItems(db, jobId, programEntries);
+  return { jobId, programsTotal: programEntries.length, rowsTotal, unknownPrograms };
+}
+
+// ---------------------------------------------------------------------------
+// Chunked upload: for a file large enough that even its rows, narrowed to
+// just the 5 fields validation needs, don't reliably fit in one request
+// body (a serverless function's request size limit is a hard platform
+// cap, not something app code can raise). The client splits its parsed
+// rows into several smaller batches and POSTs them one at a time (see
+// ValidateAllProgramsAdmin.tsx); each arrives here as its own request, so
+// each one individually is comfortably small regardless of how large the
+// original file was. Rows accumulate as their own sync_job_items (op type
+// "raw_rows") on a job sitting in "collecting" status -- inert to
+// /api/validate-csv/continue, which no-ops on any non-"running" job --
+// until finalizeValidateJob does the same grouping createValidateJob does
+// in one shot, then deletes those raw_rows items and replaces them with
+// the real scan_program queue, flipping the job to "running".
+// ---------------------------------------------------------------------------
+type RawRowsOp = { type: "raw_rows"; rows: ValidationRow[] };
+
+export async function createCollectingValidateJob(
+  db: ReturnType<typeof serviceClient>,
+  createdBy: string,
+): Promise<{ jobId: string }> {
+  const jobId = randomUUID();
+  const { error } = await db.from("sync_jobs").insert({
+    id: jobId, kind: VALIDATE_JOB_KIND, status: "collecting",
+    created_by: createdBy, payload: emptyPayload(0, 0),
+  });
+  if (error) throw error;
+  return { jobId };
+}
+
+export async function appendValidateJobRows(
+  db: ReturnType<typeof serviceClient>,
+  jobId: string,
+  rows: ValidationRow[],
+): Promise<void> {
+  if (!rows.length) return;
+  // seq only needs to keep raw_rows chunks in append order for
+  // finalizeValidateJob's own read-back (pageThrough there doesn't
+  // actually depend on it, but an explicit order is cheap insurance) --
+  // it's irrelevant once finalize deletes every raw_rows item and starts
+  // scan_program items fresh at seq 0, so a plain per-job counter based
+  // on the current row count is enough; two concurrent appends racing
+  // for the same jobId isn't a supported use (the client uploads one
+  // chunk at a time, awaiting each response before sending the next).
+  const { count } = await db.from("sync_job_items").select("id", { count: "exact", head: true }).eq("job_id", jobId);
+  const seq = count ?? 0;
+  const { error } = await db.from("sync_job_items").insert({
+    job_id: jobId, seq, op: { type: "raw_rows", rows } satisfies RawRowsOp,
+  });
+  if (error) throw error;
+}
+
+export async function finalizeValidateJob(
+  db: ReturnType<typeof serviceClient>,
+  jobId: string,
+): Promise<{ programsTotal: number; rowsTotal: number; unknownPrograms: string[] }> {
+  // A client retry (e.g. the response to a successful finalize got lost
+  // to a network blip) must not re-run this: by then the raw_rows chunks
+  // are already deleted, so re-deriving from them would see zero rows and
+  // overwrite the job's real payload with an empty one, even though
+  // scan_program work already exists and may already be running. Only a
+  // job still actually "collecting" gets processed; anything else just
+  // reports its current (already-finalized) totals back, unchanged.
+  const existing = await getValidateJob(db, jobId);
+  if (!existing) throw new Error("Validate job not found.");
+  if (existing.status !== "collecting") {
+    const p = existing.payload;
+    return { programsTotal: p.programsTotal, rowsTotal: p.rowsTotal, unknownPrograms: p.unknownPrograms };
+  }
+
+  // Filtered to op.type "raw_rows" specifically, not "every item this job
+  // has" -- makes this safely re-callable if a previous attempt got as far
+  // as queueScanItems below but crashed before the final status update:
+  // a retry then ignores those already-queued scan_program items (instead
+  // of misreading them as raw_rows and crashing on item.op.rows being
+  // undefined) and just re-derives the same grouping from the still-intact
+  // raw_rows chunks.
+  const { data, error } = await db.from("sync_job_items").select("id, op").eq("job_id", jobId).order("seq", { ascending: true });
+  if (error) throw error;
+  const chunkItems = (data ?? [])
+    .filter((item): item is { id: number; op: RawRowsOp } => (item.op as { type?: string }).type === "raw_rows");
+  const rows = chunkItems.flatMap((item) => item.op.rows);
+
+  const { programEntries, unknownPrograms } = await groupRowsByProgram(db, rows);
+  const rowsTotal = programEntries.reduce((n, [, v]) => n + v.courseRows.length + v.journalRows.length, 0);
+  const payload = emptyPayload(programEntries.length, rowsTotal);
+  payload.unknownPrograms = unknownPrograms;
+
+  // Scan items queued BEFORE the raw_rows chunks are deleted (rather than
+  // the more obvious delete-then-insert order): if this crashes between
+  // the two, the job is left with both present instead of neither --
+  // recoverable by calling finalize again (the filter above makes that
+  // safe), instead of silently losing every row this call read.
+  await queueScanItems(db, jobId, programEntries);
+
+  if (chunkItems.length) {
+    const ids = chunkItems.map((item) => item.id);
+    for (let i = 0; i < ids.length; i += ITEM_INSERT_BATCH) {
+      const { error: delErr } = await db.from("sync_job_items").delete().in("id", ids.slice(i, i + ITEM_INSERT_BATCH));
+      if (delErr) throw delErr;
+    }
+  }
+
+  const { error: updErr } = await db.from("sync_jobs")
+    .update({ status: "running", payload, updated_at: new Date().toISOString() }).eq("id", jobId);
+  if (updErr) throw updErr;
+
+  return { programsTotal: programEntries.length, rowsTotal, unknownPrograms };
 }
 
 export async function getValidateJob(db: ReturnType<typeof serviceClient>, jobId: string): Promise<ValidateJobRow | null> {

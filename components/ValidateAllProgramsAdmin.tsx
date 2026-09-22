@@ -32,9 +32,38 @@ const STORAGE_KEY = "validate-all-programs-job-id";
  *  easily adds up to more work than fits in one request on a free-tier
  *  timeout, so it's chipped away at across many short /continue calls
  *  instead, with progress persisted between them. */
+// Target size (JSON-encoded, per request) for each chunk of an upload --
+// well under Vercel's hard request-body cap for a serverless function
+// (not something app code can raise), leaving comfortable headroom for
+// the rest of the request (headers, the jobId/done fields alongside the
+// rows). A file with tens of thousands of rows, even narrowed to just
+// course_code/program/title/isbn/verdict, can still land over that cap
+// in one shot -- this is what actually keeps each individual request
+// small regardless of how large the original file is.
+const CHUNK_TARGET_BYTES = 2_000_000;
+
+function splitIntoChunks<T>(rows: T[], targetBytes: number): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+  for (const row of rows) {
+    const size = JSON.stringify(row).length;
+    if (current.length && currentBytes + size > targetBytes) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(row);
+    currentBytes += size;
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
 export default function ValidateAllProgramsAdmin() {
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<State>({ status: "idle" });
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportErr, setExportErr] = useState<string | null>(null);
   // Starts with everything on, same convention as the Materials filter in
@@ -186,50 +215,78 @@ export default function ValidateAllProgramsAdmin() {
   async function start() {
     if (!file) return;
     setState({ status: "idle" });
+    setUploadProgress(null);
     startedAtRef.current = Date.now();
     lastPolledAtRef.current = Date.now();
     setNow(Date.now());
     try {
-      // Parse in the browser and send just the few fields validation
-      // actually needs (course_code/program/title/isbn/verdict), not
-      // every export column -- a CSV covering every program can be large
-      // enough in its full multi-column form to land close to (or over) a
-      // serverless function's request body limit. Same reasoning as the
-      // batched upload in UploadTab.tsx, minus the batching: this file's
-      // rows, narrowed to those few fields, are already far smaller than
-      // the original.
-      let res: Response;
+      let jobId: string;
+      let programsTotal = 0, rowsTotal = 0, unknownPrograms: string[] = [];
+
       if (isSpreadsheet(file)) {
+        // Parsed and narrowed in the browser to just the fields validation
+        // actually needs (course_code/program/title/isbn/verdict), then
+        // uploaded in several smaller chunks -- a CSV covering every
+        // program can have tens of thousands of rows, and even narrowed
+        // to those 5 fields that can still be too large for one request
+        // body (a serverless function's request size limit is a hard
+        // platform cap, not something raising here would fix). Each
+        // chunk is small regardless of how large the original file is;
+        // only the LAST one is marked done, which is what actually
+        // starts the job scanning (see /api/validate-csv/chunk).
         const rows = buildValidationRowsFromRaw(await parseSheetRows(file));
-        res = await apiFetch("/api/validate-csv/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rows }),
-        });
+        if (!rows.length) {
+          throw new Error("No usable rows found -- need at least Course Code (or Program, for journal rows) and Title columns.");
+        }
+        const chunks = splitIntoChunks(rows, CHUNK_TARGET_BYTES);
+        let currentJobId: string | undefined;
+        for (let i = 0; i < chunks.length; i++) {
+          setUploadProgress({ done: i, total: chunks.length });
+          const res = await apiFetch("/api/validate-csv/chunk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId: currentJobId, rows: chunks[i], done: i === chunks.length - 1 }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+          currentJobId = j.jobId;
+          if (j.finalized) {
+            programsTotal = j.programsTotal ?? 0;
+            rowsTotal = j.rowsTotal ?? 0;
+            unknownPrograms = j.unknownPrograms ?? [];
+          }
+        }
+        setUploadProgress(null);
+        jobId = currentJobId!;
       } else {
         const fd = new FormData();
         fd.append("file", file);
-        res = await apiFetch("/api/validate-csv/start", { method: "POST", body: fd });
+        const res = await apiFetch("/api/validate-csv/start", { method: "POST", body: fd });
+        const text = await res.text().catch(() => "");
+        let j: { jobId?: string; programsTotal?: number; rowsTotal?: number; unknownPrograms?: string[]; error?: string } = {};
+        try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+        if (!res.ok || j.error || !j.jobId) {
+          const message = typeof j.error === "string" && j.error ? j.error : (text || `HTTP ${res.status}`);
+          throw new Error(message);
+        }
+        jobId = j.jobId;
+        programsTotal = j.programsTotal ?? 0;
+        rowsTotal = j.rowsTotal ?? 0;
+        unknownPrograms = j.unknownPrograms ?? [];
       }
-      const text = await res.text().catch(() => "");
-      let j: { jobId?: string; programsTotal?: number; rowsTotal?: number; unknownPrograms?: string[]; error?: string } = {};
-      try { j = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
-      if (!res.ok || j.error || !j.jobId) {
-        const message = typeof j.error === "string" && j.error ? j.error : (text || `HTTP ${res.status}`);
-        throw new Error(message);
-      }
-      const jobId = j.jobId;
+
       try { localStorage.setItem(STORAGE_KEY, jobId); } catch { /* private mode, etc. */ }
       const payload: ValidatePayload = {
-        programsTotal: j.programsTotal ?? 0, programsScanned: 0,
-        rowsTotal: j.rowsTotal ?? 0, rowsScanned: 0,
-        unknownPrograms: j.unknownPrograms ?? [],
+        programsTotal, programsScanned: 0,
+        rowsTotal, rowsScanned: 0,
+        unknownPrograms,
         applyTotal: 0, applyDone: 0, locked: 0, removed: 0, lockedSkippedCount: 0, unresolvedCount: 0,
         sample: { confirmed: [], toRemove: [], lockedSkipped: [], unresolved: [] },
       };
       setState({ status: "running", jobId, payload });
       await pollUntilDone(jobId);
     } catch (e) {
+      setUploadProgress(null);
       setState({ status: "error", jobId: "", payload: {
         programsTotal: 0, programsScanned: 0, rowsTotal: 0, rowsScanned: 0,
         unknownPrograms: [], applyTotal: 0, applyDone: 0,
@@ -239,7 +296,7 @@ export default function ValidateAllProgramsAdmin() {
     }
   }
 
-  const busy = state.status === "running";
+  const busy = state.status === "running" || uploadProgress !== null;
   const p = state.status !== "idle" ? state.payload : null;
   const scanning = !!p && p.programsScanned < p.programsTotal;
   const secondsSince = (ref: number | null) => ref == null ? null : Math.max(0, Math.round((now - ref) / 1000));
@@ -340,6 +397,17 @@ export default function ValidateAllProgramsAdmin() {
           {busy ? "Working…" : "Check & apply"}
         </button>
       </div>
+
+      {uploadProgress && (
+        <div className="mt-3">
+          <div className="w-full bg-slate-100 rounded h-2 overflow-hidden">
+            <div className="h-2 bg-psu" style={{ width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%` }} />
+          </div>
+          <p className="text-xs text-slate-600 mt-1">
+            Uploading… {uploadProgress.done} / {uploadProgress.total} chunk{uploadProgress.total === 1 ? "" : "s"}
+          </p>
+        </div>
+      )}
 
       {p && (
         <div className="mt-3">
