@@ -10,8 +10,12 @@ export const dynamic = "force-dynamic";
 // "Online materials" = every resource type whose medium is digital (paid,
 // open-access, and complementary eBooks and online journals, plus the
 // institutional repository) -- everything that ISN'T a printed book or
-// printed journal. See lib/resources.ts for the full type table.
-const ONLINE_TYPE_IDS = RESOURCE_TYPES.filter((t) => t.medium === "digital").map((t) => t.id);
+// printed journal. See lib/resources.ts for the full type table. Order
+// here (declaration order in RESOURCE_TYPES) is also the order the
+// breakdown below reports in, so it reads the same as this app's own
+// upload cards/tabs.
+const ONLINE_TYPES = RESOURCE_TYPES.filter((t) => t.medium === "digital");
+const ONLINE_TYPE_IDS = ONLINE_TYPES.map((t) => t.id);
 
 // Any site may embed this -- it's a single aggregate number with no
 // per-title detail, the same one shown on this app's own public
@@ -34,7 +38,11 @@ export type OnlineMaterialsCountResponse =
   | {
       count: number;
       label: "Online Materials";
-      breakdown: Partial<Record<ResourceTypeId, number>>;
+      // One entry per digital material type, in the order listed above --
+      // "label" is the same human-readable name this app shows in its own
+      // UI, so a report can display it directly without maintaining its
+      // own copy of what each id (e.g. "ebook_paid") means.
+      breakdown: { id: ResourceTypeId; label: string; count: number }[];
       generatedAt: string;
     }
   | { error: string };
@@ -140,11 +148,12 @@ export async function GET(req: Request) {
       .in("format", ONLINE_TYPE_IDS);
     if (error) throw error;
 
-    const breakdown = {} as Partial<Record<ResourceTypeId, number>>;
+    const counts = {} as Record<ResourceTypeId, number>;
     await Promise.all(ONLINE_TYPE_IDS.map(async (id) => {
       const { count } = await db.from("titles").select("*", { count: "exact", head: true }).eq("format", id);
-      breakdown[id] = count ?? 0;
+      counts[id] = count ?? 0;
     }));
+    const breakdown = ONLINE_TYPES.map((t) => ({ id: t.id, label: t.uiLabel, count: counts[t.id] }));
 
     return NextResponse.json(
       {
