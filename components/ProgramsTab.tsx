@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { apiFetch } from "@/lib/api-client";
 import { consumeNdjson } from "@/lib/streaming";
-import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { parseSheetRows, isSpreadsheet, buildValidationRowsFromRaw } from "@/lib/parse-client";
 import { useCampuses, useProgramCampusMap } from "@/lib/use-campuses";
 import { usePermissions, canEdit } from "@/lib/use-permissions";
 import SearchableSelect from "@/components/SearchableSelect";
@@ -508,11 +508,26 @@ function ValidateCsvPanel({
     setChecking(true);
     reset();
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("program_id", String(programId));
-      if (courseScope) fd.append("subject_id", String(courseScope));
-      const res = await apiFetch("/api/programs/validate-csv", { method: "POST", body: fd });
+      // Parse in the browser and send just the few fields validation
+      // needs (course_code/program/title/isbn/verdict), not the raw
+      // multi-column export -- a program's full CSV can be large enough
+      // uploaded wholesale to land over a serverless function's request
+      // body limit. Same fix as ValidateAllProgramsAdmin's own upload.
+      let res: Response;
+      if (isSpreadsheet(file)) {
+        const rows = buildValidationRowsFromRaw(await parseSheetRows(file));
+        res = await apiFetch("/api/programs/validate-csv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows, program_id: Number(programId), subject_id: courseScope ? Number(courseScope) : undefined }),
+        });
+      } else {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("program_id", String(programId));
+        if (courseScope) fd.append("subject_id", String(courseScope));
+        res = await apiFetch("/api/programs/validate-csv", { method: "POST", body: fd });
+      }
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       setPreview(j as ValidateCsvPreview);

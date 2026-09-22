@@ -56,7 +56,9 @@ export type ValidateCsvPreview = {
   coursesReviewed: number;
 };
 
-/** POST /api/programs/validate-csv -- preview only, no writes. Body:
+/** POST /api/programs/validate-csv -- preview only, no writes. Body: a
+ *  JSON { rows, program_id, subject_id? } of already-narrowed rows (the
+ *  normal path -- see the client-side-parsing comment below), or
  *  multipart/form-data with `file` (the CSV/XLSX), `program_id`, and an
  *  optional `subject_id` to scope the check to just that one course
  *  instead of every course in the program -- useful when only a single
@@ -91,22 +93,43 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Your account doesn't have permission to change assignments." }, { status: 403 });
     }
 
-    const form = await req.formData();
-    const file = form.get("file") as File | null;
-    const programId = Number(form.get("program_id"));
-    const subjectIdParam = Number(form.get("subject_id"));
-    const scopedSubjectId = Number.isFinite(subjectIdParam) && subjectIdParam > 0 ? subjectIdParam : undefined;
-    if (!file) return NextResponse.json({ error: "No file uploaded." }, { status: 400 });
+    // Two ways to send this: a JSON body { rows, program_id, subject_id }
+    // of already-narrowed rows (see lib/parse-client.ts's
+    // buildValidationRowsFromRaw, and ProgramsTab.tsx's check(), which
+    // parses the file in the browser and sends just the few fields this
+    // route needs -- course_code/program/title/isbn/verdict), or the
+    // original multipart/form-data { file, program_id, subject_id } for
+    // whatever can't be parsed client-side. A full multi-column Programs &
+    // Export CSV can be large enough that uploading it wholesale lands
+    // over a serverless function's request body limit (Vercel's hard cap
+    // is well under what a real program's export can reach); narrowed to
+    // just those fields first, the same rows are far smaller. Same
+    // reasoning as /api/validate-csv/start's own JSON-vs-file branching.
+    let rows: ValidationRow[];
+    let programId: number;
+    let scopedSubjectId: number | undefined;
+    const isJson = (req.headers.get("content-type") ?? "").includes("application/json");
+    if (isJson) {
+      const body = await req.json() as { rows?: ValidationRow[]; program_id?: number; subject_id?: number };
+      rows = body.rows ?? [];
+      programId = Number(body.program_id);
+      scopedSubjectId = body.subject_id && body.subject_id > 0 ? body.subject_id : undefined;
+    } else {
+      const form = await req.formData();
+      const file = form.get("file") as File | null;
+      programId = Number(form.get("program_id"));
+      const subjectIdParam = Number(form.get("subject_id"));
+      scopedSubjectId = Number.isFinite(subjectIdParam) && subjectIdParam > 0 ? subjectIdParam : undefined;
+      if (!file) return NextResponse.json({ error: "No file uploaded." }, { status: 400 });
+      try {
+        rows = await parseValidationRows(file.name, Buffer.from(await file.arrayBuffer()));
+      } catch (err) {
+        return NextResponse.json({ error: errorMessage(err) }, { status: 400 });
+      }
+    }
     if (!programId) return NextResponse.json({ error: "program_id is required." }, { status: 400 });
     if (!(await isProgramInScope(db, perms, programId))) {
       return NextResponse.json({ error: "This program isn't offered at any of your assigned campuses." }, { status: 403 });
-    }
-
-    let rows: ValidationRow[];
-    try {
-      rows = await parseValidationRows(file.name, Buffer.from(await file.arrayBuffer()));
-    } catch (err) {
-      return NextResponse.json({ error: errorMessage(err) }, { status: 400 });
     }
     if (!rows.length) {
       return NextResponse.json({ error: "No usable rows found -- need at least Course Code and Title columns." }, { status: 400 });
