@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
+import { pageThroughParallel } from "@/lib/paging";
 import { errorMessage } from "@/lib/errors";
 
 export const runtime = "nodejs";
@@ -25,6 +26,10 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+const CACHE_HEADERS = {
+  "Cache-Control": "public, max-age=0, s-maxage=120, stale-while-revalidate=300",
+};
+
 export type OnlineMaterialsCountResponse =
   | {
       count: number;
@@ -34,17 +39,101 @@ export type OnlineMaterialsCountResponse =
     }
   | { error: string };
 
-/** GET /api/public/online-materials-count -- read-only aggregate count of
- *  every digital-medium title (see ONLINE_TYPE_IDS above), for embedding
- *  on other sites/apps (a public-facing stat tile, a library homepage
- *  widget, etc). Cached at Vercel's edge for a couple of minutes (see the
- *  Cache-Control header below) so repeated polling from elsewhere doesn't
- *  hit Supabase on every request -- this number doesn't need to be
- *  second-by-second accurate. */
-export async function GET() {
-  try {
-    const db = serviceClient();
+export type OnlineMaterialsQuarterlyResponse =
+  | {
+      label: "Online Materials";
+      generatedAt: string;
+      // Titles catalogued before quarterly tracking existed (see
+      // supabase/migrations/49_titles_created_at.sql) all share one
+      // retroactive timestamp -- not a real acquisition date, so they're
+      // reported separately rather than appearing as one implausible
+      // quarter with a huge spike.
+      baseline: { count: number; asOf: string | null; note: string };
+      // Only quarters with at least one real title are included, in
+      // chronological order. cumulativeTotal = baseline.count + every
+      // added count up through that quarter, i.e. ready to plot directly
+      // as a running-total growth line.
+      quarters: { quarter: string; added: number; cumulativeTotal: number }[];
+    }
+  | { error: string };
 
+function quarterLabel(iso: string): string {
+  const d = new Date(iso);
+  const q = Math.floor(d.getUTCMonth() / 3) + 1;
+  return `${d.getUTCFullYear()}-Q${q}`;
+}
+
+async function fetchOnlineTitleTimestamps(db: ReturnType<typeof serviceClient>) {
+  return pageThroughParallel<{ created_at: string | null; created_at_backfilled: boolean }>(
+    (from, to) =>
+      db
+        .from("titles")
+        .select("created_at, created_at_backfilled", { count: "exact" })
+        .in("format", ONLINE_TYPE_IDS)
+        .order("created_at", { ascending: true })
+        .range(from, to),
+  );
+}
+
+/** GET /api/public/online-materials-count[?by=quarter] -- read-only
+ *  count of every digital-medium title (see ONLINE_TYPE_IDS above), for
+ *  embedding on other sites/apps (a public-facing stat tile, a library
+ *  homepage widget, etc). Cached at Vercel's edge for a couple of
+ *  minutes (see CACHE_HEADERS) so repeated polling from elsewhere
+ *  doesn't hit Supabase on every request -- this number doesn't need to
+ *  be second-by-second accurate.
+ *
+ *  Plain GET returns a flat total + per-type breakdown. ?by=quarter
+ *  instead returns growth over time -- see OnlineMaterialsQuarterlyResponse
+ *  and the migration referenced above for why a "baseline" bucket exists
+ *  separately from real quarters. */
+export async function GET(req: Request) {
+  const by = new URL(req.url).searchParams.get("by");
+  const db = serviceClient();
+
+  if (by === "quarter") {
+    try {
+      const rows = await fetchOnlineTitleTimestamps(db);
+
+      const backfilled = rows.filter((r) => r.created_at_backfilled);
+      const organic = rows.filter((r) => !r.created_at_backfilled && r.created_at);
+
+      const addedByQuarter = new Map<string, number>();
+      for (const r of organic) {
+        const q = quarterLabel(r.created_at!);
+        addedByQuarter.set(q, (addedByQuarter.get(q) ?? 0) + 1);
+      }
+      const orderedQuarters = Array.from(addedByQuarter.keys()).sort();
+
+      let running = backfilled.length;
+      const quarters = orderedQuarters.map((quarter) => {
+        const added = addedByQuarter.get(quarter)!;
+        running += added;
+        return { quarter, added, cumulativeTotal: running };
+      });
+
+      return NextResponse.json(
+        {
+          label: "Online Materials",
+          generatedAt: new Date().toISOString(),
+          baseline: {
+            count: backfilled.length,
+            asOf: backfilled[0]?.created_at ?? null,
+            note: "Titles already catalogued before quarterly tracking started -- not a real acquisition quarter.",
+          },
+          quarters,
+        } satisfies OnlineMaterialsQuarterlyResponse,
+        { headers: { ...CORS_HEADERS, ...CACHE_HEADERS } },
+      );
+    } catch (err) {
+      return NextResponse.json(
+        { error: errorMessage(err) } satisfies OnlineMaterialsQuarterlyResponse,
+        { status: 500, headers: CORS_HEADERS },
+      );
+    }
+  }
+
+  try {
     const { count: total, error } = await db
       .from("titles")
       .select("*", { count: "exact", head: true })
@@ -64,12 +153,7 @@ export async function GET() {
         breakdown,
         generatedAt: new Date().toISOString(),
       } satisfies OnlineMaterialsCountResponse,
-      {
-        headers: {
-          ...CORS_HEADERS,
-          "Cache-Control": "public, max-age=0, s-maxage=120, stale-while-revalidate=300",
-        },
-      },
+      { headers: { ...CORS_HEADERS, ...CACHE_HEADERS } },
     );
   } catch (err) {
     return NextResponse.json(
