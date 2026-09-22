@@ -91,7 +91,30 @@ export function subjectQueryTerms(s: SubjectRow): string[] {
 // so ANDing it in would make the phrase impossible to satisfy.
 const MUST_QUERY_WORDS = 6;
 
-/** AND-of-terms built from just the course title's core words (e.g.
+// Course titles often follow "<topic> for <audience>" (e.g. "Thermodynamics
+// for Teachers", "Statistics for Engineers", "Chemistry for Non-Majors") --
+// the audience half says who the course is FOR, not what a matching book's
+// own text needs to contain. ANDing "teachers" into the must-query wrongly
+// excludes a book plainly titled "Thermodynamics and Equilibria in Earth
+// System Sciences" (real catalog example) from the guaranteed tier just
+// because it has no reason to mention "teachers" anywhere in its own title/
+// author/publisher/subjects -- leaving it to compete on weak lexical
+// overlap against unrelated titles that merely share more of the
+// audience-descriptive words pulled from the course description. That's
+// exactly the failure mode is_must_match/MUST_MATCH_SCORE_FLOOR exist to
+// prevent; a book search using just "thermodynamics" finds it immediately,
+// which is what first exposed this.
+//
+// Only a standalone "for" is treated as this kind of connector -- "and"/
+// "with" more often join two topics that are BOTH integral to the course
+// (e.g. "Cell and Molecular Biology", "Programming with Python"), where
+// dropping everything after them would be wrong instead of lenient.
+function stripAudienceQualifier(text: string): string {
+  const m = /^(.*?)\bfor\b/i.exec(text);
+  return m ? m[1] : text;
+}
+
+/** AND-of-terms built from just the course title's core topic words (e.g.
  *  "constitutional & law"), passed as match_titles_candidates' must_text.
  *  Unlike the broad OR query, this is deliberately selective -- a title
  *  matching it is guaranteed to be ranked rather than risking being
@@ -102,7 +125,7 @@ const MUST_QUERY_WORDS = 6;
  *  "Constitutional law", since it mentions neither "political" nor the
  *  course code anywhere in its own text. */
 export function subjectMustQuery(s: SubjectRow): string {
-  const core = (s.course_title ?? "").split("(")[0];
+  const core = stripAudienceQualifier((s.course_title ?? "").split("(")[0]);
   return unigrams(core).slice(0, MUST_QUERY_WORDS).join(" & ");
 }
 
