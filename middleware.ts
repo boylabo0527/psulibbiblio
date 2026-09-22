@@ -4,8 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 /** Routes that anyone (signed in or not) may call, matching the path and
  *  any of its sub-paths (e.g. "/api/dashboard" also covers
  *  "/api/dashboard/subjects"). The Dashboard tab on the public homepage is
- *  wired to the endpoints listed below. */
-const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api/campuses", "/api/program-campuses", "/api/settings"];
+ *  wired to most of the endpoints listed below; "/api/public" is a
+ *  separate namespace specifically for other websites/apps to call (see
+ *  app/api/public/online-materials-count/route.ts), which is also why
+ *  those routes set their own CORS headers -- everything else here is
+ *  only "public" in the sense of not needing a signed-in user, not in the
+ *  sense of being meant for cross-origin browser JS. */
+const PUBLIC_API_PREFIX = ["/api/health", "/api/dashboard", "/api/export", "/api/campuses", "/api/program-campuses", "/api/settings", "/api/public"];
 
 /** Public, but ONLY that exact path -- not sub-paths. "/api/programs" (the
  *  bare program list) is genuinely public for the Dashboard's filter
@@ -101,6 +106,20 @@ export async function middleware(req: NextRequest) {
   requestHeaders.set("x-nonce", nonce);
 
   if (!pathname.startsWith("/api/")) {
+    return withSecurityHeaders(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      nonce,
+    );
+  }
+  // A CORS preflight never carries the real request's Authorization header
+  // (that's the whole point of it -- the browser is asking, ahead of time
+  // and without credentials, whether the actual request would be allowed),
+  // so gating it behind the Supabase-session check below would 401 every
+  // preflight before a route's own OPTIONS handler (see
+  // app/api/public/online-materials-count/route.ts) ever got a chance to
+  // answer it. OPTIONS never mutates anything, and any route that cares
+  // about auth still enforces it on the real GET/POST/etc. that follows.
+  if (req.method === "OPTIONS") {
     return withSecurityHeaders(
       NextResponse.next({ request: { headers: requestHeaders } }),
       nonce,
