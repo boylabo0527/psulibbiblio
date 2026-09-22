@@ -131,7 +131,23 @@ const MUST_MATCH_SCORE_FLOOR = 0.8;
 // should use topKPrinted/topKDigital instead.
 const PRINT_SCORE_BONUS = 0.06;
 
+// is_must_match candidates (a title whose own text literally contains the
+// course's topic phrase) are never capped by topK the way ordinary
+// candidates are -- a course with, say, 15 titles that all genuinely
+// contain its topic word shouldn't have 5 of them silently dropped just
+// because topK happens to be 10. topK still caps everything else (the
+// broader, fuzzier candidates); is_must_match ones are added on top of
+// that, capped only by this much more generous backstop -- purely to
+// guard against a single-word, very generic course title (e.g.
+// "Statistics") matching an unreasonable share of the catalog.
+const MUST_MATCH_MAX = 50;
+
 export type ScoreOptions = {
+  /** Caps how many of the ordinary (non-is_must_match) candidates get
+   *  kept. A title whose own text literally contains the subject's topic
+   *  phrase isn't limited by this -- see MUST_MATCH_MAX/
+   *  selectWithMustPriority -- so the true count selected can exceed
+   *  topK when a course's topic word matches more than topK titles. */
   topK?: number;
   /** When set (either one), ignores topK and instead picks the top
    *  topKPrinted printed titles and top topKDigital digital titles
@@ -190,6 +206,17 @@ export function scoreCandidates(
     // (necessarily fuzzier) description text.
     .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
 
+  // Takes an already tier-sorted pool (is_must_match first) and a
+  // requested count: every is_must_match candidate makes it in (up to
+  // MUST_MATCH_MAX), and capN only limits how many of the REST get added
+  // on top -- so a course with more topic-containing titles than capN
+  // gets all of them instead of only the top capN overall.
+  function selectWithMustPriority(pool: typeof scored, capN: number): typeof scored {
+    const must = pool.filter((s) => s.c.is_must_match).slice(0, MUST_MATCH_MAX);
+    const rest = pool.filter((s) => !s.c.is_must_match);
+    return [...must, ...rest.slice(0, Math.max(0, capN - must.length))];
+  }
+
   const balanced = opts.topKPrinted != null || opts.topKDigital != null;
   let selected: typeof scored;
   if (balanced) {
@@ -205,12 +232,12 @@ export function scoreCandidates(
     // slot this course's page will ever display them in.
     const isJournal = (fmt?: string) => fmt != null && RESOURCE_BY_ID[fmt as ResourceTypeId]?.kind === "journal";
     const eligible = scored.filter((s) => !isJournal(s.c.format));
-    const printed = eligible.filter((s) => s.c.format === "book_printed").slice(0, opts.topKPrinted ?? 0);
-    const digital = eligible.filter((s) => s.c.format !== "book_printed").slice(0, opts.topKDigital ?? 0);
+    const printed = selectWithMustPriority(eligible.filter((s) => s.c.format === "book_printed"), opts.topKPrinted ?? 0);
+    const digital = selectWithMustPriority(eligible.filter((s) => s.c.format !== "book_printed"), opts.topKDigital ?? 0);
     selected = [...printed, ...digital]
       .sort((a, b) => (Number(b.c.is_must_match) - Number(a.c.is_must_match)) || (b.score - a.score));
   } else {
-    selected = scored.slice(0, topK);
+    selected = selectWithMustPriority(scored, topK);
   }
 
   const results: AssignmentRow[] = [];
