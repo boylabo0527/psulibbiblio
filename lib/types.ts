@@ -54,6 +54,11 @@ export type SubjectRow = {
   course_title: string;
   description?: string;
   sort_order?: number;
+  /** Admin override for what matching searches for on this course,
+   *  instead of deriving it from course_title/description -- see
+   *  supabase/migrations/50_subject_match_keyword.sql. Empty/unset means
+   *  "use the normal title/description-based matching." */
+  match_keyword?: string;
   /** @deprecated No longer read by /api/match/run -- locking is now
    *  per-title (assignments.manual), so a course stays open to newly
    *  matched titles while individually protected ones survive. Column

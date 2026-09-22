@@ -148,7 +148,7 @@ export async function POST(req: Request) {
 
     const fetchedSubjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
-      "id, program_id, course_code, course_title, description",
+      "id, program_id, course_code, course_title, description, match_keyword",
       "subjects", send,
       subjectId ? { col: "id", value: Number(subjectId) }
         : programId ? { col: "program_id", value: Number(programId) } : undefined,

@@ -46,6 +46,14 @@ export function titleText(t: TitleRow): string {
 }
 
 export function subjectText(s: SubjectRow): string {
+  // Same override as subjectQueryTerms/subjectMustQuery below -- when set,
+  // the semantic embedding is based on it too, so all three matching
+  // signals (broad lexical, must-match, semantic) agree on what this
+  // course is actually about instead of the description's own wording
+  // pulling the embedding toward unrelated context (audience, delivery
+  // format, etc.) the same way it can pull lexical ranking off course.
+  const keyword = (s.match_keyword ?? "").trim();
+  if (keyword) return keyword;
   return [s.course_title, s.description, s.course_code].filter(Boolean).join(" ");
 }
 
@@ -71,6 +79,14 @@ const MAX_QUERY_TERMS = 12;
  *  contained the short, common word. Only the remaining budget is filled
  *  from the free-text description, longest-first. */
 export function subjectQueryTerms(s: SubjectRow): string[] {
+  // An admin-set override replaces the normal title/description
+  // derivation entirely -- see supabase/migrations/50_subject_match_keyword.sql.
+  // Taken literally/directly, not run through description-mining, since
+  // the whole point is precise manual control over what this course
+  // searches for.
+  const keyword = (s.match_keyword ?? "").trim();
+  if (keyword) return unigrams(keyword).slice(0, MAX_QUERY_TERMS);
+
   const titleTerms = unigrams([s.course_title, s.course_code].filter(Boolean).join(" "));
   const remaining = MAX_QUERY_TERMS - titleTerms.length;
   if (remaining <= 0) return titleTerms.slice(0, MAX_QUERY_TERMS);
@@ -125,6 +141,13 @@ function stripAudienceQualifier(text: string): string {
  *  "Constitutional law", since it mentions neither "political" nor the
  *  course code anywhere in its own text. */
 export function subjectMustQuery(s: SubjectRow): string {
+  // Same override as subjectQueryTerms above -- an admin-set keyword is
+  // the guarantee too, taken as-is (no audience-qualifier stripping;
+  // that heuristic is for guessing intent from a catalog title, not for
+  // second-guessing an admin's deliberate, precise override).
+  const keyword = (s.match_keyword ?? "").trim();
+  if (keyword) return unigrams(keyword).slice(0, MUST_QUERY_WORDS).join(" & ");
+
   const core = stripAudienceQualifier((s.course_title ?? "").split("(")[0]);
   return unigrams(core).slice(0, MUST_QUERY_WORDS).join(" & ");
 }

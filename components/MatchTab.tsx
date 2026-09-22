@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/api-client";
 import { consumeNdjson } from "@/lib/streaming";
 import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import type { MatchProgressEvent } from "@/app/api/match/run/route";
+import type { MatchKeywordCourse } from "@/app/api/match/keywords/route";
 
 type Program = { id: number; name: string };
 type Course = { subject_id: number; course_code: string; course_title: string };
@@ -84,6 +85,16 @@ export default function MatchTab() {
   const [resumable, setResumable] = useState<MatchCheckpoint | null>(null);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Per-course "Priority Keyword" overrides (see app/api/match/keywords/
+  // route.ts and lib/matcher.ts's subjectQueryTerms/subjectMustQuery/
+  // subjectText) -- keyed by subject_id. keywordDrafts holds the input's
+  // current (possibly unsaved) text; a course only shows a Save button
+  // once its draft differs from the last-saved value.
+  const [keywordCourses, setKeywordCourses] = useState<MatchKeywordCourse[]>([]);
+  const [keywordDrafts, setKeywordDrafts] = useState<Record<number, string>>({});
+  const [keywordSaving, setKeywordSaving] = useState<Record<number, boolean>>({});
+  const [keywordsLoading, setKeywordsLoading] = useState(false);
+
   useEffect(() => {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
@@ -100,6 +111,33 @@ export default function MatchTab() {
       .then((d) => setCourses(d.rows ?? []))
       .catch(() => setCourses([]));
   }, [programId]);
+
+  useEffect(() => {
+    if (!programId) { setKeywordCourses([]); setKeywordDrafts({}); return; }
+    setKeywordsLoading(true);
+    apiFetch(`/api/match/keywords?program_id=${programId}`).then((r) => r.json())
+      .then((d) => {
+        const list: MatchKeywordCourse[] = d.courses ?? [];
+        setKeywordCourses(list);
+        setKeywordDrafts(Object.fromEntries(list.map((c) => [c.subject_id, c.match_keyword])));
+      })
+      .catch(() => { setKeywordCourses([]); setKeywordDrafts({}); })
+      .finally(() => setKeywordsLoading(false));
+  }, [programId]);
+
+  async function saveKeyword(subjectId: number) {
+    const value = (keywordDrafts[subjectId] ?? "").trim();
+    setKeywordSaving((prev) => ({ ...prev, [subjectId]: true }));
+    try {
+      await apiFetch("/api/match/keywords", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject_id: subjectId, match_keyword: value }),
+      });
+      setKeywordCourses((prev) => prev.map((c) => c.subject_id === subjectId ? { ...c, match_keyword: value } : c));
+    } finally {
+      setKeywordSaving((prev) => ({ ...prev, [subjectId]: false }));
+    }
+  }
 
   useEffect(() => {
     setResumable(loadCheckpoint());
@@ -204,6 +242,7 @@ export default function MatchTab() {
     : null;
 
   return (
+    <div className="space-y-4">
     <div className="card">
       <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
@@ -362,6 +401,67 @@ export default function MatchTab() {
           {error && <p className="mt-2 text-red-700 text-xs">{error}</p>}
         </div>
       )}
+    </div>
+
+    {programId && (
+      <div className="card">
+        <h2 className="text-psu font-semibold mb-1">Priority Keywords</h2>
+        <p className="text-sm text-slate-600 mb-3">
+          Overrides what matching searches for on a specific course, instead of deriving it from the course
+          title/description. Leave blank to use the normal, automatic matching. Saving a keyword here doesn&apos;t
+          re-match by itself -- run matching (for this course or the whole program) afterward to apply it.
+        </p>
+        {keywordsLoading && <p className="text-slate-500 text-sm">Loading…</p>}
+        {!keywordsLoading && keywordCourses.length === 0 && (
+          <p className="text-slate-500 text-sm">No courses in this program.</p>
+        )}
+        {!keywordsLoading && keywordCourses.length > 0 && (
+          <div className="overflow-x-auto max-h-96 overflow-y-auto border border-slate-200 rounded">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-1 px-2">Course Code</th>
+                  <th className="py-1 px-2">Course Title</th>
+                  <th className="py-1 px-2">Priority Keyword</th>
+                  <th className="py-1 px-2 w-16"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {keywordCourses.map((c) => {
+                  const draft = keywordDrafts[c.subject_id] ?? "";
+                  const dirty = draft.trim() !== (c.match_keyword ?? "").trim();
+                  return (
+                    <tr key={c.subject_id} className="border-b border-slate-100">
+                      <td className="py-1 px-2 text-slate-500">{c.course_code}</td>
+                      <td className="py-1 px-2 font-medium">{c.course_title}</td>
+                      <td className="py-1 px-2">
+                        <input
+                          type="text" className="input w-full"
+                          placeholder="e.g. thermodynamics"
+                          value={draft}
+                          onChange={(e) => setKeywordDrafts((prev) => ({ ...prev, [c.subject_id]: e.target.value }))}
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        {dirty && (
+                          <button
+                            className="btn text-[11px] px-2 py-1"
+                            disabled={!!keywordSaving[c.subject_id]}
+                            onClick={() => saveKeyword(c.subject_id)}
+                          >
+                            {keywordSaving[c.subject_id] ? "…" : "Save"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )}
     </div>
   );
 }
