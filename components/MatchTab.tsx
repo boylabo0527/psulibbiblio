@@ -2,9 +2,13 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 import { consumeNdjson } from "@/lib/streaming";
+import { RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
+import { useCampuses } from "@/lib/use-campuses";
 import type { MatchProgressEvent } from "@/app/api/match/run/route";
+import type { MatchKeywordCourse } from "@/app/api/match/keywords/route";
 
 type Program = { id: number; name: string };
+type Course = { subject_id: number; course_code: string; course_title: string };
 
 // Persisted so an interrupted run (laptop sleeps, tab closes, network
 // drops mid-chunk) can be resumed from its last committed batch instead of
@@ -18,8 +22,9 @@ type MatchCheckpoint = {
   matchesSoFar: number;
   failedSoFar: { course_code: string; error: string }[];
   params: {
-    topK: number; minScore: number; programId: string;
+    topK: number; minScore: number; programId: string; subjectId: string;
     balanceFormats: boolean; topKPrinted: number; topKDigital: number;
+    formats: string | undefined; campus: string;
   };
   savedAt: number;
 };
@@ -59,11 +64,29 @@ function phaseLabel(progress: MatchProgressEvent): string {
 export default function MatchTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string>("");
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [subjectId, setSubjectId] = useState<string>("");
   const [topK, setTopK] = useState(8);
   const [balanceFormats, setBalanceFormats] = useState(false);
   const [topKPrinted, setTopKPrinted] = useState(4);
   const [topKDigital, setTopKDigital] = useState(4);
   const [minScore, setMinScore] = useState(0.06);
+  // Restricts which resource types are even considered as match candidates
+  // -- e.g. checking just "Online Journals (Paid)"/"Online Journals (Open)"
+  // to specifically build out a course's journal list, without the run also
+  // re-scoring/touching its book matches. Starts with everything on so the
+  // default run is unchanged from before this filter existed.
+  const [enabledFormats, setEnabledFormats] = useState<Set<ResourceTypeId>>(
+    () => new Set(RESOURCE_TYPES.map((t) => t.id)),
+  );
+  // Restricts campus-scoped candidates (printed books/journals) to titles
+  // held at this campus -- e.g. matching a program offered at PSU-ROXAS
+  // shouldn't hand it printed books that only physically sit at Main
+  // Campus. Digital formats (eBooks, online journals) aren't campus-scoped
+  // and are unaffected. Blank = no restriction (search the whole catalog),
+  // same as before this filter existed.
+  const [campus, setCampus] = useState("");
+  const campuses = useCampuses();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -71,15 +94,81 @@ export default function MatchTab() {
   const [resumable, setResumable] = useState<MatchCheckpoint | null>(null);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Per-course "Priority Keyword" overrides (see app/api/match/keywords/
+  // route.ts and lib/matcher.ts's subjectQueryTerms/subjectMustQuery/
+  // subjectText) -- keyed by subject_id. keywordDrafts holds the input's
+  // current (possibly unsaved) text; a course only shows a Save button
+  // once its draft differs from the last-saved value.
+  const [keywordCourses, setKeywordCourses] = useState<MatchKeywordCourse[]>([]);
+  const [keywordDrafts, setKeywordDrafts] = useState<Record<number, string>>({});
+  const [keywordSaving, setKeywordSaving] = useState<Record<number, boolean>>({});
+  const [keywordsLoading, setKeywordsLoading] = useState(false);
+
   useEffect(() => {
     apiFetch("/api/programs").then((r) => r.json()).then((d) => setPrograms(d.programs ?? [])).catch(() => {});
   }, []);
+
+  // Lets a librarian re-match just one course instead of the whole
+  // program -- some subjects in a program already have a good list and
+  // don't need touching, only the ones that don't. Re-fetched whenever
+  // the program changes; "All programs" has no single course list, so the
+  // course picker only applies with one program selected.
+  useEffect(() => {
+    setSubjectId("");
+    if (!programId) { setCourses([]); return; }
+    apiFetch(`/api/procurement?program_id=${programId}`).then((r) => r.json())
+      .then((d) => setCourses(d.rows ?? []))
+      .catch(() => setCourses([]));
+  }, [programId]);
+
+  useEffect(() => {
+    if (!programId) { setKeywordCourses([]); setKeywordDrafts({}); return; }
+    setKeywordsLoading(true);
+    apiFetch(`/api/match/keywords?program_id=${programId}`).then((r) => r.json())
+      .then((d) => {
+        const list: MatchKeywordCourse[] = d.courses ?? [];
+        setKeywordCourses(list);
+        setKeywordDrafts(Object.fromEntries(list.map((c) => [c.subject_id, c.match_keyword])));
+      })
+      .catch(() => { setKeywordCourses([]); setKeywordDrafts({}); })
+      .finally(() => setKeywordsLoading(false));
+  }, [programId]);
+
+  async function saveKeyword(subjectId: number) {
+    const value = (keywordDrafts[subjectId] ?? "").trim();
+    setKeywordSaving((prev) => ({ ...prev, [subjectId]: true }));
+    try {
+      await apiFetch("/api/match/keywords", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject_id: subjectId, match_keyword: value }),
+      });
+      setKeywordCourses((prev) => prev.map((c) => c.subject_id === subjectId ? { ...c, match_keyword: value } : c));
+    } finally {
+      setKeywordSaving((prev) => ({ ...prev, [subjectId]: false }));
+    }
+  }
 
   useEffect(() => {
     setResumable(loadCheckpoint());
   }, []);
 
   useEffect(() => () => { if (tickerRef.current) clearInterval(tickerRef.current); }, []);
+
+  function toggleFormat(id: ResourceTypeId) {
+    setEnabledFormats((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Only sent when the selection is a strict subset of every type (possibly
+  // empty) -- with everything checked, omitting the param entirely keeps
+  // the request identical to before this filter existed.
+  function formatsParam(): string | undefined {
+    return enabledFormats.size < RESOURCE_TYPES.length ? Array.from(enabledFormats).join(",") : undefined;
+  }
 
   async function run(resume?: MatchCheckpoint) {
     setBusy(true);
@@ -92,7 +181,7 @@ export default function MatchTab() {
     // A resumed run keeps using the ORIGINAL run's settings throughout,
     // even if the form has since been changed -- mixing settings across
     // chunks of the same logical run would produce an incoherent result.
-    const p = resume?.params ?? { topK, minScore, programId, balanceFormats, topKPrinted, topKDigital };
+    const p = resume?.params ?? { topK, minScore, programId, subjectId, balanceFormats, topKPrinted, topKDigital, formats: formatsParam(), campus };
     try {
       // A large catalog can take longer to match than a single serverless
       // request is allowed to run. Rather than fail once the platform's
@@ -109,10 +198,13 @@ export default function MatchTab() {
       for (;;) {
         const params = new URLSearchParams({ top_k: String(p.topK), min_score: String(p.minScore) });
         if (p.programId) params.set("program_id", p.programId);
+        if (p.subjectId) params.set("subject_id", p.subjectId);
         if (p.balanceFormats) {
           params.set("top_k_printed", String(p.topKPrinted));
           params.set("top_k_digital", String(p.topKDigital));
         }
+        if (p.formats) params.set("formats", p.formats);
+        if (p.campus) params.set("campus", p.campus);
         if (offset > 0) {
           params.set("offset", String(offset));
           params.set("matches_so_far", String(matchesSoFar));
@@ -160,6 +252,7 @@ export default function MatchTab() {
     : null;
 
   return (
+    <div className="space-y-4">
     <div className="card">
       <h2 className="text-psu font-semibold mb-2">Run Matching</h2>
       <p className="text-sm text-slate-600 mb-3">
@@ -176,6 +269,20 @@ export default function MatchTab() {
             ))}
           </select>
         </label>
+        {programId && (
+          <label className="label">
+            Course
+            <select
+              className="input ml-1" value={subjectId} onChange={(e) => setSubjectId(e.target.value)}
+              title="Re-match just this course instead of the whole program -- useful when most subjects already have a good list and only a few don't"
+            >
+              <option value="">All courses in this program</option>
+              {courses.map((c) => (
+                <option key={c.subject_id} value={c.subject_id}>{c.course_code ? `${c.course_code} — ${c.course_title}` : c.course_title}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {!balanceFormats && (
           <label className="label">
             Top K
@@ -188,7 +295,55 @@ export default function MatchTab() {
           <input type="number" min={0} max={1} step={0.01} className="input ml-1 w-20"
             value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
         </label>
+        <label className="label" title="Restricts Printed Books/Printed Journals candidates to this campus's own catalog -- eBooks and online journals aren't campus-scoped and are unaffected">
+          Printed materials campus
+          <select className="input ml-1" value={campus} onChange={(e) => setCampus(e.target.value)}>
+            <option value="">All campuses</option>
+            {campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+          </select>
+        </label>
         <button className="btn" onClick={() => run()} disabled={busy}>{busy ? "Matching…" : "Run matching"}</button>
+      </div>
+      {campus && (
+        <p className="text-xs text-slate-500 -mt-2 mb-3">
+          Printed books/journals will only match titles held at <strong>{campus}</strong>; eBooks and online journals search the whole catalog as usual.
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5 mb-3">
+        <span className="text-sm text-slate-600 mr-1">Materials:</span>
+        {RESOURCE_TYPES.map((t) => {
+          const on = enabledFormats.has(t.id);
+          return (
+            <button
+              key={t.id}
+              className={
+                "text-[11px] px-2 py-0.5 rounded-full border font-medium " +
+                (on
+                  ? "bg-psu-light text-psu border-psu"
+                  : "text-slate-400 border-slate-200 hover:border-slate-400 hover:text-slate-600")
+              }
+              title={on ? `Exclude ${t.uiLabel} from candidates this run` : `Only consider ${t.uiLabel} as candidates this run`}
+              onClick={() => toggleFormat(t.id)}
+            >
+              {t.uiLabel}
+            </button>
+          );
+        })}
+        <button className="text-[11px] text-psu underline ml-1" onClick={() => setEnabledFormats(new Set(RESOURCE_TYPES.map((t) => t.id)))}>
+          All
+        </button>
+        <button className="text-[11px] text-slate-400 underline" onClick={() => setEnabledFormats(new Set())}>
+          None
+        </button>
+        {enabledFormats.size === 0 && (
+          <span className="text-xs text-amber-700 ml-1">No material types selected — matching will find nothing.</span>
+        )}
+        {enabledFormats.size > 0 && enabledFormats.size < RESOURCE_TYPES.length && (
+          <span className="text-xs text-slate-500 ml-1">
+            Only these types are considered as candidates -- e.g. narrow a run to just Online Journals to build out a course&apos;s journal list without touching its book matches.
+          </span>
+        )}
       </div>
 
       {resumable && !busy && (
@@ -268,6 +423,67 @@ export default function MatchTab() {
           {error && <p className="mt-2 text-red-700 text-xs">{error}</p>}
         </div>
       )}
+    </div>
+
+    {programId && (
+      <div className="card">
+        <h2 className="text-psu font-semibold mb-1">Priority Keywords</h2>
+        <p className="text-sm text-slate-600 mb-3">
+          Overrides what matching searches for on a specific course, instead of deriving it from the course
+          title/description. Leave blank to use the normal, automatic matching. Saving a keyword here doesn&apos;t
+          re-match by itself -- run matching (for this course or the whole program) afterward to apply it.
+        </p>
+        {keywordsLoading && <p className="text-slate-500 text-sm">Loading…</p>}
+        {!keywordsLoading && keywordCourses.length === 0 && (
+          <p className="text-slate-500 text-sm">No courses in this program.</p>
+        )}
+        {!keywordsLoading && keywordCourses.length > 0 && (
+          <div className="overflow-x-auto max-h-96 overflow-y-auto border border-slate-200 rounded">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-1 px-2">Course Code</th>
+                  <th className="py-1 px-2">Course Title</th>
+                  <th className="py-1 px-2">Priority Keyword</th>
+                  <th className="py-1 px-2 w-16"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {keywordCourses.map((c) => {
+                  const draft = keywordDrafts[c.subject_id] ?? "";
+                  const dirty = draft.trim() !== (c.match_keyword ?? "").trim();
+                  return (
+                    <tr key={c.subject_id} className="border-b border-slate-100">
+                      <td className="py-1 px-2 text-slate-500">{c.course_code}</td>
+                      <td className="py-1 px-2 font-medium">{c.course_title}</td>
+                      <td className="py-1 px-2">
+                        <input
+                          type="text" className="input w-full"
+                          placeholder="e.g. thermodynamics"
+                          value={draft}
+                          onChange={(e) => setKeywordDrafts((prev) => ({ ...prev, [c.subject_id]: e.target.value }))}
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        {dirty && (
+                          <button
+                            className="btn text-[11px] px-2 py-1"
+                            disabled={!!keywordSaving[c.subject_id]}
+                            onClick={() => saveKeyword(c.subject_id)}
+                          >
+                            {keywordSaving[c.subject_id] ? "…" : "Save"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )}
     </div>
   );
 }

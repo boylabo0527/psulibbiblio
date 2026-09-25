@@ -1,5 +1,6 @@
 import { scoreCandidates, subjectText, subjectQueryTerms, subjectMustQuery, titleText } from "@/lib/matcher";
 import type { Candidate } from "@/lib/matcher";
+import { isResourceTypeId, RESOURCE_TYPES, type ResourceTypeId } from "@/lib/resources";
 import { serviceClient } from "@/lib/supabase";
 import { embedTexts, embeddingsEnabled, cosineSim } from "@/lib/embeddings";
 import { ndjsonStream } from "@/lib/streaming";
@@ -39,6 +40,10 @@ const EMBED_TIMEOUT_MS = parseInt(process.env.MATCH_EMBED_TIMEOUT_MS ?? "150000"
 // just as a sequence of bounded requests instead of one that can outrun the
 // platform's timeout.
 const TIME_BUDGET_MS = parseInt(process.env.MATCH_TIME_BUDGET_MS ?? "240000", 10);
+// Formats whose physical/holding location matters (see RESOURCE_TYPES'
+// campusScoped flag) -- these are the only ones a `campus` filter narrows;
+// eBooks/online journals/repository items aren't tied to one campus at all.
+const CAMPUS_SCOPED_FORMATS = RESOURCE_TYPES.filter((t) => t.campusScoped).map((t) => t.id);
 
 export type MatchProgressEvent =
   | { phase: "fetching"; done: number; total: number; label: string }
@@ -90,6 +95,27 @@ export async function POST(req: Request) {
   const topKDigital = topKDigitalParam != null ? parseInt(topKDigitalParam, 10) : undefined;
   const minScore = parseFloat(url.searchParams.get("min_score") ?? "0.05");
   const programId = url.searchParams.get("program_id");
+  // Narrows a run to exactly one course -- e.g. re-matching a single
+  // subject whose list still needs work without re-running (and
+  // re-scoring) every other subject in the program that's already fine.
+  const subjectId = url.searchParams.get("subject_id");
+  // Restricts which resource types are even considered as match candidates
+  // -- e.g. only "journal_online_paid"/"journal_online_open" to specifically
+  // build out a course's journal list without the run also re-scoring (and
+  // silently overwriting) its existing book matches. Filtered inside the
+  // match_titles_candidates RPC itself (see supabase/migrations/
+  // 46_match_candidates_format_filter.sql for why it can't just be a
+  // post-hoc filter on the results).
+  const formatsParam = url.searchParams.get("formats");
+  const formats: ResourceTypeId[] | undefined = formatsParam
+    ? formatsParam.split(",").filter(isResourceTypeId)
+    : undefined;
+  // Restricts campus-scoped formats (printed books/journals) to titles held
+  // at this specific campus -- e.g. so matching a program offered at
+  // PSU-ROXAS doesn't hand it printed books that only physically sit at
+  // Main Campus and can't satisfy PSU-ROXAS's own printed-book requirement.
+  // Non-campus-scoped formats (eBooks, online journals) are unaffected.
+  const campus = (url.searchParams.get("campus") ?? "").trim() || undefined;
   // Set by the client when continuing a run that paused for time -- see
   // the "paused" phase below.
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
@@ -113,21 +139,35 @@ export async function POST(req: Request) {
       });
     }
   }
+  if (subjectId) {
+    const { data: subjRow } = await permsDb.from("subjects").select("id, program_id").eq("id", Number(subjectId)).maybeSingle();
+    if (!subjRow) {
+      return new Response(JSON.stringify({ error: "Course not found." }), {
+        status: 404, headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (allowedProgramIds && !allowedProgramIds.has(subjRow.program_id!)) {
+      return new Response(JSON.stringify({ error: "This course isn't offered at any of your assigned campuses." }), {
+        status: 403, headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
 
   const stream = ndjsonStream<MatchProgressEvent>(async (send) => {
     const db = serviceClient();
 
     const fetchedSubjects = await fetchAllWithProgress<SubjectRow>(
       db, "subjects",
-      "id, program_id, course_code, course_title, description",
+      "id, program_id, course_code, course_title, description, match_keyword",
       "subjects", send,
-      programId ? { col: "program_id", value: Number(programId) } : undefined,
+      subjectId ? { col: "id", value: Number(subjectId) }
+        : programId ? { col: "program_id", value: Number(programId) } : undefined,
     );
-    // No specific program requested (running "all programs") and the
-    // caller is campus-restricted -- narrow to only their allowed
-    // programs' subjects. When a specific program_id WAS requested, it's
-    // already been verified above and fetchAllWithProgress filtered to it.
-    const subjects = !programId && allowedProgramIds
+    // No specific program or course requested (running "all programs")
+    // and the caller is campus-restricted -- narrow to only their allowed
+    // programs' subjects. A specific program_id or subject_id has already
+    // been verified above and fetchAllWithProgress filtered to it.
+    const subjects = !programId && !subjectId && allowedProgramIds
       ? fetchedSubjects.filter((s) => allowedProgramIds!.has(s.program_id!))
       : fetchedSubjects;
     if (!subjects.length) {
@@ -194,7 +234,29 @@ export async function POST(req: Request) {
       // than all subjects up front) so a paused/resumed run never touches
       // subjects a prior chunk already finished.
       const batchIds = batch.map((s) => s.id!);
-      { const { error } = await db.from("assignments").delete().in("subject_id", batchIds).eq("manual", 0); if (error) throw error; }
+      if (!formats) {
+        const { error } = await db.from("assignments").delete().in("subject_id", batchIds).eq("manual", 0);
+        if (error) throw error;
+      } else {
+        // A format-restricted run (e.g. "only online journals") must only
+        // replace THAT slice of the course's existing matches -- deleting
+        // every manual=0 row here (the unrestricted path above) would wipe
+        // out its book matches too, even though this run never touches or
+        // re-scores books at all. Two round trips instead of one delete:
+        // find which of this batch's current auto-matches are actually in
+        // the restricted formats, then delete only those by id.
+        const { data: existing, error: selErr } = await db.from("assignments")
+          .select("id, titles!inner(format)")
+          .in("subject_id", batchIds).eq("manual", 0)
+          .in("titles.format", formats) as unknown as
+          { data: { id: number }[] | null; error: { message: string } | null };
+        if (selErr) throw selErr;
+        const idsToDelete = (existing ?? []).map((a) => a.id);
+        if (idsToDelete.length) {
+          const { error } = await db.from("assignments").delete().in("id", idsToDelete);
+          if (error) throw error;
+        }
+      }
 
       const batchCandidates = await Promise.all(batch.map(async (subject) => {
         const terms = subjectQueryTerms(subject);
@@ -210,6 +272,9 @@ export async function POST(req: Request) {
               query_text: terms.join(" | "),
               must_text: subjectMustQuery(subject),
               limit_n: CANDIDATE_LIMIT,
+              formats: formats ?? null,
+              p_campus: campus ?? null,
+              p_campus_scoped_formats: campus ? CAMPUS_SCOPED_FORMATS : null,
             });
             if (error) throw new Error(error.message);
             return { subject, candidates: (data ?? []) as Candidate[] };
@@ -319,8 +384,8 @@ export async function POST(req: Request) {
     });
     await logActivity(db, {
       userEmail, action: "match_run",
-      summary: `Ran matching${programId ? " (one program)" : " (all programs)"}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
-      detail: { program_id: programId ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
+      summary: `Ran matching${subjectId ? " (one course)" : programId ? " (one program)" : " (all programs)"}${formats ? ` [${formats.join(", ")} only]` : ""}${campus ? ` [printed: ${campus} only]` : ""}: ${totalMatches} matches across ${subjects.length} subjects${failedSubjects.length ? `, ${failedSubjects.length} subject${failedSubjects.length === 1 ? "" : "s"} failed` : ""}`,
+      detail: { program_id: programId ?? null, subject_id: subjectId ?? null, formats: formats ?? null, campus: campus ?? null, matches: totalMatches, subjects: subjects.length, semantic_used: semanticUsed, failed_subjects: failedSubjects },
     });
   });
 

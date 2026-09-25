@@ -32,6 +32,14 @@ export type TitleRow = {
    *  runs never delete a protected assignment, so it survives even
    *  though the course itself keeps getting re-matched. */
   manual?: number;
+  /** Set on a journal returned from a program bibliography: the name of
+   *  the program(s) it's assigned to (" + "-joined when a combined-programs
+   *  report merges the same journal in from more than one source program).
+   *  A journal has no course of its own to say this the way a book's
+   *  Course Code/Title does, so exports need it spelled out explicitly --
+   *  see loadProgramBibliography/loadCombinedProgramBibliography in
+   *  lib/bibliography.ts and programBibliographyCsv in lib/exports.ts. */
+  program?: string;
 };
 
 export type ProgramRow = {
@@ -46,6 +54,11 @@ export type SubjectRow = {
   course_title: string;
   description?: string;
   sort_order?: number;
+  /** Admin override for what matching searches for on this course,
+   *  instead of deriving it from course_title/description -- see
+   *  supabase/migrations/50_subject_match_keyword.sql. Empty/unset means
+   *  "use the normal title/description-based matching." */
+  match_keyword?: string;
   /** @deprecated No longer read by /api/match/run -- locking is now
    *  per-title (assignments.manual), so a course stays open to newly
    *  matched titles while individually protected ones survive. Column
