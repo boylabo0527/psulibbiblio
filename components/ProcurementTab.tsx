@@ -53,8 +53,15 @@ export default function ProcurementTab() {
 
   const cutoffYear = new Date().getFullYear() - RECENCY_YEARS;
   const campuses = useCampuses();
-  const { isProgramAtCampus } = useProgramCampusMap();
+  const { loaded: campusMapLoaded, isProgramAtCampus } = useProgramCampusMap();
   const visiblePrograms = campus ? programs.filter(p => isProgramAtCampus(p.id, campus)) : programs;
+  // A program with zero rows in program_campuses defaults to "offered
+  // everywhere" (see CampusValidationTab), so this can only be empty when
+  // every program that IS mapped has been mapped to other campuses but not
+  // this one -- i.e. nobody has checked this campus's box yet for the
+  // programs it actually offers. Surfaced explicitly below instead of just
+  // silently showing an empty table, since that reads as a bug otherwise.
+  const noProgramsMappedToCampus = campus !== "" && campusMapLoaded && programs.length > 0 && visiblePrograms.length === 0;
 
   useEffect(() => {
     apiFetch("/api/programs")
@@ -366,8 +373,15 @@ export default function ProcurementTab() {
         {err && <p className="text-red-700 text-sm mb-3">{err}</p>}
         {loading && <p className="text-slate-500 text-sm">Loading…</p>}
         {!loading && refreshing && <p className="text-slate-400 text-xs mb-2">Updating…</p>}
-        {!loading && rows.length === 0 && <p className="text-slate-500 text-sm">No subjects found. Upload subjects first.</p>}
-        {!loading && rows.length > 0 && filtered.length === 0 && <p className="text-slate-500 text-sm">No subjects match this filter.</p>}
+        {!loading && noProgramsMappedToCampus && (
+          <p className="text-amber-700 text-sm bg-amber-50 border border-amber-200 rounded p-2">
+            No programs are mapped to <span className="font-semibold">{campus}</span> yet in Campus
+            Validation, so there&apos;s nothing to show for it here. Go to Campus Validation, select
+            each program actually offered at {campus}, and check its box for that campus.
+          </p>
+        )}
+        {!loading && !noProgramsMappedToCampus && rows.length === 0 && <p className="text-slate-500 text-sm">No subjects found. Upload subjects first.</p>}
+        {!loading && !noProgramsMappedToCampus && rows.length > 0 && filtered.length === 0 && <p className="text-slate-500 text-sm">No subjects match this filter.</p>}
 
         {!loading && grouped.map((grp) => (
           <div key={grp.program_id} className="mb-6">
