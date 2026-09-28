@@ -3,7 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 import { isProgramInScope } from "@/lib/campus-scope";
 import { userEmailFromRequest } from "@/lib/activity";
-import { loadProgramBibliography } from "@/lib/bibliography";
+import { loadProgramBibliography, loadCombinedProgramBibliography } from "@/lib/bibliography";
 import { isResourceTypeId, type ResourceTypeId } from "@/lib/resources";
 
 export const runtime = "nodejs";
@@ -36,12 +36,32 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const types: ResourceTypeId[] | undefined = u.searchParams.has("types")
       ? (u.searchParams.get("types") ?? "").split(",").filter(isResourceTypeId)
       : undefined;
-    const data = await loadProgramBibliography(
-      id, campus, undefined,
-      Number.isFinite(minYear) ? minYear : undefined,
-      Number.isFinite(maxYear) ? maxYear : undefined,
-      types,
-    );
+    // Optional: fold one or more other programs' course lists into this
+    // report as extra labeled sections -- e.g. a shared "Common Courses"
+    // program alongside a major's own program -- so the export reads as one
+    // bibliography instead of two separate ones. Same view/edit + campus
+    // scope checks as the primary program apply to each one.
+    const combineWith = (u.searchParams.get("combine_with") ?? "")
+      .split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n !== id);
+    for (const extraId of combineWith) {
+      if (!(await isProgramInScope(db, perms, extraId))) {
+        return NextResponse.json({ error: "One of the programs to combine with isn't offered at any of your assigned campuses." }, { status: 403 });
+      }
+    }
+
+    const data = combineWith.length
+      ? await loadCombinedProgramBibliography(
+          [id, ...combineWith], campus,
+          Number.isFinite(minYear) ? minYear : undefined,
+          Number.isFinite(maxYear) ? maxYear : undefined,
+          types,
+        )
+      : await loadProgramBibliography(
+          id, campus, undefined,
+          Number.isFinite(minYear) ? minYear : undefined,
+          Number.isFinite(maxYear) ? maxYear : undefined,
+          types,
+        );
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json(

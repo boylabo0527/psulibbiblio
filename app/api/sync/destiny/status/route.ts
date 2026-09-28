@@ -3,7 +3,7 @@ import { serviceClient } from "@/lib/supabase";
 import { userEmailFromRequest } from "@/lib/activity";
 import { getUserPermissions } from "@/lib/permissions";
 import { getLatestSyncJob, getSyncJob } from "@/lib/sync-jobs";
-import { DESTINY_SYNC_KIND } from "@/app/api/sync/destiny/route";
+import { DESTINY_SYNC_KIND } from "@/lib/destiny";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

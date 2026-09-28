@@ -29,6 +29,12 @@ export type CanvassingRow = {
   provincial_price: number | null;
   subject_id: number | null;
   subject_label: string;
+  /** Whether a librarian has reviewed and approved this row's course
+   *  assignment -- separate from just having a subject_id, since an
+   *  assignment can be the auto-suggested best guess, not yet confirmed.
+   *  Purchase Request prep only pulls in rows that are validated (see
+   *  /api/canvassing/mass-validate and mass-unassign). */
+  validated: boolean;
   program_id: number | null;
   program: string;
   /** The primary program's college (e.g. "College of Nursing"), if one is
@@ -122,6 +128,7 @@ export async function GET(req: Request) {
         provincial_price: r.provincial_price != null ? Number(r.provincial_price) : null,
         subject_id: primarySubjectId,
         subject_label: sub ? [sub.course_code, sub.course_title].filter(Boolean).join(" — ") : "",
+        validated: !!r.validated,
         program_id: (r.program_id as number | null),
         program: prog?.name ?? "",
         college: prog?.college ?? "",

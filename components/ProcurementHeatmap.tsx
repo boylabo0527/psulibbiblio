@@ -62,20 +62,48 @@ export default function ProcurementHeatmap() {
     };
   }, [cells, showAll]);
 
+  async function exportHeatmap(fmt: "xlsx" | "csv") {
+    const XLSX = await import("xlsx");
+    const programIds = new Set(programs.map((p) => p.id));
+    const headers = ["Program", "Campus", "Total Subjects", "Compliant", "Partial", "Needs Procurement", "Compliance Rate (%)"];
+    const rows = cells
+      .filter((c) => programIds.has(c.program_id))
+      .sort((a, b) => a.program.localeCompare(b.program) || a.campus.localeCompare(b.campus))
+      .map((c) => [c.program, c.campus, c.totalSubjects, c.compliant, c.partial, c.needs, c.complianceRate]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws["!cols"] = headers.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Heatmap");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: fmt });
+    const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `procurement_heatmap.${fmt}`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+  }
+
   if (loading) return <p className="text-slate-500 text-sm">Loading heatmap…</p>;
   if (err) return <p className="text-red-700 text-sm">{err}</p>;
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <p className="text-xs text-slate-500">
           Share of subjects meeting full compliance ({">"}= 5 recent titles), per program per campus.
           Blank cells mean that program isn&apos;t offered at that campus.
         </p>
-        <label className="flex items-center gap-1.5 text-xs text-slate-600 whitespace-nowrap">
-          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
-          Show single-campus programs too
-        </label>
+        <div className="flex items-center gap-3 shrink-0">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 whitespace-nowrap">
+            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+            Show single-campus programs too
+          </label>
+          <button className="btn-outline text-xs" disabled={cells.length === 0} onClick={() => exportHeatmap("xlsx")}>
+            Export XLSX
+          </button>
+          <button className="btn-outline text-xs" disabled={cells.length === 0} onClick={() => exportHeatmap("csv")}>
+            Export CSV
+          </button>
+        </div>
       </div>
 
       {programs.length === 0 ? (

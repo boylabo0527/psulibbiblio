@@ -1,0 +1,153 @@
+import { NextResponse } from "next/server";
+import { serviceClient } from "@/lib/supabase";
+import { getUserPermissions } from "@/lib/permissions";
+import { userEmailFromRequest } from "@/lib/activity";
+import { errorMessage } from "@/lib/errors";
+import { loadProgramBibliography } from "@/lib/bibliography";
+import { RESOURCE_TYPES } from "@/lib/resources";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export type SubjectSearchRow = {
+  subject_id: number;
+  program_id: number;
+  program: string;
+  course_code: string;
+  course_title: string;
+  /** Assignments actually on this subject right now, broken down by
+   *  format and whether they're locked (manual) -- lets an admin see
+   *  directly whether a Match run's reported count actually landed here,
+   *  without needing database access. Two subjects with confusingly
+   *  similar names (a near-duplicate upload, or the same course listed
+   *  under two programs) show up as separate rows with their own counts,
+   *  which is usually the answer when "N matches assigned" doesn't seem
+   *  to show up anywhere. */
+  assignments: { format: string; manual: number; count: number }[];
+  /** What loadProgramBibliography -- the exact function behind the on-screen
+   *  Programs & Export page and every export format -- actually returns for
+   *  this subject right now, run twice: once with no campus filter at all
+   *  (isolates the raw fetch from any campus-matching question) and once
+   *  with whatever campus this request was called with (?campus=...), if
+   *  any. Comparing these two numbers against `assignments` above (the raw
+   *  table count) pinpoints exactly which stage is dropping titles: if
+   *  noCampusFilter is already short, the bug is in the fetch itself; if
+   *  noCampusFilter is right but withCampusFilter isn't, it's the campus
+   *  match; if both match `assignments`, the data's fine and the problem is
+   *  somewhere client-side instead. */
+  visibleViaBibliography: { noCampusFilter: number; withCampusFilter: number | null };
+  /** Same function, same subject, but called the way Programs & Export
+   *  actually calls it -- for the WHOLE program at once, not scoped to
+   *  just this one subject. If this disagrees with visibleViaBibliography
+   *  above (which IS scoped), the bug only shows up when fetching a big
+   *  program's full subject list together, not in the fetch logic itself. */
+  wholeProgram: { subjectsInProgram: number; thisSubjectCount: number } | null;
+};
+
+/** GET /api/subjects/search?q=... -- admin-only diagnostic: finds every
+ *  subject whose course code or title contains q (case-insensitive), with
+ *  its program and a live breakdown of what's actually in `assignments`
+ *  for it right now. Exists for tracking down "Match said N titles were
+ *  assigned but Programs & Export doesn't show them" -- the most common
+ *  real cause is two subjects with the same/similar name (accidentally
+ *  uploaded twice, or the same course under two programs), where a run
+ *  against one doesn't show up under the other. */
+export async function GET(req: Request) {
+  try {
+    const db = serviceClient();
+    const perms = await getUserPermissions(db, userEmailFromRequest(req));
+    if (!perms.isAdmin) {
+      return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+    }
+
+    const params = new URL(req.url).searchParams;
+    const q = (params.get("q") ?? "").trim();
+    const campusParam = (params.get("campus") ?? "").trim();
+    if (!q) return NextResponse.json({ subjects: [] });
+
+    const { data: subjects, error } = await db.from("subjects")
+      .select("id, program_id, course_code, course_title")
+      .or(`course_code.ilike.%${q}%,course_title.ilike.%${q}%`)
+      .limit(50);
+    if (error) throw error;
+    if (!subjects?.length) return NextResponse.json({ subjects: [] });
+
+    const programIds = Array.from(new Set(subjects.map((s) => s.program_id)));
+    const { data: programRows } = await db.from("programs").select("id, name").in("id", programIds);
+    const programMap = new Map((programRows ?? []).map((p) => [p.id, p.name as string]));
+
+    const subjectIds = subjects.map((s) => s.id);
+    type AssignRow = { subject_id: number; manual: number; titles: { format: string } | null };
+    const { data: assignments, error: assignErr } = await db.from("assignments")
+      .select("subject_id, manual, titles(format)")
+      .in("subject_id", subjectIds) as unknown as { data: AssignRow[] | null; error: { message: string } | null };
+    if (assignErr) throw new Error(assignErr.message);
+
+    const countsBySubject = new Map<number, Map<string, number>>();
+    for (const a of assignments ?? []) {
+      if (!a.titles) continue;
+      const key = `${a.titles.format}|${a.manual}`;
+      if (!countsBySubject.has(a.subject_id)) countsBySubject.set(a.subject_id, new Map());
+      const m = countsBySubject.get(a.subject_id)!;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+
+    // Runs the actual, currently-deployed loadProgramBibliography for just
+    // this one subject and counts how many titles it puts in that
+    // subject's own buckets -- exercising the real production code path
+    // instead of a guess at what it should do. Capped to the first 10
+    // matches so a broad search term can't trigger dozens of extra
+    // round trips.
+    function countInBiblio(biblio: Awaited<ReturnType<typeof loadProgramBibliography>>, subjectId: number) {
+      const subj = biblio.bySection[0]?.subjects.find((x) => x.subject.id === subjectId);
+      if (!subj) return null;
+      return RESOURCE_TYPES.reduce((sum, t) => sum + (subj.buckets[t.id]?.length ?? 0), 0);
+    }
+
+    const rows: SubjectSearchRow[] = [];
+    for (const [i, s] of subjects.entries()) {
+      const m = countsBySubject.get(s.id) ?? new Map();
+      const assignmentsOut = Array.from(m.entries()).map(([key, count]) => {
+        const [format, manual] = key.split("|");
+        return { format, manual: Number(manual), count };
+      }).sort((a, b) => a.format.localeCompare(b.format));
+
+      let visibleViaBibliography = { noCampusFilter: -1, withCampusFilter: null as number | null };
+      let wholeProgram: SubjectSearchRow["wholeProgram"] = null;
+      if (i < 10) {
+        const scopedNoCampus = await loadProgramBibliography(s.program_id, "", s.id);
+        const noCampusFilter = countInBiblio(scopedNoCampus, s.id) ?? 0;
+        let withCampusFilter: number | null = null;
+        if (campusParam) {
+          const scopedWithCampus = await loadProgramBibliography(s.program_id, campusParam, s.id);
+          withCampusFilter = countInBiblio(scopedWithCampus, s.id) ?? 0;
+        }
+        visibleViaBibliography = { noCampusFilter, withCampusFilter };
+      }
+      // Heavier (fetches every subject in the program, exactly like the
+      // real page does) -- capped to the first 3 matches only.
+      if (i < 3) {
+        const fullProgram = await loadProgramBibliography(s.program_id, campusParam);
+        wholeProgram = {
+          subjectsInProgram: fullProgram.bySection[0]?.subjects.length ?? 0,
+          thisSubjectCount: countInBiblio(fullProgram, s.id) ?? -1,
+        };
+      }
+
+      rows.push({
+        subject_id: s.id,
+        program_id: s.program_id,
+        program: programMap.get(s.program_id) ?? "",
+        course_code: s.course_code ?? "",
+        course_title: s.course_title,
+        assignments: assignmentsOut,
+        visibleViaBibliography,
+        wholeProgram,
+      });
+    }
+
+    return NextResponse.json({ subjects: rows });
+  } catch (err) {
+    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
+  }
+}

@@ -33,6 +33,14 @@
  *                               from the same Destiny database.
  */
 import sql from "mssql";
+import { randomUUID } from "crypto";
+import type { serviceClient } from "./supabase";
+import type { TitleRow } from "./types";
+import { RESOURCE_BY_ID } from "./resources";
+import { planIngestOps } from "./ingest-titles";
+import { createSyncJob } from "./sync-jobs";
+
+export const DESTINY_SYNC_KIND = "destiny_printed_books";
 
 // Confirmed against this instance's actual CircCatAdmin schema -- note
 // that's a SQL Server *schema* (object owner) in this database, not just
@@ -234,4 +242,102 @@ export async function fetchDestinyPrintedCatalog(): Promise<DestinyCatalogRow[]>
     }
   }
   return rows as unknown as DestinyCatalogRow[];
+}
+
+export type DestinySyncPlan = {
+  jobId: string | null;
+  total: number;
+  fetched: number;
+  journals: number;
+  books: number;
+  duplicates: number;
+  noCampusTitles: string[];
+  unmappedCampuses: string[];
+  batchId: string;
+};
+
+/** Turns a batch of raw Destiny catalog rows into a queued sync_jobs row
+ *  (see lib/sync-jobs.ts), applying the same campus-mapping and
+ *  printed-journal-vs-book split regardless of how the rows got here --
+ *  pulled live from Destiny's SQL Server (see fetchDestinyPrintedCatalog
+ *  above, used by POST /api/sync/destiny) or pushed in from a script
+ *  running inside the Destiny network (POST /api/sync/destiny/ingest,
+ *  for when Vercel can't reach Destiny's SQL Server directly). Shared so
+ *  those two entry points can never drift apart on how a row is
+ *  processed. */
+export async function startDestinySyncJob(
+  db: ReturnType<typeof serviceClient>,
+  destinyRows: DestinyCatalogRow[],
+  createdBy: string,
+): Promise<DestinySyncPlan> {
+  const batchId = randomUUID();
+
+  const { data: knownCampuses } = await db.from("campuses").select("name");
+  const knownNames = new Set((knownCampuses ?? []).map((c) => c.name));
+  const unmapped = new Set<string>();
+
+  const records: TitleRow[] = destinyRows
+    .filter((r) => (r.title ?? "").trim())
+    .map((r) => {
+      const sublocation = (r.sublocation ?? "").trim();
+      const campus = sublocation ? mapSublocationToCampus(sublocation) : "";
+      if (campus && !knownNames.has(campus)) unmapped.add(sublocation);
+      return {
+        title: r.title.trim(),
+        author: (r.author ?? "").trim(),
+        publisher: (r.publisher ?? "").trim(),
+        year: r.year != null ? String(r.year) : "",
+        call_no: (r.call_no ?? "").trim(),
+        barcode: (r.barcode ?? "").trim(),
+        campus,
+        copies: r.copies ?? 1,
+      };
+    });
+
+  if (!records.length) {
+    return {
+      jobId: null, total: 0, fetched: 0, journals: 0, books: 0,
+      duplicates: 0, noCampusTitles: [], unmappedCampuses: [], batchId,
+    };
+  }
+
+  // Main Campus's own barcode convention: a periodical's copy barcode is
+  // prefixed "PSUMLJ" (checked first, since "PSUML" is literally a prefix
+  // of it too). Other campuses' barcodes don't follow this convention, so
+  // they're left as book_printed.
+  const journalRecords: TitleRow[] = [];
+  const bookRecords: TitleRow[] = [];
+  for (const r of records) {
+    const bc = (r.barcode ?? "").toUpperCase();
+    if (r.campus === "Main Campus" && bc.startsWith("PSUMLJ")) journalRecords.push(r);
+    else bookRecords.push(r);
+  }
+
+  const bookPlan = bookRecords.length
+    ? await planIngestOps(db, RESOURCE_BY_ID.book_printed, bookRecords, batchId, "")
+    : { ops: [], duplicates: 0, noCampusTitles: [] as string[], received: 0, mode: "standard" as const };
+  const journalPlan = journalRecords.length
+    ? await planIngestOps(db, RESOURCE_BY_ID.journal_printed, journalRecords, batchId, "")
+    : { ops: [], duplicates: 0, noCampusTitles: [] as string[], received: 0, mode: "standard" as const };
+
+  const ops = [...bookPlan.ops, ...journalPlan.ops];
+  const duplicates = (bookPlan.duplicates ?? 0) + (journalPlan.duplicates ?? 0);
+  const noCampusTitles = [...bookPlan.noCampusTitles, ...journalPlan.noCampusTitles];
+  const unmappedCampuses = Array.from(unmapped);
+
+  const jobId = await createSyncJob(db, {
+    kind: DESTINY_SYNC_KIND,
+    ops,
+    duplicates,
+    noCampusTitles,
+    unmappedCampuses,
+    batchId,
+    createdBy,
+  });
+
+  return {
+    jobId, total: ops.length, fetched: records.length,
+    journals: journalRecords.length, books: bookRecords.length,
+    duplicates, noCampusTitles, unmappedCampuses, batchId,
+  };
 }

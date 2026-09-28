@@ -40,3 +40,156 @@ export async function parseSheetRows(file: File): Promise<Record<string, string>
     Object.fromEntries(Object.entries(r).map(([k, v]) => [k, cellToString(v)])),
   );
 }
+
+// ---------------------------------------------------------------------------
+// Validation rows: client-safe counterpart to lib/parsers.ts's
+// buildValidationRowsFromRaw (small, dependency-free duplicate of norm/
+// buildHeaderMap here rather than importing lib/parsers.ts, which pulls in
+// a static `xlsx` import not worth adding to this file's client bundle).
+// ---------------------------------------------------------------------------
+const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+
+function buildHeaderMap(columns: string[], aliases: Record<string, string[]>): Record<string, string> {
+  const normed = new Map(columns.map((c) => [norm(c), c]));
+  const out: Record<string, string> = {};
+  for (const [canonical, alts] of Object.entries(aliases)) {
+    for (const alt of alts) {
+      const actual = normed.get(alt);
+      if (actual) { out[canonical] = actual; break; }
+    }
+  }
+  return out;
+}
+
+const VALIDATE_ALIASES: Record<string, string[]> = {
+  course_code: ["course code", "code", "course_code", "subject code"],
+  program: ["program", "programme", "program name"],
+  title: ["title"],
+  isbn: ["isbn", "isbn-13", "isbn13", "issn"],
+  verdict: [
+    "applicable", "applicable to course", "applicable?",
+    "valid", "keep", "keep?", "match", "matched", "ai match", "ai verdict",
+    "verdict", "decision", "status", "correct", "relevant", "result",
+  ],
+};
+
+const VERDICT_YES = new Set(["yes", "y", "true", "1", "keep", "valid", "correct", "applicable", "match", "matched", "relevant", "ok", "pass"]);
+const VERDICT_NO = new Set(["no", "n", "false", "0", "remove", "invalid", "incorrect", "not applicable", "no match", "not matched", "irrelevant", "drop", "delete", "fail"]);
+
+export type ValidationRow = {
+  course_code: string;
+  program: string;
+  title: string;
+  isbn: string;
+  verdict: boolean | null;
+};
+
+/** Narrows browser-parsed raw rows (see parseSheetRows above) down to just
+ *  the fields Validate Matches CSV needs -- course_code/program/title/
+ *  isbn/verdict -- dropping every other export column (Section,
+ *  Description, Resource Type, Author, Publisher, Year, Copies, Link).
+ *  Doing this client-side, before the rows are sent anywhere, is what
+ *  keeps a large multi-program export's request body small; see
+ *  lib/parsers.ts's parseValidationRows for the server-side counterpart
+ *  that starts from a raw file instead of already-parsed rows. */
+export function buildValidationRowsFromRaw(rows: Record<string, string>[]): ValidationRow[] {
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), VALIDATE_ALIASES);
+  if (!map.course_code || !map.title) {
+    throw new Error(`Could not find Course Code and Title columns. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: ValidationRow[] = [];
+  for (const r of rows) {
+    const course_code = (r[map.course_code] || "").trim();
+    const program = map.program ? (r[map.program] || "").trim() : "";
+    const title = (r[map.title] || "").trim();
+    if (!title || (!course_code && !program)) continue;
+    let verdict: boolean | null = null;
+    if (map.verdict) {
+      const raw = norm(r[map.verdict]);
+      if (VERDICT_YES.has(raw)) verdict = true;
+      else if (VERDICT_NO.has(raw)) verdict = false;
+    }
+    out.push({
+      course_code, program, title,
+      isbn: map.isbn ? (r[map.isbn] || "").trim() : "",
+      verdict,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Canvassing mass-validate rows: the download/upload round-trip in
+// CanvassingTab exports each canvassing row's own numeric id and its
+// currently proposed subject id -- matching by those, when present, is
+// simple and unambiguous. But a reviewer's sheet doesn't always have them
+// (e.g. it was rebuilt from scratch, or non-id columns got deleted along
+// the way, leaving only Title and Course) -- id/subject_id are therefore
+// optional here. When missing, the caller (CanvassingTab, which has the
+// live canvassing rows and subjects loaded) resolves the canvassing row by
+// Title and the target course by Course Code/Course Title text instead.
+// ---------------------------------------------------------------------------
+const CANVASSING_VALIDATE_ALIASES: Record<string, string[]> = {
+  id: ["id", "canvassing id", "row id"],
+  subject_id: ["proposed subject id", "proposed course id", "subject id", "course id"],
+  title: ["title", "book title", "canvassed title", "item title"],
+  program: ["program", "programme", "program name"],
+  course_code: ["course code", "code", "subject code"],
+  course_title: ["course title", "course", "subject", "proposed course", "subject area"],
+  validate: ["validate? (y/n)", "validate?", "validate", "approve?", "approve", "confirm?", "confirm"],
+};
+
+export type CanvassingValidateRow = {
+  id: number | null;
+  subject_id: number | null;
+  title: string;
+  program: string;
+  course_code: string;
+  course_title: string;
+  validate: boolean | null;
+};
+
+/** Narrows browser-parsed raw rows (see parseSheetRows above) down to what
+ *  the mass-validate upload needs. A row only needs an ID (else Title) to
+ *  identify the canvassing entry, and a Proposed Subject ID (else Course
+ *  Code/Course Title, optionally scoped by Program) to identify the
+ *  target course -- rows with neither are dropped since there's nothing to
+ *  resolve either end from. Left otherwise unresolved here (numeric ids
+ *  aren't looked up against real data in this file) so the caller can
+ *  match text fields against its own already-loaded rows/subjects and
+ *  report back exactly which rows it couldn't resolve and why. */
+export function buildCanvassingValidateRowsFromRaw(rows: Record<string, string>[]): CanvassingValidateRow[] {
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), CANVASSING_VALIDATE_ALIASES);
+  if (!map.id && !map.title) {
+    throw new Error(`Could not find an ID or Title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  if (!map.subject_id && !map.course_code && !map.course_title) {
+    throw new Error(`Could not find a Proposed Subject ID, Course Code, or Course Title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: CanvassingValidateRow[] = [];
+  for (const r of rows) {
+    const idRaw = map.id ? parseInt(r[map.id] || "", 10) : NaN;
+    const id = Number.isFinite(idRaw) && idRaw > 0 ? idRaw : null;
+    const title = map.title ? (r[map.title] || "").trim() : "";
+    if (id == null && !title) continue;
+    const subjectIdRaw = map.subject_id ? parseInt(r[map.subject_id] || "", 10) : NaN;
+    const subject_id = Number.isFinite(subjectIdRaw) && subjectIdRaw > 0 ? subjectIdRaw : null;
+    const course_code = map.course_code ? (r[map.course_code] || "").trim() : "";
+    const course_title = map.course_title ? (r[map.course_title] || "").trim() : "";
+    if (subject_id == null && !course_code && !course_title) continue;
+    let validate: boolean | null = null;
+    if (map.validate) {
+      const raw = norm(r[map.validate]);
+      if (VERDICT_YES.has(raw)) validate = true;
+      else if (VERDICT_NO.has(raw)) validate = false;
+    }
+    out.push({
+      id, subject_id, title,
+      program: map.program ? (r[map.program] || "").trim() : "",
+      course_code, course_title, validate,
+    });
+  }
+  return out;
+}
