@@ -18,6 +18,7 @@ export type ActivityAction =
   | "pr_advance" | "campus_budget_set" | "purchase_order_generate"
   | "purchase_order_edit" | "purchase_order_cancel" | "purchase_order_delete"
   | "canvassing_price_reverify" | "canvassing_link_subject"
+  | "canvassing_mass_validate" | "canvassing_mass_unassign"
   | "title_recommendation_submit" | "title_recommendation_status" | "title_recommendation_delete" | "title_recommendation_reassign" | "title_recommendation_bulk_upload"
   | "standard_title_bulk_upload" | "standard_title_delete"
   | "supplier_create" | "supplier_edit" | "supplier_delete"

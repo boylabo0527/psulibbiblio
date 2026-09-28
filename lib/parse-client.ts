@@ -118,3 +118,46 @@ export function buildValidationRowsFromRaw(rows: Record<string, string>[]): Vali
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Canvassing mass-validate rows: the download/upload round-trip in
+// CanvassingTab exports every canvassing row's own numeric id and its
+// currently proposed subject id, so the upload side matches by id instead
+// of fuzzy title/course-code text -- simpler and unambiguous, unlike
+// buildValidationRowsFromRaw above (which has no stable id to key off of).
+// ---------------------------------------------------------------------------
+const CANVASSING_VALIDATE_ALIASES: Record<string, string[]> = {
+  id: ["id", "canvassing id", "row id"],
+  subject_id: ["proposed subject id", "proposed course id", "subject id", "course id"],
+  validate: ["validate? (y/n)", "validate?", "validate", "approve?", "approve", "confirm?", "confirm"],
+};
+
+export type CanvassingValidateRow = { id: number; subject_id: number | null; validate: boolean | null };
+
+/** Narrows browser-parsed raw rows (see parseSheetRows above) down to what
+ *  /api/canvassing/mass-validate needs. A row is only actionable once
+ *  filtered by the caller to validate === true && subject_id != null --
+ *  left as separate fields here (rather than dropping unusable rows) so
+ *  the caller can report back how many rows were skipped and why. */
+export function buildCanvassingValidateRowsFromRaw(rows: Record<string, string>[]): CanvassingValidateRow[] {
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), CANVASSING_VALIDATE_ALIASES);
+  if (!map.id) {
+    throw new Error(`Could not find an ID column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: CanvassingValidateRow[] = [];
+  for (const r of rows) {
+    const id = parseInt(r[map.id] || "", 10);
+    if (!Number.isFinite(id)) continue;
+    const subjectIdRaw = map.subject_id ? parseInt(r[map.subject_id] || "", 10) : NaN;
+    const subject_id = Number.isFinite(subjectIdRaw) && subjectIdRaw > 0 ? subjectIdRaw : null;
+    let validate: boolean | null = null;
+    if (map.validate) {
+      const raw = norm(r[map.validate]);
+      if (VERDICT_YES.has(raw)) validate = true;
+      else if (VERDICT_NO.has(raw)) validate = false;
+    }
+    out.push({ id, subject_id, validate });
+  }
+  return out;
+}

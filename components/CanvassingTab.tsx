@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
-import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { parseSheetRows, isSpreadsheet, buildCanvassingValidateRowsFromRaw } from "@/lib/parse-client";
 import { groupRows } from "@/lib/group-rows";
 import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import SearchableSelect from "@/components/SearchableSelect";
@@ -179,6 +179,18 @@ export default function CanvassingTab() {
   const [linkingId, setLinkingId] = useState<number | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
 
+  // Mass validation (download proposed assignments, review offline, upload
+  // to confirm+validate in one pass) -- see /api/canvassing/mass-validate.
+  const [exportingValidation, setExportingValidation] = useState(false);
+  const [validateUploadBusy, setValidateUploadBusy] = useState(false);
+  const [validateUploadMsg, setValidateUploadMsg] = useState<string | null>(null);
+  const [validateUploadErr, setValidateUploadErr] = useState<string | null>(null);
+
+  // Bulk select on the "Matched & Ready for Purchase Request" table, for
+  // Mass Validate / Mass Remove without leaving the app.
+  const [selectedAssignedIds, setSelectedAssignedIds] = useState<Set<number>>(new Set());
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
+
   function reload() {
     setLoading(true); setErr(null);
     apiFetch("/api/canvassing")
@@ -319,6 +331,147 @@ export default function CanvassingTab() {
     reload();
   }
 
+  /** Downloads every canvassing row (assigned or not) with whichever course
+   *  is currently proposed for it -- already assigned server-side, or just
+   *  the on-screen best-guess suggestion for a still-unassigned row (same
+   *  value the "Assign to Subject Gap" dropdown shows). A reviewer marks
+   *  "Validate? (Y/N)" for each row they approve and uploads the file back
+   *  via importValidationFile -- that single pass both confirms the
+   *  assignment (for a not-yet-assigned row) and marks it validated, ready
+   *  for Purchase Request prep. "Proposed Subject ID" is what the upload
+   *  actually acts on; the Program/Proposed Course columns are just there
+   *  for a human to read. */
+  async function exportForValidation() {
+    setExportingValidation(true);
+    try {
+      const XLSX = await import("xlsx");
+      const gapById = new Map(gaps.map(g => [g.subject_id, g]));
+      const headers = [
+        "ID", "Item Type", "Title", "Author / Subject Area", "Publisher", "Year",
+        "Program", "Proposed Course", "Proposed Subject ID",
+        "Supplier", "Unit Cost", "Quantity", "Total", "Canvass Date",
+        "Already Validated", "Validate? (Y/N)",
+      ];
+      const aoa = [headers, ...rows.map(r => {
+        const proposedId = r.subject_id ?? (assignments.get(r.id) ? Number(assignments.get(r.id)) : null);
+        const proposedGap = proposedId != null ? gapById.get(proposedId) : undefined;
+        const program = r.subject_id ? r.program : (proposedGap?.program ?? "");
+        const proposedCourse = r.subject_id ? r.subject_label : (proposedGap ? `${proposedGap.course_code} — ${proposedGap.course_title}` : "");
+        return [
+          r.id, r.item_type, r.title,
+          r.item_type === "journal" ? r.subject_area : r.author,
+          r.publisher, r.year, program, proposedCourse, proposedId ?? "",
+          r.supplier, r.unit_cost, r.quantity, r.unit_cost * r.quantity,
+          r.canvass_date || r.created_at.slice(0, 10),
+          r.validated ? "Yes" : "No", "",
+        ];
+      })];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = headers.map(h => ({ wch: Math.max(h.length + 2, 12) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Canvassing");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = `canvassing_validation_${todayStr()}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+    } finally {
+      setExportingValidation(false);
+    }
+  }
+
+  /** Uploads a reviewed export from exportForValidation above -- rows
+   *  marked "Y" in Validate? (with a resolvable Proposed Subject ID) are
+   *  assigned + validated together via /api/canvassing/mass-validate.
+   *  Matched by each row's own ID column, not fuzzy title/course text. */
+  async function importValidationFile(file: File) {
+    if (!isSpreadsheet(file)) { setValidateUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
+    setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
+    try {
+      const raw = await parseSheetRows(file);
+      const parsedRows = buildCanvassingValidateRowsFromRaw(raw);
+      const items = parsedRows
+        .filter(r => r.validate === true && r.subject_id != null)
+        .map(r => ({ id: r.id, subject_id: r.subject_id! }));
+      if (items.length === 0) {
+        setValidateUploadErr("No rows marked \"Y\" in Validate? (with a Proposed Subject ID) were found.");
+        return;
+      }
+      const res = await apiFetch("/api/canvassing/mass-validate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setValidateUploadMsg(
+        `${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated` +
+        (j.skipped?.length ? `, ${j.skipped.length} skipped (out of your assigned campus, or not found).` : "."),
+      );
+      reload();
+    } catch (e) {
+      setValidateUploadErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setValidateUploadBusy(false);
+    }
+  }
+
+  function toggleAssignedSelection(id: number) {
+    setSelectedAssignedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllAssigned(ids: number[]) {
+    setSelectedAssignedIds(new Set(ids));
+  }
+
+  function invertAssignedSelection(ids: number[]) {
+    setSelectedAssignedIds(prev => new Set(ids.filter(id => !prev.has(id))));
+  }
+
+  async function massValidateSelected() {
+    const targets = assigned.filter(r => selectedAssignedIds.has(r.id) && r.subject_id != null);
+    if (targets.length === 0) return;
+    setBulkActionBusy(true);
+    try {
+      const res = await apiFetch("/api/canvassing/mass-validate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: targets.map(r => ({ id: r.id, subject_id: r.subject_id })) }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setSelectedAssignedIds(new Set());
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
+  async function massRemoveSelected() {
+    const ids = Array.from(selectedAssignedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Unassign ${ids.length} selected title${ids.length === 1 ? "" : "s"}? They'll go back to "needs sourcing" -- nothing is deleted.`)) return;
+    setBulkActionBusy(true);
+    try {
+      const res = await apiFetch("/api/canvassing/mass-unassign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setSelectedAssignedIds(new Set());
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
   async function del(id: number) {
     if (!confirm("Delete this entry?")) return;
     await apiFetch(`/api/canvassing?id=${id}`, { method: "DELETE" });
@@ -374,6 +527,16 @@ export default function CanvassingTab() {
   const assigned = useMemo(() => rows.filter(r => r.subject_id), [rows]);
   const unassigned = useMemo(() => rows.filter(r => !r.subject_id), [rows]);
   const totalCost = assigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
+
+  // Drop any selected id that's no longer in the assigned list (reloaded,
+  // unassigned, or deleted out from under the bulk-select checkboxes).
+  useEffect(() => {
+    const stillAssigned = new Set(assigned.map(r => r.id));
+    setSelectedAssignedIds(prev => {
+      const next = new Set(Array.from(prev).filter(id => stillAssigned.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [assigned]);
 
   const supplierOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.supplier).filter(Boolean))).sort(), [assigned]);
   const programOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.program).filter(Boolean))).sort(), [assigned]);
@@ -624,6 +787,32 @@ export default function CanvassingTab() {
         )}
       </div>
 
+      {/* Mass Validate — download proposed assignments, review offline, upload to confirm+validate */}
+      {rows.length > 0 && (
+        <div className="card">
+          <h2 className="text-psu font-semibold mb-1">Mass Validate Assignments</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            Download every canvassed title with its currently proposed course (already assigned, or just the
+            best-guess suggestion below), mark <span className="font-medium">Validate? (Y/N)</span> for each one a
+            reviewer approves, then upload it back -- that confirms the assignment and marks it validated in one
+            pass. Only <span className="font-medium">validated</span> titles are pulled into Purchase Request prep.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button className="btn-outline text-sm" disabled={exportingValidation} onClick={exportForValidation}>
+              {exportingValidation ? "Preparing…" : "Download for Validation (XLSX)"}
+            </button>
+            <label className="label flex-col items-start gap-1">
+              <span>Upload validated list</span>
+              <input type="file" accept=".xlsx,.xls,.csv" className="text-xs" disabled={validateUploadBusy}
+                onChange={e => { const f = e.target.files?.[0]; if (f) importValidationFile(f); e.target.value = ""; }} />
+            </label>
+          </div>
+          {validateUploadBusy && <p className="text-slate-500 text-xs mt-2">Uploading…</p>}
+          {validateUploadMsg && <p className="text-green-700 text-xs mt-2">{validateUploadMsg}</p>}
+          {validateUploadErr && <p className="text-red-700 text-xs mt-2">{validateUploadErr}</p>}
+        </div>
+      )}
+
       {/* Gap Matching — unassigned titles */}
       {rows.length > 0 && unassigned.length > 0 && (
         <div className="card">
@@ -741,10 +930,43 @@ export default function CanvassingTab() {
               </label>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-3 mb-2 text-xs">
+            <span className="text-slate-500">{selectedAssignedIds.size} selected</span>
+            <button className="text-psu underline" onClick={() => selectAllAssigned(filteredSortedAssigned.map(r => r.id))}>
+              Select all{(supplierFilter || programFilter) ? " (filtered)" : ""}
+            </button>
+            <button className="text-psu underline" onClick={() => invertAssignedSelection(filteredSortedAssigned.map(r => r.id))}>
+              Invert selection
+            </button>
+            <button className="text-slate-400 underline" onClick={() => setSelectedAssignedIds(new Set())}>Clear</button>
+            <button
+              className="btn-outline text-[11px] px-2 py-1 ml-2"
+              disabled={bulkActionBusy || selectedAssignedIds.size === 0}
+              onClick={massValidateSelected}
+              title="Marks each selected title validated, using its current course assignment as-is"
+            >
+              {bulkActionBusy ? "Working…" : `Mass Validate (${selectedAssignedIds.size})`}
+            </button>
+            <button
+              className="btn-outline text-[11px] px-2 py-1 text-amber-700 border-amber-300"
+              disabled={bulkActionBusy || selectedAssignedIds.size === 0}
+              onClick={massRemoveSelected}
+              title="Unassigns each selected title -- sends it back to needs-sourcing without deleting it"
+            >
+              {bulkActionBusy ? "Working…" : `Mass Remove (${selectedAssignedIds.size})`}
+            </button>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500 text-left">
+                  <th className="py-1 pr-2 w-8">
+                    <input
+                      type="checkbox"
+                      checked={filteredSortedAssigned.length > 0 && filteredSortedAssigned.every(r => selectedAssignedIds.has(r.id))}
+                      onChange={e => e.target.checked ? selectAllAssigned(filteredSortedAssigned.map(r => r.id)) : setSelectedAssignedIds(new Set())}
+                    />
+                  </th>
                   <th className="py-1 pr-2">Title</th>
                   <th className="py-1 pr-2">Author</th>
                   <th className="py-1 pr-2">Subject Gap Addressed</th>
@@ -754,6 +976,7 @@ export default function CanvassingTab() {
                   <th className="py-1 px-2" title={`Prices older than ${PRICE_VALIDITY_DAYS} days are flagged for re-verification`}>Quoted</th>
                   <th className="py-1 px-2 text-right">Qty</th>
                   <th className="py-1 px-2 text-right">Total</th>
+                  <th className="py-1 px-2" title="Only validated titles are pulled into Purchase Request prep">Validated</th>
                   <th className="py-1 pl-2"></th>
                 </tr>
               </thead>
@@ -761,7 +984,7 @@ export default function CanvassingTab() {
                 {assignedGroups.flatMap(([label, groupItems]) => [
                   ...(assignedGroupBy !== "none" ? [
                     <tr key={`g-${label}`} className="bg-slate-50">
-                      <td colSpan={10} className="py-1 px-2 font-semibold text-slate-600">
+                      <td colSpan={12} className="py-1 px-2 font-semibold text-slate-600">
                         {label} · {groupItems.length} · ₱{money(groupItems.reduce((s, r) => s + r.unit_cost * r.quantity, 0))}
                       </td>
                     </tr>,
@@ -771,6 +994,9 @@ export default function CanvassingTab() {
                     const stale = isPriceStale(priceDate);
                     return (
                     <tr key={r.id} className={"border-b border-slate-100 " + (stale ? "bg-amber-50/40 hover:bg-amber-50" : "hover:bg-green-50")}>
+                      <td className="py-1.5 pr-2">
+                        <input type="checkbox" checked={selectedAssignedIds.has(r.id)} onChange={() => toggleAssignedSelection(r.id)} />
+                      </td>
                       <td className="py-1.5 pr-2 font-medium">
                         {r.title}
                         {r.item_type === "journal" && (
@@ -839,6 +1065,13 @@ export default function CanvassingTab() {
                       </td>
                       <td className="py-1.5 px-2 text-right tabular-nums">{r.quantity}</td>
                       <td className="py-1.5 px-2 text-right font-semibold tabular-nums">₱{(r.unit_cost * r.quantity).toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                      <td className="py-1.5 px-2">
+                        {r.validated ? (
+                          <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Validated</span>
+                        ) : (
+                          <span className="inline-block bg-slate-100 text-slate-500 rounded px-1.5 py-0.5 text-[10px] font-medium">Pending</span>
+                        )}
+                      </td>
                       <td className="py-1.5 pl-2 whitespace-nowrap">
                         {reverifyingId !== r.id && (
                           <button className="text-psu text-[11px] underline mr-2" onClick={() => startReverify(r)}>Re-verify</button>
