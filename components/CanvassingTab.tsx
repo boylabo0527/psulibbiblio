@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
-import { parseSheetRows, isSpreadsheet, buildCanvassingValidateRowsFromRaw } from "@/lib/parse-client";
+import { parseSheetRows, isSpreadsheet, buildCanvassingValidateRowsFromRaw, type CanvassingValidateRow } from "@/lib/parse-client";
 import { groupRows } from "@/lib/group-rows";
 import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import SearchableSelect from "@/components/SearchableSelect";
@@ -163,6 +163,10 @@ export default function CanvassingTab() {
 
   // Gap matching
   const [gaps, setGaps] = useState<ProcurementRow[]>([]);
+  // Every subject, not just ones with a compliance gap -- gaps alone can't
+  // resolve a validation upload's Course Code/Course Title text to a
+  // subject_id when that subject happens to already be fully compliant.
+  const [allSubjects, setAllSubjects] = useState<ProcurementRow[]>([]);
   const [loadingGaps, setLoadingGaps] = useState(false);
   // pending assignments: canvassing id → selected subject_id (string for select)
   const [assignments, setAssignments] = useState<Map<number, string>>(new Map());
@@ -219,6 +223,7 @@ export default function CanvassingTab() {
       .then(r => r.json())
       .then(j => {
         const all: ProcurementRow[] = j.rows ?? [];
+        setAllSubjects(all);
         setGaps(all.filter(r => !r.compliant)); // only subjects with gaps
       })
       .catch(() => {})
@@ -338,29 +343,30 @@ export default function CanvassingTab() {
    *  "Validate? (Y/N)" for each row they approve and uploads the file back
    *  via importValidationFile -- that single pass both confirms the
    *  assignment (for a not-yet-assigned row) and marks it validated, ready
-   *  for Purchase Request prep. "Proposed Subject ID" is what the upload
-   *  actually acts on; the Program/Proposed Course columns are just there
-   *  for a human to read. */
+   *  for Purchase Request prep. ID/Proposed Subject ID are the most
+   *  reliable columns for the upload to match on, but aren't required --
+   *  Title (this item) and Course Code/Course Title (the proposed course)
+   *  work too, e.g. if a reviewer rebuilds this sheet from scratch with
+   *  only the columns they actually have. */
   async function exportForValidation() {
     setExportingValidation(true);
     try {
       const XLSX = await import("xlsx");
-      const gapById = new Map(gaps.map(g => [g.subject_id, g]));
+      const subjectById = new Map(allSubjects.map(s => [s.subject_id, s]));
       const headers = [
         "ID", "Item Type", "Title", "Author / Subject Area", "Publisher", "Year",
-        "Program", "Proposed Course", "Proposed Subject ID",
+        "Program", "Course Code", "Course Title", "Proposed Subject ID",
         "Supplier", "Unit Cost", "Quantity", "Total", "Canvass Date",
         "Already Validated", "Validate? (Y/N)",
       ];
       const aoa = [headers, ...rows.map(r => {
         const proposedId = r.subject_id ?? (assignments.get(r.id) ? Number(assignments.get(r.id)) : null);
-        const proposedGap = proposedId != null ? gapById.get(proposedId) : undefined;
-        const program = r.subject_id ? r.program : (proposedGap?.program ?? "");
-        const proposedCourse = r.subject_id ? r.subject_label : (proposedGap ? `${proposedGap.course_code} — ${proposedGap.course_title}` : "");
+        const proposed = proposedId != null ? subjectById.get(proposedId) : undefined;
         return [
           r.id, r.item_type, r.title,
           r.item_type === "journal" ? r.subject_area : r.author,
-          r.publisher, r.year, program, proposedCourse, proposedId ?? "",
+          r.publisher, r.year,
+          proposed?.program ?? "", proposed?.course_code ?? "", proposed?.course_title ?? "", proposedId ?? "",
           r.supplier, r.unit_cost, r.quantity, r.unit_cost * r.quantity,
           r.canvass_date || r.created_at.slice(0, 10),
           r.validated ? "Yes" : "No", "",
@@ -380,21 +386,92 @@ export default function CanvassingTab() {
     }
   }
 
-  /** Uploads a reviewed export from exportForValidation above -- rows
-   *  marked "Y" in Validate? (with a resolvable Proposed Subject ID) are
-   *  assigned + validated together via /api/canvassing/mass-validate.
-   *  Matched by each row's own ID column, not fuzzy title/course text. */
+  function normText(s: string): string {
+    return s.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  /** Resolves a parsed row's canvassing_id: its own ID column if present,
+   *  else an exact (case/whitespace-insensitive) match on Title against
+   *  the currently loaded canvassing rows. Ambiguous or missing titles are
+   *  reported back rather than guessed at, since this feeds a real
+   *  purchase document. */
+  function resolveCanvassingId(pr: CanvassingValidateRow): { id: number | null; reason?: string } {
+    if (pr.id != null) return { id: pr.id };
+    if (!pr.title) return { id: null, reason: "No ID or Title to match against." };
+    const key = normText(pr.title);
+    const matches = rows.filter(r => normText(r.title) === key);
+    if (matches.length === 1) return { id: matches[0].id };
+    if (matches.length === 0) return { id: null, reason: `Title not found among canvassed items: "${pr.title}"` };
+    return { id: null, reason: `"${pr.title}" matches ${matches.length} canvassed items -- add an ID column to disambiguate.` };
+  }
+
+  /** Resolves a parsed row's target subject_id: its own Proposed Subject ID
+   *  if present, else Course Code (optionally scoped by Program) against
+   *  every subject (not just gaps -- an already-compliant subject is still
+   *  a valid target), else a Course Title match -- exact first, falling
+   *  back to the same relevanceScore heuristic this tab already trusts for
+   *  its own auto-suggestion, but only accepting its exact-phrase tier
+   *  (score 1000) since a wrong guess here would misdirect real money. */
+  function resolveSubjectId(pr: CanvassingValidateRow): { subject_id: number | null; reason?: string } {
+    if (pr.subject_id != null) return { subject_id: pr.subject_id };
+    const programKey = pr.program ? normText(pr.program) : null;
+    const pool = programKey ? allSubjects.filter(s => normText(s.program) === programKey) : allSubjects;
+    if (pr.course_code) {
+      const codeKey = normText(pr.course_code);
+      const byCode = pool.filter(s => normText(s.course_code) === codeKey);
+      if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
+      if (byCode.length > 1) return { subject_id: null, reason: `Course code "${pr.course_code}" matches ${byCode.length} courses -- add a Program column to disambiguate.` };
+    }
+    if (pr.course_title) {
+      const titleKey = normText(pr.course_title);
+      const byTitle = pool.filter(s => normText(s.course_title) === titleKey);
+      if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
+      if (byTitle.length > 1) return { subject_id: null, reason: `Course "${pr.course_title}" matches ${byTitle.length} courses -- add a Program or Course Code column to disambiguate.` };
+      let best: ProcurementRow | null = null, bestScore = 0;
+      for (const s of pool) {
+        const score = relevanceScore(pr.course_title, s);
+        if (score > bestScore) { bestScore = score; best = s; }
+      }
+      if (best && bestScore >= 1000) return { subject_id: best.subject_id };
+    }
+    return {
+      subject_id: null,
+      reason: pr.course_code || pr.course_title
+        ? `Course not found: "${pr.course_code || pr.course_title}"`
+        : "No Proposed Subject ID, Course Code, or Course Title to match against.",
+    };
+  }
+
+  /** Uploads a reviewed export from exportForValidation above (or a sheet a
+   *  reviewer built from scratch) -- rows marked "Y" in Validate? are
+   *  assigned + validated together via /api/canvassing/mass-validate. Each
+   *  row is resolved by ID/Proposed Subject ID when present, falling back
+   *  to Title and Course Code/Course Title text against the data already
+   *  loaded in this tab (see resolveCanvassingId/resolveSubjectId above) --
+   *  so a sheet with just Title and Course columns works too. */
   async function importValidationFile(file: File) {
     if (!isSpreadsheet(file)) { setValidateUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
     setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
     try {
       const raw = await parseSheetRows(file);
-      const parsedRows = buildCanvassingValidateRowsFromRaw(raw);
-      const items = parsedRows
-        .filter(r => r.validate === true && r.subject_id != null)
-        .map(r => ({ id: r.id, subject_id: r.subject_id! }));
+      const parsedRows = buildCanvassingValidateRowsFromRaw(raw).filter(r => r.validate === true);
+      if (parsedRows.length === 0) {
+        setValidateUploadErr("No rows marked \"Y\" in Validate? were found.");
+        return;
+      }
+      const items: { id: number; subject_id: number }[] = [];
+      const unresolved: string[] = [];
+      for (const pr of parsedRows) {
+        const { id, reason: idReason } = resolveCanvassingId(pr);
+        const { subject_id, reason: subjReason } = resolveSubjectId(pr);
+        if (id == null || subject_id == null) {
+          unresolved.push(`${pr.title || (pr.id != null ? `#${pr.id}` : "(unknown row)")} -- ${idReason || subjReason}`);
+          continue;
+        }
+        items.push({ id, subject_id });
+      }
       if (items.length === 0) {
-        setValidateUploadErr("No rows marked \"Y\" in Validate? (with a Proposed Subject ID) were found.");
+        setValidateUploadErr(`Couldn't resolve any "Y" rows:\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`);
         return;
       }
       const res = await apiFetch("/api/canvassing/mass-validate", {
@@ -403,10 +480,11 @@ export default function CanvassingTab() {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setValidateUploadMsg(
-        `${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated` +
-        (j.skipped?.length ? `, ${j.skipped.length} skipped (out of your assigned campus, or not found).` : "."),
-      );
+      let msg = `${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated`;
+      const serverSkipped = j.skipped?.length ?? 0;
+      if (serverSkipped) msg += `, ${serverSkipped} skipped (out of your assigned campus, or not found)`;
+      if (unresolved.length) msg += `, ${unresolved.length} skipped (couldn't resolve title/course):\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`;
+      setValidateUploadMsg(msg + (serverSkipped || unresolved.length ? "" : "."));
       reload();
     } catch (e) {
       setValidateUploadErr(e instanceof Error ? e.message : String(e));
@@ -796,6 +874,10 @@ export default function CanvassingTab() {
             best-guess suggestion below), mark <span className="font-medium">Validate? (Y/N)</span> for each one a
             reviewer approves, then upload it back -- that confirms the assignment and marks it validated in one
             pass. Only <span className="font-medium">validated</span> titles are pulled into Purchase Request prep.
+            Don&apos;t have the ID/Proposed Subject ID columns (e.g. building this sheet yourself)? That&apos;s fine --
+            just <span className="font-medium">Title</span> (matching an existing canvassed item) and{" "}
+            <span className="font-medium">Course Code or Course Title</span> (matching an existing course) also
+            work, as long as they match exactly one item/course each.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-outline text-sm" disabled={exportingValidation} onClick={exportForValidation}>
@@ -808,8 +890,8 @@ export default function CanvassingTab() {
             </label>
           </div>
           {validateUploadBusy && <p className="text-slate-500 text-xs mt-2">Uploading…</p>}
-          {validateUploadMsg && <p className="text-green-700 text-xs mt-2">{validateUploadMsg}</p>}
-          {validateUploadErr && <p className="text-red-700 text-xs mt-2">{validateUploadErr}</p>}
+          {validateUploadMsg && <p className="text-green-700 text-xs mt-2 whitespace-pre-wrap">{validateUploadMsg}</p>}
+          {validateUploadErr && <p className="text-red-700 text-xs mt-2 whitespace-pre-wrap">{validateUploadErr}</p>}
         </div>
       )}
 

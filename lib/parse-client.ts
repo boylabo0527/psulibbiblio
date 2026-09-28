@@ -121,43 +121,75 @@ export function buildValidationRowsFromRaw(rows: Record<string, string>[]): Vali
 
 // ---------------------------------------------------------------------------
 // Canvassing mass-validate rows: the download/upload round-trip in
-// CanvassingTab exports every canvassing row's own numeric id and its
-// currently proposed subject id, so the upload side matches by id instead
-// of fuzzy title/course-code text -- simpler and unambiguous, unlike
-// buildValidationRowsFromRaw above (which has no stable id to key off of).
+// CanvassingTab exports each canvassing row's own numeric id and its
+// currently proposed subject id -- matching by those, when present, is
+// simple and unambiguous. But a reviewer's sheet doesn't always have them
+// (e.g. it was rebuilt from scratch, or non-id columns got deleted along
+// the way, leaving only Title and Course) -- id/subject_id are therefore
+// optional here. When missing, the caller (CanvassingTab, which has the
+// live canvassing rows and subjects loaded) resolves the canvassing row by
+// Title and the target course by Course Code/Course Title text instead.
 // ---------------------------------------------------------------------------
 const CANVASSING_VALIDATE_ALIASES: Record<string, string[]> = {
   id: ["id", "canvassing id", "row id"],
   subject_id: ["proposed subject id", "proposed course id", "subject id", "course id"],
+  title: ["title", "book title", "canvassed title", "item title"],
+  program: ["program", "programme", "program name"],
+  course_code: ["course code", "code", "subject code"],
+  course_title: ["course title", "course", "subject", "proposed course", "subject area"],
   validate: ["validate? (y/n)", "validate?", "validate", "approve?", "approve", "confirm?", "confirm"],
 };
 
-export type CanvassingValidateRow = { id: number; subject_id: number | null; validate: boolean | null };
+export type CanvassingValidateRow = {
+  id: number | null;
+  subject_id: number | null;
+  title: string;
+  program: string;
+  course_code: string;
+  course_title: string;
+  validate: boolean | null;
+};
 
 /** Narrows browser-parsed raw rows (see parseSheetRows above) down to what
- *  /api/canvassing/mass-validate needs. A row is only actionable once
- *  filtered by the caller to validate === true && subject_id != null --
- *  left as separate fields here (rather than dropping unusable rows) so
- *  the caller can report back how many rows were skipped and why. */
+ *  the mass-validate upload needs. A row only needs an ID (else Title) to
+ *  identify the canvassing entry, and a Proposed Subject ID (else Course
+ *  Code/Course Title, optionally scoped by Program) to identify the
+ *  target course -- rows with neither are dropped since there's nothing to
+ *  resolve either end from. Left otherwise unresolved here (numeric ids
+ *  aren't looked up against real data in this file) so the caller can
+ *  match text fields against its own already-loaded rows/subjects and
+ *  report back exactly which rows it couldn't resolve and why. */
 export function buildCanvassingValidateRowsFromRaw(rows: Record<string, string>[]): CanvassingValidateRow[] {
   if (rows.length === 0) return [];
   const map = buildHeaderMap(Object.keys(rows[0]), CANVASSING_VALIDATE_ALIASES);
-  if (!map.id) {
-    throw new Error(`Could not find an ID column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  if (!map.id && !map.title) {
+    throw new Error(`Could not find an ID or Title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  if (!map.subject_id && !map.course_code && !map.course_title) {
+    throw new Error(`Could not find a Proposed Subject ID, Course Code, or Course Title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
   }
   const out: CanvassingValidateRow[] = [];
   for (const r of rows) {
-    const id = parseInt(r[map.id] || "", 10);
-    if (!Number.isFinite(id)) continue;
+    const idRaw = map.id ? parseInt(r[map.id] || "", 10) : NaN;
+    const id = Number.isFinite(idRaw) && idRaw > 0 ? idRaw : null;
+    const title = map.title ? (r[map.title] || "").trim() : "";
+    if (id == null && !title) continue;
     const subjectIdRaw = map.subject_id ? parseInt(r[map.subject_id] || "", 10) : NaN;
     const subject_id = Number.isFinite(subjectIdRaw) && subjectIdRaw > 0 ? subjectIdRaw : null;
+    const course_code = map.course_code ? (r[map.course_code] || "").trim() : "";
+    const course_title = map.course_title ? (r[map.course_title] || "").trim() : "";
+    if (subject_id == null && !course_code && !course_title) continue;
     let validate: boolean | null = null;
     if (map.validate) {
       const raw = norm(r[map.validate]);
       if (VERDICT_YES.has(raw)) validate = true;
       else if (VERDICT_NO.has(raw)) validate = false;
     }
-    out.push({ id, subject_id, validate });
+    out.push({
+      id, subject_id, title,
+      program: map.program ? (r[map.program] || "").trim() : "",
+      course_code, course_title, validate,
+    });
   }
   return out;
 }
