@@ -405,41 +405,49 @@ export default function CanvassingTab() {
     return { id: null, reason: `"${pr.title}" matches ${matches.length} canvassed items -- add an ID column to disambiguate.` };
   }
 
-  /** Resolves a parsed row's target subject_id: its own Proposed Subject ID
-   *  if present, else Course Code (optionally scoped by Program) against
-   *  every subject (not just gaps -- an already-compliant subject is still
-   *  a valid target), else a Course Title match -- exact first, falling
-   *  back to the same relevanceScore heuristic this tab already trusts for
-   *  its own auto-suggestion, but only accepting its exact-phrase tier
-   *  (score 1000) since a wrong guess here would misdirect real money. */
+  /** Resolves a parsed row's target subject_id -- Course Code/Course Title
+   *  text takes priority over the numeric Proposed Subject ID whenever
+   *  either is filled in, specifically so a reviewer can reassign a title
+   *  to a DIFFERENT course than the one originally downloaded just by
+   *  editing that cell: if the numeric ID won instead, an edited Course
+   *  Code/Title would be silently ignored in favor of the stale original
+   *  proposal still sitting in the ID column. Course Code is checked
+   *  (optionally scoped by Program) against every subject -- not just
+   *  gaps, since an already-compliant subject is still a valid target --
+   *  then Course Title exact, then the same relevanceScore heuristic this
+   *  tab already trusts for its own auto-suggestion (but only its
+   *  exact-phrase tier, score 1000, since a wrong guess here would
+   *  misdirect real money). Only once BOTH text columns are blank does
+   *  this fall back to the numeric ID. An unresolvable (not found or
+   *  ambiguous) Course Code/Title is reported as-is rather than silently
+   *  falling back to the ID -- that text was very likely a deliberate
+   *  edit, so guessing past it would be worse than flagging it. */
   function resolveSubjectId(pr: CanvassingValidateRow): { subject_id: number | null; reason?: string } {
-    if (pr.subject_id != null) return { subject_id: pr.subject_id };
-    const programKey = pr.program ? normText(pr.program) : null;
-    const pool = programKey ? allSubjects.filter(s => normText(s.program) === programKey) : allSubjects;
-    if (pr.course_code) {
-      const codeKey = normText(pr.course_code);
-      const byCode = pool.filter(s => normText(s.course_code) === codeKey);
-      if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
-      if (byCode.length > 1) return { subject_id: null, reason: `Course code "${pr.course_code}" matches ${byCode.length} courses -- add a Program column to disambiguate.` };
-    }
-    if (pr.course_title) {
-      const titleKey = normText(pr.course_title);
-      const byTitle = pool.filter(s => normText(s.course_title) === titleKey);
-      if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
-      if (byTitle.length > 1) return { subject_id: null, reason: `Course "${pr.course_title}" matches ${byTitle.length} courses -- add a Program or Course Code column to disambiguate.` };
-      let best: ProcurementRow | null = null, bestScore = 0;
-      for (const s of pool) {
-        const score = relevanceScore(pr.course_title, s);
-        if (score > bestScore) { bestScore = score; best = s; }
+    if (pr.course_code || pr.course_title) {
+      const programKey = pr.program ? normText(pr.program) : null;
+      const pool = programKey ? allSubjects.filter(s => normText(s.program) === programKey) : allSubjects;
+      if (pr.course_code) {
+        const codeKey = normText(pr.course_code);
+        const byCode = pool.filter(s => normText(s.course_code) === codeKey);
+        if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
+        if (byCode.length > 1) return { subject_id: null, reason: `Course code "${pr.course_code}" matches ${byCode.length} courses -- add a Program column to disambiguate.` };
       }
-      if (best && bestScore >= 1000) return { subject_id: best.subject_id };
+      if (pr.course_title) {
+        const titleKey = normText(pr.course_title);
+        const byTitle = pool.filter(s => normText(s.course_title) === titleKey);
+        if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
+        if (byTitle.length > 1) return { subject_id: null, reason: `Course "${pr.course_title}" matches ${byTitle.length} courses -- add a Program or Course Code column to disambiguate.` };
+        let best: ProcurementRow | null = null, bestScore = 0;
+        for (const s of pool) {
+          const score = relevanceScore(pr.course_title, s);
+          if (score > bestScore) { bestScore = score; best = s; }
+        }
+        if (best && bestScore >= 1000) return { subject_id: best.subject_id };
+      }
+      return { subject_id: null, reason: `Course not found: "${pr.course_code || pr.course_title}"` };
     }
-    return {
-      subject_id: null,
-      reason: pr.course_code || pr.course_title
-        ? `Course not found: "${pr.course_code || pr.course_title}"`
-        : "No Proposed Subject ID, Course Code, or Course Title to match against.",
-    };
+    if (pr.subject_id != null) return { subject_id: pr.subject_id };
+    return { subject_id: null, reason: "No Proposed Subject ID, Course Code, or Course Title to match against." };
   }
 
   /** Uploads a reviewed export from exportForValidation above (or a sheet a
@@ -874,10 +882,12 @@ export default function CanvassingTab() {
             best-guess suggestion below), mark <span className="font-medium">Validate? (Y/N)</span> for each one a
             reviewer approves, then upload it back -- that confirms the assignment and marks it validated in one
             pass. Only <span className="font-medium">validated</span> titles are pulled into Purchase Request prep.
-            Don&apos;t have the ID/Proposed Subject ID columns (e.g. building this sheet yourself)? That&apos;s fine --
-            just <span className="font-medium">Title</span> (matching an existing canvassed item) and{" "}
-            <span className="font-medium">Course Code or Course Title</span> (matching an existing course) also
-            work, as long as they match exactly one item/course each.
+            To assign a title to a <span className="font-medium">different</span> course than the one proposed, just
+            edit its Course Code or Course Title cell before uploading -- that edit wins over whatever was
+            originally in Proposed Subject ID. Don&apos;t have the ID/Proposed Subject ID columns at all (e.g.
+            building this sheet yourself)? That&apos;s fine -- just <span className="font-medium">Title</span>{" "}
+            (matching an existing canvassed item) and <span className="font-medium">Course Code or Course Title</span>{" "}
+            (matching an existing course) also work, as long as they match exactly one item/course each.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-outline text-sm" disabled={exportingValidation} onClick={exportForValidation}>
