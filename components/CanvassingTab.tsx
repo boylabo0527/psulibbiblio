@@ -453,17 +453,35 @@ export default function CanvassingTab() {
    *  linked courses); a token that doesn't resolve is just left out rather
    *  than failing the whole row, as long as at least one other token did.
    *  Only once BOTH text columns are blank does this fall back to the
-   *  numeric Proposed Subject ID. */
+   *  numeric Proposed Subject ID.
+   *
+   *  A course code is frequently shared across several programs (e.g.
+   *  "Math 21" = Differential Equations under four different engineering
+   *  programs) -- genuinely ambiguous without knowing which one. Program
+   *  is tried FIRST to narrow that down when given, but a token is always
+   *  also tried against the FULL, unscoped subject list: if the uploaded
+   *  Program text doesn't exactly match a program name on file (a
+   *  different phrasing, an abbreviation, a typo), filtering the pool down
+   *  to empty BEFORE searching would turn a real, unambiguous course code
+   *  into a false "not found" -- falling back to the unscoped list instead
+   *  either resolves it cleanly (if the code happens to be unique after
+   *  all) or reports the real ambiguity, which is the actionable message. */
   function resolveSubjectIds(pr: CanvassingValidateRow, subjects: ProcurementRow[]): { subject_ids: number[]; reason?: string } {
     const raw = pr.course_code || pr.course_title;
     if (raw) {
       const programKey = pr.program ? normText(pr.program) : null;
-      const pool = programKey ? subjects.filter(s => normText(s.program) === programKey) : subjects;
+      const scopedPool = programKey
+        ? subjects.filter(s => {
+            const sp = normText(s.program);
+            return sp === programKey || sp.includes(programKey) || programKey.includes(sp);
+          })
+        : [];
       const tokens = splitCourseTokens(raw);
       const resolved: number[] = [];
       const failures: string[] = [];
       for (const token of tokens) {
-        const r = resolveCourseToken(token, pool);
+        let r = scopedPool.length ? resolveCourseToken(token, scopedPool) : { subject_id: null as number | null, reason: undefined as string | undefined };
+        if (r.subject_id == null) r = resolveCourseToken(token, subjects);
         if (r.subject_id != null) {
           if (!resolved.includes(r.subject_id)) resolved.push(r.subject_id);
         } else if (r.reason) {
