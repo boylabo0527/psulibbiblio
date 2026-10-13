@@ -405,30 +405,90 @@ export default function CanvassingTab() {
     return { id: null, reason: `"${pr.title}" matches ${matches.length} canvassed items -- add an ID column to disambiguate.` };
   }
 
-  /** Splits a Course Code/Course Title cell on ";" or "," into individual
-   *  course tokens -- a title can count toward more than one course (see
-   *  additional_subjects/canvassing_subjects), so a reviewer's sheet can
-   *  legitimately list several, e.g. "Psych 18; VED 14" or a repeated
-   *  "Math 21; Math 21; Math 21". Deduplicated after normalizing. */
-  function splitCourseTokens(s: string): string[] {
+  /** Splits a Course Code/Course Title/Program cell on ";" or "," into
+   *  individual tokens. `dedupe` (default true) drops repeats after
+   *  normalizing -- right for a plain list of distinct courses, but wrong
+   *  when this list is paired positionally against another list of the
+   *  same length (see resolveSubjectIds below), where a repeated code
+   *  like "Math 21; Math 21; Math 21" legitimately means four different
+   *  (program, code) pairs and must keep its length/order intact. */
+  function splitCourseTokens(s: string, dedupe = true): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const raw of s.split(/[;,]/)) {
       const t = normText(raw);
-      if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+      if (!t) continue;
+      if (dedupe && seen.has(t)) continue;
+      seen.add(t); out.push(t);
     }
     return out;
+  }
+
+  // Standard Philippine CHED degree-prefix abbreviations, expanded only
+  // when they open a program token -- e.g. "BS Civil Engineering" ->
+  // "bachelor of science in civil engineering", "BSED" alone ->
+  // "bachelor of secondary education". Programs are stored under their
+  // full name (see CampusValidationTab/course_report.csv), but a
+  // reviewer's own sheet very reasonably uses the abbreviation instead.
+  const DEGREE_PREFIX_EXPANSIONS: Record<string, string> = {
+    bs: "bachelor of science in", ba: "bachelor of arts in", ab: "bachelor of arts in",
+    bsba: "bachelor of science in business administration",
+    bsed: "bachelor of secondary education", beed: "bachelor of elementary education",
+  };
+
+  function expandProgramToken(normalized: string): string {
+    const [first, ...rest] = normalized.split(" ");
+    const expansion = DEGREE_PREFIX_EXPANSIONS[first];
+    return expansion ? [expansion, ...rest].join(" ") : normalized;
+  }
+
+  const PROGRAM_GLUE_WORDS = new Set(["of", "in", "the", "and", "&", "for"]);
+  function programWords(s: string): string[] {
+    return s.split(" ").filter((w) => w && !PROGRAM_GLUE_WORDS.has(w));
+  }
+
+  // One word "fits" another if they're equal, or the shorter is a prefix
+  // of the longer (at least 3 characters) -- generalizes common inline
+  // abbreviations ("maj" -> "major", "math" -> "mathematics") without a
+  // dictionary for every possible one.
+  function wordsCompatible(a: string, b: string): boolean {
+    if (a === b) return true;
+    const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+    return shorter.length >= 3 && longer.startsWith(shorter);
+  }
+
+  /** Whether a (normalized, possibly abbreviated) Program token refers to
+   *  the same program as a real program name on file. Tries an exact or
+   *  raw substring match first (cheap, catches anything already spelled
+   *  out); otherwise expands the token's degree prefix and requires every
+   *  one of its significant words to fit some word in the real name. */
+  function programTokenMatches(token: string, realProgramNormalized: string): boolean {
+    if (token === realProgramNormalized || realProgramNormalized.includes(token) || token.includes(realProgramNormalized)) return true;
+    const tokenWords = programWords(expandProgramToken(token));
+    if (tokenWords.length === 0) return false;
+    const realWords = programWords(realProgramNormalized);
+    return tokenWords.every((tw) => realWords.some((rw) => wordsCompatible(tw, rw)));
   }
 
   /** Resolves one course token (already normalized) against a pool of
    *  subjects -- tried as a Course Code first, then an exact Course Title,
    *  then the same relevanceScore heuristic this tab already trusts for
    *  its own auto-suggestion (but only its exact-phrase tier, score 1000,
-   *  since a wrong guess here would misdirect real money). */
-  function resolveCourseToken(token: string, pool: ProcurementRow[]): { subject_id: number | null; reason?: string } {
+   *  since a wrong guess here would misdirect real money). A `titleHint`
+   *  (the row's own Course Title, when both columns are filled in) breaks
+   *  a tie among several same-code matches -- the catalog genuinely
+   *  reuses a code like "Elective 4" for more than one distinct elective
+   *  within the same program, so Program alone can't always disambiguate. */
+  function resolveCourseToken(token: string, pool: ProcurementRow[], titleHint?: string | null): { subject_id: number | null; reason?: string } {
     const byCode = pool.filter(s => normText(s.course_code) === token);
     if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
-    if (byCode.length > 1) return { subject_id: null, reason: `"${token}" matches ${byCode.length} courses by code -- add a Program column to disambiguate.` };
+    if (byCode.length > 1) {
+      if (titleHint) {
+        const narrowed = byCode.filter(s => normText(s.course_title) === titleHint);
+        if (narrowed.length === 1) return { subject_id: narrowed[0].subject_id };
+      }
+      return { subject_id: null, reason: `"${token}" matches ${byCode.length} courses by code -- add a Program column to disambiguate.` };
+    }
     const byTitle = pool.filter(s => normText(s.course_title) === token);
     if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
     if (byTitle.length > 1) return { subject_id: null, reason: `"${token}" matches ${byTitle.length} courses by title -- add a Program or Course Code column to disambiguate.` };
@@ -441,53 +501,82 @@ export default function CanvassingTab() {
     return { subject_id: null, reason: `Course not found: "${token}"` };
   }
 
+  /** Resolves one course token against the full subject list, using a
+   *  Program token to narrow it down first when given. A course code is
+   *  frequently shared across several programs (e.g. "Math 21" =
+   *  Differential Equations under four different engineering programs)
+   *  -- genuinely ambiguous without knowing which one. The Program-scoped
+   *  pool is tried first, but this always ALSO falls back to the full,
+   *  unscoped list: if the Program token doesn't match a program name on
+   *  file (a different phrasing, an abbreviation programTokenMatches
+   *  doesn't cover, a typo), filtering down to empty BEFORE searching
+   *  would turn a real, unambiguous course code into a false "not found"
+   *  -- falling back instead either resolves it cleanly (if the code
+   *  happens to be unique after all) or reports the real ambiguity, which
+   *  is the actionable message. */
+  function resolveCourseTokenWithProgram(token: string, programToken: string | null, titleHint: string | null, subjects: ProcurementRow[]): { subject_id: number | null; reason?: string } {
+    const scopedPool = programToken ? subjects.filter((s) => programTokenMatches(programToken, normText(s.program))) : [];
+    const scoped = scopedPool.length ? resolveCourseToken(token, scopedPool, titleHint) : { subject_id: null as number | null, reason: undefined as string | undefined };
+    return scoped.subject_id != null ? scoped : resolveCourseToken(token, subjects, titleHint);
+  }
+
   /** Resolves a parsed row's target course(s) -- Course Code/Course Title
    *  text takes priority over the numeric Proposed Subject ID whenever
    *  either is filled in, specifically so a reviewer can reassign a title
    *  to a DIFFERENT course than the one originally downloaded just by
    *  editing that cell: if the numeric ID won instead, an edited Course
    *  Code/Title would be silently ignored in favor of the stale original
-   *  proposal still sitting in the ID column. Either column can list more
-   *  than one course (see splitCourseTokens) -- every token that resolves
-   *  becomes a target (first = primary subject_id, rest = additional
-   *  linked courses); a token that doesn't resolve is just left out rather
-   *  than failing the whole row, as long as at least one other token did.
-   *  Only once BOTH text columns are blank does this fall back to the
-   *  numeric Proposed Subject ID.
+   *  proposal still sitting in the ID column. Only once BOTH text columns
+   *  are blank does this fall back to the numeric Proposed Subject ID.
    *
-   *  A course code is frequently shared across several programs (e.g.
-   *  "Math 21" = Differential Equations under four different engineering
-   *  programs) -- genuinely ambiguous without knowing which one. Program
-   *  is tried FIRST to narrow that down when given, but a token is always
-   *  also tried against the FULL, unscoped subject list: if the uploaded
-   *  Program text doesn't exactly match a program name on file (a
-   *  different phrasing, an abbreviation, a typo), filtering the pool down
-   *  to empty BEFORE searching would turn a real, unambiguous course code
-   *  into a false "not found" -- falling back to the unscoped list instead
-   *  either resolves it cleanly (if the code happens to be unique after
-   *  all) or reports the real ambiguity, which is the actionable message. */
+   *  Either column can list more than one course (a title can count
+   *  toward several -- see additional_subjects/canvassing_subjects).
+   *  When Program ALSO lists the same number of entries as Course
+   *  Code/Title, they're paired up positionally (program[i] scopes
+   *  code[i]) -- this is the only way to tell apart something like
+   *  "Math 21; Math 21; Math 21; Math 21" alongside "BS Civil
+   *  Engineering; BS Electrical Engineering; BS Mechanical Engineering;
+   *  BS Petroleum Engineering": the SAME code resolves to four DIFFERENT
+   *  subjects, one per program, and deduplicating identical code tokens
+   *  (as a plain distinct-course list would) would collapse that down to
+   *  one and lose three of them. Otherwise, a single Program (or none)
+   *  applies to every distinct course token. A token that doesn't resolve
+   *  is just left out rather than failing the whole row, as long as at
+   *  least one other token did. */
   function resolveSubjectIds(pr: CanvassingValidateRow, subjects: ProcurementRow[]): { subject_ids: number[]; reason?: string } {
     const raw = pr.course_code || pr.course_title;
     if (raw) {
-      const programKey = pr.program ? normText(pr.program) : null;
-      const scopedPool = programKey
-        ? subjects.filter(s => {
-            const sp = normText(s.program);
-            return sp === programKey || sp.includes(programKey) || programKey.includes(sp);
-          })
-        : [];
-      const tokens = splitCourseTokens(raw);
       const resolved: number[] = [];
       const failures: string[] = [];
-      for (const token of tokens) {
-        let r = scopedPool.length ? resolveCourseToken(token, scopedPool) : { subject_id: null as number | null, reason: undefined as string | undefined };
-        if (r.subject_id == null) r = resolveCourseToken(token, subjects);
+      const codeTokens = splitCourseTokens(raw, false);
+      const programTokens = pr.program ? splitCourseTokens(pr.program, false) : [];
+      const pairwise = programTokens.length > 1 && programTokens.length === codeTokens.length;
+      // Only a secondary disambiguator when Course Code is what's driving
+      // resolution AND Course Title is also filled in -- when Course Code
+      // is blank, `raw`/codeTokens already IS the title, so there's
+      // nothing else to hint from.
+      const titleTokens = (pr.course_code && pr.course_title) ? splitCourseTokens(pr.course_title, false) : [];
+
+      function apply(token: string, programToken: string | null, titleHint: string | null) {
+        const r = resolveCourseTokenWithProgram(token, programToken, titleHint, subjects);
         if (r.subject_id != null) {
           if (!resolved.includes(r.subject_id)) resolved.push(r.subject_id);
         } else if (r.reason) {
           failures.push(r.reason);
         }
       }
+
+      if (pairwise) {
+        const titlePairwise = titleTokens.length === codeTokens.length;
+        for (let i = 0; i < codeTokens.length; i++) {
+          apply(codeTokens[i], programTokens[i], titlePairwise ? titleTokens[i] : (titleTokens[0] ?? null));
+        }
+      } else {
+        const programToken = pr.program ? normText(pr.program) : null;
+        const titleHint = titleTokens[0] ?? null;
+        for (const token of splitCourseTokens(raw)) apply(token, programToken, titleHint);
+      }
+
       if (resolved.length === 0) return { subject_ids: [], reason: failures.join("; ") || `Course not found: "${raw}"` };
       return { subject_ids: resolved };
     }
