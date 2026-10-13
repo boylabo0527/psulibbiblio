@@ -405,49 +405,76 @@ export default function CanvassingTab() {
     return { id: null, reason: `"${pr.title}" matches ${matches.length} canvassed items -- add an ID column to disambiguate.` };
   }
 
-  /** Resolves a parsed row's target subject_id -- Course Code/Course Title
+  /** Splits a Course Code/Course Title cell on ";" or "," into individual
+   *  course tokens -- a title can count toward more than one course (see
+   *  additional_subjects/canvassing_subjects), so a reviewer's sheet can
+   *  legitimately list several, e.g. "Psych 18; VED 14" or a repeated
+   *  "Math 21; Math 21; Math 21". Deduplicated after normalizing. */
+  function splitCourseTokens(s: string): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of s.split(/[;,]/)) {
+      const t = normText(raw);
+      if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+    }
+    return out;
+  }
+
+  /** Resolves one course token (already normalized) against a pool of
+   *  subjects -- tried as a Course Code first, then an exact Course Title,
+   *  then the same relevanceScore heuristic this tab already trusts for
+   *  its own auto-suggestion (but only its exact-phrase tier, score 1000,
+   *  since a wrong guess here would misdirect real money). */
+  function resolveCourseToken(token: string, pool: ProcurementRow[]): { subject_id: number | null; reason?: string } {
+    const byCode = pool.filter(s => normText(s.course_code) === token);
+    if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
+    if (byCode.length > 1) return { subject_id: null, reason: `"${token}" matches ${byCode.length} courses by code -- add a Program column to disambiguate.` };
+    const byTitle = pool.filter(s => normText(s.course_title) === token);
+    if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
+    if (byTitle.length > 1) return { subject_id: null, reason: `"${token}" matches ${byTitle.length} courses by title -- add a Program or Course Code column to disambiguate.` };
+    let best: ProcurementRow | null = null, bestScore = 0;
+    for (const s of pool) {
+      const score = relevanceScore(token, s);
+      if (score > bestScore) { bestScore = score; best = s; }
+    }
+    if (best && bestScore >= 1000) return { subject_id: best.subject_id };
+    return { subject_id: null, reason: `Course not found: "${token}"` };
+  }
+
+  /** Resolves a parsed row's target course(s) -- Course Code/Course Title
    *  text takes priority over the numeric Proposed Subject ID whenever
    *  either is filled in, specifically so a reviewer can reassign a title
    *  to a DIFFERENT course than the one originally downloaded just by
    *  editing that cell: if the numeric ID won instead, an edited Course
    *  Code/Title would be silently ignored in favor of the stale original
-   *  proposal still sitting in the ID column. Course Code is checked
-   *  (optionally scoped by Program) against every subject -- not just
-   *  gaps, since an already-compliant subject is still a valid target --
-   *  then Course Title exact, then the same relevanceScore heuristic this
-   *  tab already trusts for its own auto-suggestion (but only its
-   *  exact-phrase tier, score 1000, since a wrong guess here would
-   *  misdirect real money). Only once BOTH text columns are blank does
-   *  this fall back to the numeric ID. An unresolvable (not found or
-   *  ambiguous) Course Code/Title is reported as-is rather than silently
-   *  falling back to the ID -- that text was very likely a deliberate
-   *  edit, so guessing past it would be worse than flagging it. */
-  function resolveSubjectId(pr: CanvassingValidateRow): { subject_id: number | null; reason?: string } {
-    if (pr.course_code || pr.course_title) {
+   *  proposal still sitting in the ID column. Either column can list more
+   *  than one course (see splitCourseTokens) -- every token that resolves
+   *  becomes a target (first = primary subject_id, rest = additional
+   *  linked courses); a token that doesn't resolve is just left out rather
+   *  than failing the whole row, as long as at least one other token did.
+   *  Only once BOTH text columns are blank does this fall back to the
+   *  numeric Proposed Subject ID. */
+  function resolveSubjectIds(pr: CanvassingValidateRow): { subject_ids: number[]; reason?: string } {
+    const raw = pr.course_code || pr.course_title;
+    if (raw) {
       const programKey = pr.program ? normText(pr.program) : null;
       const pool = programKey ? allSubjects.filter(s => normText(s.program) === programKey) : allSubjects;
-      if (pr.course_code) {
-        const codeKey = normText(pr.course_code);
-        const byCode = pool.filter(s => normText(s.course_code) === codeKey);
-        if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
-        if (byCode.length > 1) return { subject_id: null, reason: `Course code "${pr.course_code}" matches ${byCode.length} courses -- add a Program column to disambiguate.` };
-      }
-      if (pr.course_title) {
-        const titleKey = normText(pr.course_title);
-        const byTitle = pool.filter(s => normText(s.course_title) === titleKey);
-        if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
-        if (byTitle.length > 1) return { subject_id: null, reason: `Course "${pr.course_title}" matches ${byTitle.length} courses -- add a Program or Course Code column to disambiguate.` };
-        let best: ProcurementRow | null = null, bestScore = 0;
-        for (const s of pool) {
-          const score = relevanceScore(pr.course_title, s);
-          if (score > bestScore) { bestScore = score; best = s; }
+      const tokens = splitCourseTokens(raw);
+      const resolved: number[] = [];
+      const failures: string[] = [];
+      for (const token of tokens) {
+        const r = resolveCourseToken(token, pool);
+        if (r.subject_id != null) {
+          if (!resolved.includes(r.subject_id)) resolved.push(r.subject_id);
+        } else if (r.reason) {
+          failures.push(r.reason);
         }
-        if (best && bestScore >= 1000) return { subject_id: best.subject_id };
       }
-      return { subject_id: null, reason: `Course not found: "${pr.course_code || pr.course_title}"` };
+      if (resolved.length === 0) return { subject_ids: [], reason: failures.join("; ") || `Course not found: "${raw}"` };
+      return { subject_ids: resolved };
     }
-    if (pr.subject_id != null) return { subject_id: pr.subject_id };
-    return { subject_id: null, reason: "No Proposed Subject ID, Course Code, or Course Title to match against." };
+    if (pr.subject_id != null) return { subject_ids: [pr.subject_id] };
+    return { subject_ids: [], reason: "No Proposed Subject ID, Course Code, or Course Title to match against." };
   }
 
   /** Uploads a reviewed export from exportForValidation above (or a sheet a
@@ -455,8 +482,9 @@ export default function CanvassingTab() {
    *  assigned + validated together via /api/canvassing/mass-validate. Each
    *  row is resolved by ID/Proposed Subject ID when present, falling back
    *  to Title and Course Code/Course Title text against the data already
-   *  loaded in this tab (see resolveCanvassingId/resolveSubjectId above) --
-   *  so a sheet with just Title and Course columns works too. */
+   *  loaded in this tab (see resolveCanvassingId/resolveSubjectIds above) --
+   *  so a sheet with just Title and Course columns works too, including
+   *  one with several courses per title (e.g. "Psych 18; VED 14"). */
   async function importValidationFile(file: File) {
     if (!isSpreadsheet(file)) { setValidateUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
     setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
@@ -467,16 +495,16 @@ export default function CanvassingTab() {
         setValidateUploadErr("No rows marked \"Y\" in Validate? were found.");
         return;
       }
-      const items: { id: number; subject_id: number }[] = [];
+      const items: { id: number; subject_id: number; additional_subject_ids: number[] }[] = [];
       const unresolved: string[] = [];
       for (const pr of parsedRows) {
         const { id, reason: idReason } = resolveCanvassingId(pr);
-        const { subject_id, reason: subjReason } = resolveSubjectId(pr);
-        if (id == null || subject_id == null) {
+        const { subject_ids, reason: subjReason } = resolveSubjectIds(pr);
+        if (id == null || subject_ids.length === 0) {
           unresolved.push(`${pr.title || (pr.id != null ? `#${pr.id}` : "(unknown row)")} -- ${idReason || subjReason}`);
           continue;
         }
-        items.push({ id, subject_id });
+        items.push({ id, subject_id: subject_ids[0], additional_subject_ids: subject_ids.slice(1) });
       }
       if (items.length === 0) {
         setValidateUploadErr(`Couldn't resolve any "Y" rows:\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`);
@@ -524,7 +552,15 @@ export default function CanvassingTab() {
     try {
       const res = await apiFetch("/api/canvassing/mass-validate", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: targets.map(r => ({ id: r.id, subject_id: r.subject_id })) }),
+        // additional_subject_ids carries forward each row's EXISTING
+        // linked courses (see link-subject) -- approving a title as-is
+        // shouldn't silently drop courses it already counts toward.
+        body: JSON.stringify({
+          items: targets.map(r => ({
+            id: r.id, subject_id: r.subject_id,
+            additional_subject_ids: r.additional_subjects.map(a => a.subject_id),
+          })),
+        }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
@@ -887,7 +923,10 @@ export default function CanvassingTab() {
             originally in Proposed Subject ID. Don&apos;t have the ID/Proposed Subject ID columns at all (e.g.
             building this sheet yourself)? That&apos;s fine -- just <span className="font-medium">Title</span>{" "}
             (matching an existing canvassed item) and <span className="font-medium">Course Code or Course Title</span>{" "}
-            (matching an existing course) also work, as long as they match exactly one item/course each.
+            (matching an existing course) also work, as long as they match exactly one item/course each. A title
+            counting toward more than one course? List them separated by <span className="font-medium">;</span> or{" "}
+            <span className="font-medium">,</span> in that same cell, e.g. &quot;Psych 18; VED 14&quot; -- the first
+            becomes its main course, the rest are linked alongside it.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-outline text-sm" disabled={exportingValidation} onClick={exportForValidation}>
