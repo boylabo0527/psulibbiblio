@@ -340,10 +340,11 @@ export default function CanvassingTab() {
    *  is currently proposed for it -- already assigned server-side, or just
    *  the on-screen best-guess suggestion for a still-unassigned row (same
    *  value the "Assign to Subject Gap" dropdown shows). A reviewer marks
-   *  "Validate? (Y/N)" for each row they approve and uploads the file back
-   *  via importValidationFile -- that single pass both confirms the
-   *  assignment (for a not-yet-assigned row) and marks it validated, ready
-   *  for Purchase Request prep. ID/Proposed Subject ID are the most
+   *  "Validate? (Y/N)" for each row they decide on and uploads the file
+   *  back via importValidationFile -- "Y" both confirms the assignment
+   *  (for a not-yet-assigned row) and marks it validated, ready for
+   *  Purchase Request prep; "N" bulk-removes (unassigns) it instead.
+   *  ID/Proposed Subject ID are the most
    *  reliable columns for the upload to match on, but aren't required --
    *  Title (this item) and Course Code/Course Title (the proposed course)
    *  work too, e.g. if a reviewer rebuilds this sheet from scratch with
@@ -585,14 +586,20 @@ export default function CanvassingTab() {
   }
 
   /** Uploads a reviewed export from exportForValidation above (or a sheet a
-   *  reviewer built from scratch) -- rows marked "Y" in Validate? are
-   *  assigned + validated together via /api/canvassing/mass-validate. Each
-   *  row is resolved by ID/Proposed Subject ID when present, falling back
-   *  to Title and Course Code/Course Title text against the data already
-   *  loaded in this tab (see resolveCanvassingId/resolveSubjectIds above) --
-   *  so a sheet with just Title and Course columns works too, including
-   *  one with several courses per title (e.g. "Psych 18; VED 14"). Fetches
-   *  the subjects list fresh here rather than trusting allSubjects state --
+   *  reviewer built from scratch). Rows marked "Y" in Validate? are
+   *  assigned + validated together via /api/canvassing/mass-validate;
+   *  rows marked "N" are bulk-removed (unassigned, not deleted) via
+   *  /api/canvassing/mass-unassign instead -- the same effect as the
+   *  in-app Mass Remove button, just driven by the spreadsheet so a
+   *  whole batch of not-relevant titles can be cleared in one upload.
+   *  A "Y" row is resolved by ID/Proposed Subject ID when present, falling
+   *  back to Title and Course Code/Course Title text against the data
+   *  already loaded in this tab (see resolveCanvassingId/resolveSubjectIds
+   *  above) -- so a sheet with just Title and Course columns works too,
+   *  including one with several courses per title (e.g. "Psych 18; VED
+   *  14"). An "N" row only needs to resolve its Title/ID, since removal
+   *  doesn't touch the course assignment at all. Fetches the subjects
+   *  list fresh here rather than trusting allSubjects state --
    *  that's populated by a separate /api/procurement fetch on mount, which
    *  can still be in flight (or have failed silently) by the time someone
    *  uploads, and resolving against an empty list fails every single
@@ -602,13 +609,29 @@ export default function CanvassingTab() {
     setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
     try {
       const raw = await parseSheetRows(file);
-      const parsedRows = buildCanvassingValidateRowsFromRaw(raw).filter(r => r.validate === true);
-      if (parsedRows.length === 0) {
-        setValidateUploadErr("No rows marked \"Y\" in Validate? were found.");
+      const allParsed = buildCanvassingValidateRowsFromRaw(raw);
+      // "Y" rows get assigned + validated (resolving their course); "N"
+      // rows are bulk-removed instead -- same effect as the in-app "Mass
+      // Remove" button (unassigns, doesn't delete the canvassing record),
+      // just driven by the spreadsheet instead of checkboxes. Blank/
+      // unrecognized Validate? values are left untouched either way.
+      const yRows = allParsed.filter(r => r.validate === true);
+      const nRows = allParsed.filter(r => r.validate === false);
+      if (yRows.length === 0 && nRows.length === 0) {
+        setValidateUploadErr("No rows marked \"Y\" or \"N\" in Validate? were found.");
         return;
       }
+
+      const unresolved: string[] = [];
+      const removeIds: number[] = [];
+      for (const pr of nRows) {
+        const { id, reason } = resolveCanvassingId(pr);
+        if (id == null) { unresolved.push(`${pr.title || "(unknown row)"} -- ${reason}`); continue; }
+        removeIds.push(id);
+      }
+
       let subjects = allSubjects;
-      if (subjects.length === 0) {
+      if (yRows.length > 0 && subjects.length === 0) {
         const subjRes = await apiFetch("/api/procurement");
         const subjJson = await subjRes.json().catch(() => ({}));
         subjects = subjJson.rows ?? [];
@@ -616,14 +639,13 @@ export default function CanvassingTab() {
           setAllSubjects(subjects);
           setGaps(prev => prev.length > 0 ? prev : subjects.filter(s => !s.compliant));
         }
-      }
-      if (subjects.length === 0) {
-        setValidateUploadErr("Couldn't load the courses list, so no Course Code/Course Title could be matched. Reload the page and try again.");
-        return;
+        if (subjects.length === 0) {
+          setValidateUploadErr("Couldn't load the courses list, so no Course Code/Course Title could be matched. Reload the page and try again.");
+          return;
+        }
       }
       const items: { id: number; subject_id: number; additional_subject_ids: number[] }[] = [];
-      const unresolved: string[] = [];
-      for (const pr of parsedRows) {
+      for (const pr of yRows) {
         const { id, reason: idReason } = resolveCanvassingId(pr);
         const { subject_ids, reason: subjReason } = resolveSubjectIds(pr, subjects);
         if (id == null || subject_ids.length === 0) {
@@ -632,21 +654,38 @@ export default function CanvassingTab() {
         }
         items.push({ id, subject_id: subject_ids[0], additional_subject_ids: subject_ids.slice(1) });
       }
-      if (items.length === 0) {
-        setValidateUploadErr(`Couldn't resolve any "Y" rows:\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`);
+
+      if (items.length === 0 && removeIds.length === 0) {
+        setValidateUploadErr(`Couldn't resolve any "Y"/"N" rows:\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`);
         return;
       }
-      const res = await apiFetch("/api/canvassing/mass-validate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      let msg = `${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated`;
-      const serverSkipped = j.skipped?.length ?? 0;
-      if (serverSkipped) msg += `, ${serverSkipped} skipped (out of your assigned campus, or not found)`;
+
+      const msgParts: string[] = [];
+      let serverSkippedCount = 0;
+      if (items.length) {
+        const res = await apiFetch("/api/canvassing/mass-validate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        msgParts.push(`${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated`);
+        serverSkippedCount += j.skipped?.length ?? 0;
+      }
+      if (removeIds.length) {
+        const res = await apiFetch("/api/canvassing/mass-unassign", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: removeIds }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        msgParts.push(`${j.unassigned} entr${j.unassigned === 1 ? "y" : "ies"} removed (unassigned)`);
+        serverSkippedCount += j.skipped ?? 0;
+      }
+      let msg = msgParts.join(", ");
+      if (serverSkippedCount) msg += `, ${serverSkippedCount} skipped (out of your assigned campus, or not found)`;
       if (unresolved.length) msg += `, ${unresolved.length} skipped (couldn't resolve title/course):\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`;
-      setValidateUploadMsg(msg + (serverSkipped || unresolved.length ? "" : "."));
+      setValidateUploadMsg(msg + (serverSkippedCount || unresolved.length ? "" : "."));
       reload();
     } catch (e) {
       setValidateUploadErr(e instanceof Error ? e.message : String(e));
@@ -1035,15 +1074,19 @@ export default function CanvassingTab() {
         )}
       </div>
 
-      {/* Mass Validate — download proposed assignments, review offline, upload to confirm+validate */}
+      {/* Mass Validate/Remove — download proposed assignments, review offline, upload to confirm+validate or bulk-remove */}
       {rows.length > 0 && (
         <div className="card">
-          <h2 className="text-psu font-semibold mb-1">Mass Validate Assignments</h2>
+          <h2 className="text-psu font-semibold mb-1">Mass Validate / Remove Assignments</h2>
           <p className="text-xs text-slate-500 mb-3">
             Download every canvassed title with its currently proposed course (already assigned, or just the
             best-guess suggestion below), mark <span className="font-medium">Validate? (Y/N)</span> for each one a
-            reviewer approves, then upload it back -- that confirms the assignment and marks it validated in one
-            pass. Only <span className="font-medium">validated</span> titles are pulled into Purchase Request prep.
+            reviewer decides on, then upload it back. <span className="font-medium">Y</span> confirms the assignment
+            and marks it validated in one pass -- only validated titles are pulled into Purchase Request prep.{" "}
+            <span className="font-medium">N</span> bulk-removes that title instead (same as the in-app Mass Remove
+            button -- unassigns it back to needs-sourcing, doesn&apos;t delete the canvassing record), so a whole
+            batch of not-relevant titles can be cleared in one upload instead of checking them off one by one.
+            Blank/other values leave that row untouched either way.
             To assign a title to a <span className="font-medium">different</span> course than the one proposed, just
             edit its Course Code or Course Title cell before uploading -- that edit wins over whatever was
             originally in Proposed Subject ID. Don&apos;t have the ID/Proposed Subject ID columns at all (e.g.
