@@ -454,11 +454,11 @@ export default function CanvassingTab() {
    *  than failing the whole row, as long as at least one other token did.
    *  Only once BOTH text columns are blank does this fall back to the
    *  numeric Proposed Subject ID. */
-  function resolveSubjectIds(pr: CanvassingValidateRow): { subject_ids: number[]; reason?: string } {
+  function resolveSubjectIds(pr: CanvassingValidateRow, subjects: ProcurementRow[]): { subject_ids: number[]; reason?: string } {
     const raw = pr.course_code || pr.course_title;
     if (raw) {
       const programKey = pr.program ? normText(pr.program) : null;
-      const pool = programKey ? allSubjects.filter(s => normText(s.program) === programKey) : allSubjects;
+      const pool = programKey ? subjects.filter(s => normText(s.program) === programKey) : subjects;
       const tokens = splitCourseTokens(raw);
       const resolved: number[] = [];
       const failures: string[] = [];
@@ -484,7 +484,12 @@ export default function CanvassingTab() {
    *  to Title and Course Code/Course Title text against the data already
    *  loaded in this tab (see resolveCanvassingId/resolveSubjectIds above) --
    *  so a sheet with just Title and Course columns works too, including
-   *  one with several courses per title (e.g. "Psych 18; VED 14"). */
+   *  one with several courses per title (e.g. "Psych 18; VED 14"). Fetches
+   *  the subjects list fresh here rather than trusting allSubjects state --
+   *  that's populated by a separate /api/procurement fetch on mount, which
+   *  can still be in flight (or have failed silently) by the time someone
+   *  uploads, and resolving against an empty list fails every single
+   *  course rather than just the genuinely-missing ones. */
   async function importValidationFile(file: File) {
     if (!isSpreadsheet(file)) { setValidateUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
     setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
@@ -495,11 +500,25 @@ export default function CanvassingTab() {
         setValidateUploadErr("No rows marked \"Y\" in Validate? were found.");
         return;
       }
+      let subjects = allSubjects;
+      if (subjects.length === 0) {
+        const subjRes = await apiFetch("/api/procurement");
+        const subjJson = await subjRes.json().catch(() => ({}));
+        subjects = subjJson.rows ?? [];
+        if (subjects.length) {
+          setAllSubjects(subjects);
+          setGaps(prev => prev.length > 0 ? prev : subjects.filter(s => !s.compliant));
+        }
+      }
+      if (subjects.length === 0) {
+        setValidateUploadErr("Couldn't load the courses list, so no Course Code/Course Title could be matched. Reload the page and try again.");
+        return;
+      }
       const items: { id: number; subject_id: number; additional_subject_ids: number[] }[] = [];
       const unresolved: string[] = [];
       for (const pr of parsedRows) {
         const { id, reason: idReason } = resolveCanvassingId(pr);
-        const { subject_ids, reason: subjReason } = resolveSubjectIds(pr);
+        const { subject_ids, reason: subjReason } = resolveSubjectIds(pr, subjects);
         if (id == null || subject_ids.length === 0) {
           unresolved.push(`${pr.title || (pr.id != null ? `#${pr.id}` : "(unknown row)")} -- ${idReason || subjReason}`);
           continue;
