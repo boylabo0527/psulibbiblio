@@ -33,6 +33,12 @@ export async function POST(req: Request) {
         .select("id").maybeSingle();
       if (error) throw error;
       if (!data) return NextResponse.json({ error: "No such match to lock/unlock" }, { status: 404 });
+      // Locking is an explicit "this belongs" decision -- clears any
+      // earlier rejection of the same pair so a future unlock+rematch
+      // isn't fighting a stale record (see rejected_matches).
+      if (lock) {
+        await db.from("rejected_matches").delete().eq("subject_id", subject_id).eq("title_id", title_id);
+      }
       const [{ data: subj }, { data: title }] = await Promise.all([
         db.from("subjects").select("course_code, course_title").eq("id", subject_id).maybeSingle(),
         db.from("titles").select("title").eq("id", title_id).maybeSingle(),
@@ -52,10 +58,18 @@ export async function POST(req: Request) {
         { onConflict: "subject_id,title_id" },
       );
       if (error) throw error;
+      // Explicitly re-adding a title overrides any earlier rejection.
+      await db.from("rejected_matches").delete().eq("subject_id", subject_id).eq("title_id", title_id);
     } else {
       const { error } = await db.from("assignments")
         .delete().eq("subject_id", subject_id).eq("title_id", title_id);
       if (error) throw error;
+      // Remembers this was a deliberate rejection, not just an absence --
+      // see rejected_matches / app/api/match/run, which checks this
+      // before re-suggesting a candidate on the next Match run.
+      const { error: rejErr } = await db.from("rejected_matches")
+        .upsert({ subject_id, title_id, rejected_by: userEmailFromRequest(req) || null }, { onConflict: "subject_id,title_id" });
+      if (rejErr) throw rejErr;
     }
     const [{ data: subj }, { data: title }] = await Promise.all([
       db.from("subjects").select("course_code, course_title").eq("id", subject_id).maybeSingle(),

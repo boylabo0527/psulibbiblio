@@ -77,6 +77,11 @@ export async function POST(req: Request) {
       for (const titleId of titleIds) {
         if (!touched.has(titleId)) skipped.push({ subject_id: subjectId, title_id: titleId });
       }
+      // Locking is an explicit "this belongs" decision -- clears any
+      // earlier rejection of these same pairs (see rejected_matches).
+      if (lock && touched.size) {
+        await db.from("rejected_matches").delete().eq("subject_id", subjectId).in("title_id", Array.from(touched));
+      }
       done++;
       send({ phase: "locking", done, total: subjectEntries.length, updated });
     }

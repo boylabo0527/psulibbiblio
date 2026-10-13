@@ -293,6 +293,22 @@ export async function POST(req: Request) {
         return { subject, candidates: [] as Candidate[] };
       }));
 
+      // Drop any candidate a librarian already explicitly rejected for
+      // this exact course (via the single-item "Remove" action or a
+      // Validate Matches CSV upload -- see rejected_matches, app/api/
+      // match/override, and the validate-csv apply routes). Done before
+      // scoring/embedding, not after, so a rejected title never occupies
+      // one of topK's slots only to be dropped and silently leave fewer
+      // results than asked for.
+      const { data: rejectedRows } = await db.from("rejected_matches")
+        .select("subject_id, title_id").in("subject_id", batchIds);
+      if (rejectedRows?.length) {
+        const rejectedKeys = new Set(rejectedRows.map((r) => `${r.subject_id}:${r.title_id}`));
+        for (const bc of batchCandidates) {
+          bc.candidates = bc.candidates.filter((c) => !rejectedKeys.has(`${bc.subject.id}:${c.id}`));
+        }
+      }
+
       if (useEmbeddingsThisRun) {
         const missing: { id: number; text: string }[] = [];
         const queued = new Set<number>();

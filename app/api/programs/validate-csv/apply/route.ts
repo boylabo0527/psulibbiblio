@@ -62,6 +62,14 @@ export async function POST(req: Request) {
         .select("id");
       if (error) throw error;
       removed += data?.length ?? 0;
+      // Remembers this was a deliberate rejection, not just an absence --
+      // see rejected_matches / app/api/match/run, which checks this
+      // before re-suggesting the same title for this course again.
+      const { error: rejErr } = await db.from("rejected_matches").upsert(
+        titleIds.map((title_id) => ({ subject_id: subjectId, title_id, rejected_by: email || null })),
+        { onConflict: "subject_id,title_id" },
+      );
+      if (rejErr) throw rejErr;
       done++;
       send({ phase: "removing", done, total: subjectEntries.length, removed });
     }
