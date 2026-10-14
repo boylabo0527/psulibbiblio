@@ -155,13 +155,14 @@ export default function ProcurementTab() {
 
   async function exportReport(fmt: "xlsx" | "csv") {
     const XLSX = await import("xlsx");
-    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Recent Printed", "Required", "Min. Printed", "Gap", "Est. Cost/Title", "Est. Cost", "Status"];
+    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Recent Printed", "Required", "Min. Printed", "Gap", "Already Ordered", "Still to Source", "Est. Cost/Title", "Est. Cost", "Status"];
     const statusLabel = { compliant: "OK", needs_printed: "Needs Printed", partial: "Partial", outdated: "Outdated", needs: "Procure" };
     const aoa = [headers, ...filtered.map((r) => {
       const { printed, digital } = mediumBreakdown(r.counts);
+      const alreadyOrdered = Math.min(r.pending_titles, r.gap);
       return [
         r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles, r.recent_printed_titles,
-        ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
+        ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, alreadyOrdered, r.gap - alreadyOrdered, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
       ];
     })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -346,7 +347,7 @@ export default function ProcurementTab() {
             <h3 className="text-psu font-semibold">Subject Breakdown</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               "Recent" = titles published {cutoffYear} or later · Gap = titles still needed to reach {ACCREDITATION_MIN} total
-              with at least {MIN_PRINTED_BOOKS} printed
+              with at least {MIN_PRINTED_BOOKS} printed, net of any already on an active Purchase Request/Order
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -402,7 +403,7 @@ export default function ProcurementTab() {
                       Recent Printed
                     </th>
                     <th className="py-1 px-2 text-right">Required</th>
-                    <th className="py-1 px-2 text-right">Gap</th>
+                    <th className="py-1 px-2 text-right" title="Titles still needed, after subtracting any already on an active Purchase Request/Order (not yet catalogued)">Gap</th>
                     <th className="py-1 px-2 text-right" title="Overrides the program default for just this subject">Est. Cost/Title</th>
                     <th className="py-1 px-2 text-right">Est. Cost</th>
                     <th className="py-1 pl-2 text-right">Status</th>
@@ -412,6 +413,12 @@ export default function ProcurementTab() {
                   {grp.rows.map((r) => {
                     const status = statusOf(r);
                     const { printed, digital } = mediumBreakdown(r.counts);
+                    // Raw `gap` stays the compliance truth (catalogued titles
+                    // only). What staff should act on is this, net of titles
+                    // already on an active PR/PO -- otherwise the raw number
+                    // reads as "go canvass/request this many more" when some
+                    // are already in the pipeline, risking a duplicate order.
+                    const stillToSource = Math.max(0, r.gap - r.pending_titles);
                     return (
                     <tr key={r.subject_id} className={
                       "border-b border-slate-100 " + (
@@ -431,11 +438,13 @@ export default function ProcurementTab() {
                         {r.recent_printed_titles}
                       </td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{ACCREDITATION_MIN}</td>
-                      <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (r.gap > 0 ? "text-red-600" : "text-green-600")}>
-                        {r.gap > 0 ? `+${r.gap}` : "—"}
+                      <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (stillToSource > 0 ? "text-red-600" : "text-green-600")}>
+                        {stillToSource > 0 ? `+${stillToSource}` : "—"}
                         {r.gap > 0 && r.pending_titles > 0 && (
-                          <div className="text-[10px] font-normal text-amber-600" title="Already canvassed and on an active Purchase Request or Purchase Order, just not catalogued yet -- don't re-request these.">
-                            {Math.min(r.pending_titles, r.gap)} already ordered
+                          <div className="text-[10px] font-normal text-amber-600" title="Already canvassed and on an active Purchase Request or Purchase Order, just not catalogued yet -- don't re-canvass or re-request these.">
+                            {stillToSource === 0
+                              ? `all ${r.gap} already ordered`
+                              : `${r.gap} total, ${Math.min(r.pending_titles, r.gap)} already ordered`}
                           </div>
                         )}
                       </td>
