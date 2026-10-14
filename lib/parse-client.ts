@@ -193,3 +193,66 @@ export function buildCanvassingValidateRowsFromRaw(rows: Record<string, string>[
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Bulk cost-estimate rows: Procurement Analysis exports Subject ID/Code/
+// Subject/Program/Est. Cost per Title; a librarian edits that cost column in
+// Excel (for as many subjects as they like, across programs) and re-uploads
+// it. Subject ID is the unambiguous match when present (round-tripping the
+// export); Course Code/Course Title text, optionally narrowed by Program,
+// is the fallback for a sheet that was rebuilt without it -- same
+// resolve-by-ID-else-text shape as CANVASSING_VALIDATE_ALIASES above.
+// ---------------------------------------------------------------------------
+const COST_UPLOAD_ALIASES: Record<string, string[]> = {
+  subject_id: ["subject id", "id"],
+  course_code: ["code", "course code", "subject code"],
+  course_title: ["subject", "course title", "course"],
+  program: ["program", "programme", "program name"],
+  cost: ["est. cost/title", "cost/title", "cost per title", "estimated cost per title", "unit cost", "price", "cost"],
+};
+
+export type CostUploadRow = {
+  subject_id: number | null;
+  course_code: string;
+  course_title: string;
+  program: string;
+  /** Parsed non-negative cost, or null for a blank cell (clears that
+   *  subject's override, falling back to its program's default again). */
+  cost: number | null;
+  /** True when the cell had non-blank text that didn't parse as a
+   *  non-negative number -- distinct from a deliberately blank cell. */
+  costInvalid: boolean;
+};
+
+export function buildCostUploadRowsFromRaw(rows: Record<string, string>[]): CostUploadRow[] {
+  if (rows.length === 0) return [];
+  const map = buildHeaderMap(Object.keys(rows[0]), COST_UPLOAD_ALIASES);
+  if (!map.cost) {
+    throw new Error(`Could not find a cost-per-title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  if (!map.subject_id && !map.course_code && !map.course_title) {
+    throw new Error(`Could not find a Subject ID, Course Code, or Course Title column. Headers: ${Object.keys(rows[0]).join(", ")}`);
+  }
+  const out: CostUploadRow[] = [];
+  for (const r of rows) {
+    const idRaw = map.subject_id ? parseInt(r[map.subject_id] || "", 10) : NaN;
+    const subject_id = Number.isFinite(idRaw) && idRaw > 0 ? idRaw : null;
+    const course_code = map.course_code ? (r[map.course_code] || "").trim() : "";
+    const course_title = map.course_title ? (r[map.course_title] || "").trim() : "";
+    if (subject_id == null && !course_code && !course_title) continue;
+    const rawCost = (r[map.cost] || "").trim();
+    let cost: number | null = null;
+    let costInvalid = false;
+    if (rawCost !== "") {
+      const n = Number(rawCost);
+      if (Number.isFinite(n) && n >= 0) cost = n;
+      else costInvalid = true;
+    }
+    out.push({
+      subject_id, course_code, course_title,
+      program: map.program ? (r[map.program] || "").trim() : "",
+      cost, costInvalid,
+    });
+  }
+  return out;
+}

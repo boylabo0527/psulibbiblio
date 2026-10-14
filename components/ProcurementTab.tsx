@@ -9,9 +9,10 @@ import type { JournalTotals } from "@/app/api/dashboard/subjects/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
 import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS, MIN_PRINTED_BOOKS, stillToSource } from "@/lib/compliance";
+import { isSpreadsheet, parseSheetRows, buildCostUploadRowsFromRaw } from "@/lib/parse-client";
 
 type Program = { id: number; name: string; cost_per_title: number | null };
-type ViewFilter = "all" | "compliant" | "partial" | "needs";
+type StatusFilter = "compliant" | "partial" | "needs";
 
 function money(n: number): string {
   return "₱" + Math.round(n).toLocaleString();
@@ -43,7 +44,11 @@ export default function ProcurementTab() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [programId, setProgramId] = useState<string | null>(null);
   const [campus, setCampus] = useState("");
-  const [view, setView] = useState<ViewFilter>("needs");
+  // Empty set = "All" (no status filter applied). Multiple statuses can be
+  // active at once (e.g. Needs procurement + Partial together), not just
+  // one at a time -- toggled individually below; the "All" button clears
+  // back to the empty set rather than being its own fourth exclusive state.
+  const [view, setView] = useState<Set<StatusFilter>>(new Set(["needs"]));
   const [rows, setRows] = useState<ProcurementRow[]>([]);
   const [journalTotals, setJournalTotals] = useState<JournalTotals>({});
   const [loading, setLoading] = useState(true); // true only until the very first fetch resolves
@@ -108,13 +113,26 @@ export default function ProcurementTab() {
   const programScoped = programId ? rows.filter(r => String(r.program_id) === programId) : rows;
   const displayRows = validProgramIds ? programScoped.filter(r => validProgramIds.has(r.program_id)) : programScoped;
 
+  function statusGroupOf(r: ProcurementRow): StatusFilter {
+    if (r.compliant) return "compliant";
+    if (r.partial) return "partial";
+    return "needs";
+  }
+
   const filtered = useMemo(() => {
-    if (view === "compliant") return displayRows.filter((r) => r.compliant);
-    if (view === "partial") return displayRows.filter((r) => r.partial);
-    if (view === "needs") return displayRows.filter((r) => !r.compliant && !r.partial);
-    return displayRows;
+    if (view.size === 0) return displayRows;
+    return displayRows.filter((r) => view.has(statusGroupOf(r)));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayRows, view]);
+
+  function toggleView(id: StatusFilter) {
+    setView((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const grouped = filtered.reduce<{ program: string; program_id: number; rows: ProcurementRow[] }[]>((acc, r) => {
     const last = acc[acc.length - 1];
@@ -160,13 +178,13 @@ export default function ProcurementTab() {
 
   async function exportReport(fmt: "xlsx" | "csv") {
     const XLSX = await import("xlsx");
-    const headers = ["Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Recent Printed", "Required", "Min. Printed", "Gap", "Already Ordered", "Still to Source", "Est. Cost/Title", "Est. Cost", "Status"];
+    const headers = ["Subject ID", "Program", "Code", "Subject", "Total Titles", "Printed", "Digital/eBook", `Recent (${cutoffYear}+)`, "Recent Printed", "Required", "Min. Printed", "Gap", "Already Ordered", "Still to Source", "Est. Cost/Title", "Est. Cost", "Status"];
     const statusLabel = { compliant: "OK", needs_printed: "Needs Printed", partial: "Partial", outdated: "Outdated", needs: "Procure" };
     const aoa = [headers, ...filtered.map((r) => {
       const { printed, digital } = mediumBreakdown(r.counts);
       const alreadyOrdered = Math.min(r.pending_titles, r.gap);
       return [
-        r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles, r.recent_printed_titles,
+        r.subject_id, r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles, r.recent_printed_titles,
         ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, alreadyOrdered, stillToSource(r), r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
       ];
     })];
@@ -178,8 +196,9 @@ export default function ProcurementTab() {
     const blob = new Blob([buf], { type: fmt === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv" });
     const a = document.createElement("a");
     const scope = programId ? (programs.find((p) => String(p.id) === programId)?.name ?? "program") : (campus || "all_programs");
+    const viewLabel = view.size === 0 ? "all" : Array.from(view).sort().join("_");
     a.href = URL.createObjectURL(blob);
-    a.download = `procurement_${scope.replace(/[^A-Za-z0-9_-]+/g, "_")}_${view}.${fmt}`;
+    a.download = `procurement_${scope.replace(/[^A-Za-z0-9_-]+/g, "_")}_${viewLabel}.${fmt}`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
   }
 
@@ -245,6 +264,7 @@ export default function ProcurementTab() {
               }}
             />
           )}
+          <BulkCostUpload rows={rows} onDone={loadRows} />
         </div>
 
         {/* Summary cards */}
@@ -360,17 +380,24 @@ export default function ProcurementTab() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1 text-xs">
+            {/* Each status button toggles independently -- Needs procurement
+                and Partial can both be active at once instead of forcing a
+                librarian to flip back and forth between them. "All" just
+                clears back to the empty set (every status shown). */}
             {([
               { id: "needs",     label: `Needs procurement (${needsCount})` },
               { id: "partial",   label: `Partial (${partialCount})` },
               { id: "compliant", label: `Compliant (${compliantCount})` },
-              { id: "all",       label: `All (${total})` },
-            ] as { id: ViewFilter; label: string }[]).map((v) => (
-              <button key={v.id} onClick={() => setView(v.id)}
-                className={"px-3 py-1 rounded border transition " + (view === v.id ? "bg-psu text-white border-psu" : "border-slate-300 text-slate-600 hover:border-slate-400")}>
+            ] as { id: StatusFilter; label: string }[]).map((v) => (
+              <button key={v.id} onClick={() => toggleView(v.id)}
+                className={"px-3 py-1 rounded border transition " + (view.has(v.id) ? "bg-psu text-white border-psu" : "border-slate-300 text-slate-600 hover:border-slate-400")}>
                 {v.label}
               </button>
             ))}
+            <button onClick={() => setView(new Set())}
+              className={"px-3 py-1 rounded border transition " + (view.size === 0 ? "bg-psu text-white border-psu" : "border-slate-300 text-slate-600 hover:border-slate-400")}>
+              {`All (${total})`}
+            </button>
             <button className="btn-outline uppercase ml-2" disabled={filtered.length === 0} onClick={() => exportReport("xlsx")}>
               xlsx
             </button>
@@ -657,5 +684,104 @@ function SubjectCostInput({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={save}
     />
+  );
+}
+
+/** Bulk-sets cost_per_title for many subjects at once from an uploaded
+ *  spreadsheet -- normally this tab's own XLSX/CSV export (Subject ID,
+ *  Code, Subject, Program, Est. Cost/Title, among other columns), with the
+ *  Est. Cost/Title column edited and everything else left alone, then
+ *  re-uploaded. Subject ID round-trips unambiguously; a sheet rebuilt
+ *  without it falls back to Course Code text, narrowed by Program only
+ *  when the code alone matches more than one course (e.g. the same code
+ *  reused across programs). Resolves against every subject currently
+ *  loaded for the selected campus, not just the active program/view
+ *  filter, since one upload can cover more than one program. */
+function BulkCostUpload({ rows, onDone }: { rows: ProcurementRow[]; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleFile(file: File) {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      if (!isSpreadsheet(file)) throw new Error("Please upload a .xlsx, .xls, or .csv file.");
+      const raw = await parseSheetRows(file);
+      const parsed = buildCostUploadRowsFromRaw(raw);
+      if (!parsed.length) {
+        throw new Error("No usable rows found -- need a Subject ID, Code, or Subject column, and a cost column.");
+      }
+
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+      const byId = new Map(rows.map((r) => [r.subject_id, r]));
+      const byCode = new Map<string, ProcurementRow[]>();
+      for (const r of rows) {
+        const key = norm(r.course_code);
+        if (!key) continue;
+        if (!byCode.has(key)) byCode.set(key, []);
+        byCode.get(key)!.push(r);
+      }
+
+      const items: { subject_id: number; cost_per_title: number | null }[] = [];
+      const problems: string[] = [];
+      for (const row of parsed) {
+        const label = row.course_code || row.course_title || (row.subject_id != null ? `Subject ID ${row.subject_id}` : "(unidentified row)");
+        if (row.costInvalid) {
+          problems.push(`"${label}": cost isn't a valid non-negative number.`);
+          continue;
+        }
+        let match: ProcurementRow | undefined;
+        if (row.subject_id != null) {
+          match = byId.get(row.subject_id);
+          if (!match) { problems.push(`Subject ID ${row.subject_id}: no longer exists.`); continue; }
+        } else {
+          const candidates = byCode.get(norm(row.course_code)) ?? [];
+          if (candidates.length === 0) { problems.push(`"${label}": no matching course found.`); continue; }
+          match = candidates.length === 1 ? candidates[0] : undefined;
+          if (!match && row.program) {
+            const byProgram = candidates.filter((c) => norm(c.program) === norm(row.program));
+            if (byProgram.length === 1) match = byProgram[0];
+          }
+          if (!match) { problems.push(`"${label}" matches ${candidates.length} courses across programs -- add a Subject ID or Program column to disambiguate.`); continue; }
+        }
+        items.push({ subject_id: match.subject_id, cost_per_title: row.cost });
+      }
+
+      if (!items.length) {
+        setErr(problems.length ? problems.slice(0, 10).join(" ") : "No rows could be matched to a course.");
+        return;
+      }
+
+      const res = await apiFetch("/api/subjects/bulk-cost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      let out = `Set cost estimates for ${j.updated} subject${j.updated === 1 ? "" : "s"}.`;
+      if (j.skipped) out += ` ${j.skipped} skipped (outside your assigned campuses).`;
+      if (problems.length) out += ` ${problems.length} row${problems.length === 1 ? "" : "s"} in the file couldn't be matched: ${problems.slice(0, 5).join(" ")}`;
+      setMsg(out);
+      onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <label className="label">
+      <span className="btn-outline text-xs cursor-pointer">
+        {busy ? "Uploading…" : "Bulk upload cost estimates"}
+        <input
+          type="file" accept=".xlsx,.xls,.csv" className="hidden" disabled={busy}
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFile(f); }}
+        />
+      </span>
+      {msg && <span className="text-green-700 text-xs">{msg}</span>}
+      {err && <span className="text-red-700 text-xs">{err}</span>}
+    </label>
   );
 }

@@ -5,7 +5,7 @@ export type ActivityAction =
   | "match_run"
   | "bulk_delete" | "hostinger_migrate"
   | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate" | "program_college_set"
-  | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge"
+  | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge" | "subject_bulk_cost_edit"
   | "title_merge"
   | "assignment_add" | "assignment_remove" | "assignment_bulk_remove"
   | "assignment_lock" | "assignment_unlock" | "assignment_bulk_lock"
