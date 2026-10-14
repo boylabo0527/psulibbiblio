@@ -128,6 +128,11 @@ export default function ProcurementTab() {
   const partialCount = displayRows.filter((r) => r.partial).length;
   const needsCount = total - compliantCount - partialCount;
   const totalGap = displayRows.reduce((a, r) => a + r.gap, 0);
+  // Sum of what each row's own "already ordered" caption shows (gap
+  // credited against titles on an active PR/PO) -- lets the summary tiles
+  // answer "how much of that Recent Titles to Add number is already being
+  // handled" without opening every row.
+  const totalAlreadyOrdered = displayRows.reduce((a, r) => a + Math.min(r.pending_titles, r.gap), 0);
   const complianceRate = total > 0 ? Math.round((compliantCount / total) * 100) : 0;
 
   // Journals aren't in any row's own `counts` (see /api/procurement --
@@ -245,7 +250,7 @@ export default function ProcurementTab() {
         {/* Summary cards */}
         {!loading && rows.length > 0 && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
               <div className="bg-psu-light rounded p-4">
                 <div className="text-xs text-slate-600">Total Subjects</div>
                 <div className="text-2xl font-semibold text-psu">{total}</div>
@@ -265,6 +270,10 @@ export default function ProcurementTab() {
               <div className="bg-amber-50 border border-amber-200 rounded p-4">
                 <div className="text-xs text-amber-700">Recent Titles to Add</div>
                 <div className="text-2xl font-semibold text-amber-700">{totalGap}</div>
+              </div>
+              <div className="bg-sky-50 border border-sky-200 rounded p-4" title="Of the titles above, how many are already canvassed and on an active Purchase Request or Purchase Order, just not catalogued yet">
+                <div className="text-xs text-sky-700">Already Ordered</div>
+                <div className="text-2xl font-semibold text-sky-700">{totalAlreadyOrdered}</div>
               </div>
             </div>
 
