@@ -8,7 +8,7 @@ import type { ProcurementRow } from "@/app/api/procurement/route";
 import type { JournalTotals } from "@/app/api/dashboard/subjects/route";
 import ProcurementHeatmap from "@/components/ProcurementHeatmap";
 import ProgramJournalsPanel from "@/components/ProgramJournalsPanel";
-import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS, MIN_PRINTED_BOOKS } from "@/lib/compliance";
+import { ACCREDITATION_MIN, PARTIAL_MIN, RECENCY_YEARS, MIN_PRINTED_BOOKS, stillToSource } from "@/lib/compliance";
 
 type Program = { id: number; name: string; cost_per_title: number | null };
 type ViewFilter = "all" | "compliant" | "partial" | "needs";
@@ -162,7 +162,7 @@ export default function ProcurementTab() {
       const alreadyOrdered = Math.min(r.pending_titles, r.gap);
       return [
         r.program, r.course_code, r.course_title, r.total_titles, printed, digital, r.recent_titles, r.recent_printed_titles,
-        ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, alreadyOrdered, r.gap - alreadyOrdered, r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
+        ACCREDITATION_MIN, MIN_PRINTED_BOOKS, r.gap, alreadyOrdered, stillToSource(r), r.cost_per_title ?? "", r.estimated_cost ?? "", statusLabel[statusOf(r)],
       ];
     })];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -418,7 +418,7 @@ export default function ProcurementTab() {
                     // already on an active PR/PO -- otherwise the raw number
                     // reads as "go canvass/request this many more" when some
                     // are already in the pipeline, risking a duplicate order.
-                    const stillToSource = Math.max(0, r.gap - r.pending_titles);
+                    const toSource = stillToSource(r);
                     return (
                     <tr key={r.subject_id} className={
                       "border-b border-slate-100 " + (
@@ -438,11 +438,11 @@ export default function ProcurementTab() {
                         {r.recent_printed_titles}
                       </td>
                       <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{ACCREDITATION_MIN}</td>
-                      <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (stillToSource > 0 ? "text-red-600" : "text-green-600")}>
-                        {stillToSource > 0 ? `+${stillToSource}` : "—"}
+                      <td className={"py-1.5 px-2 text-right font-semibold tabular-nums " + (toSource > 0 ? "text-red-600" : "text-green-600")}>
+                        {toSource > 0 ? `+${toSource}` : "—"}
                         {r.gap > 0 && r.pending_titles > 0 && (
                           <div className="text-[10px] font-normal text-amber-600" title="Already canvassed and on an active Purchase Request or Purchase Order, just not catalogued yet -- don't re-canvass or re-request these.">
-                            {stillToSource === 0
+                            {toSource === 0
                               ? `all ${r.gap} already ordered`
                               : `${r.gap} total, ${Math.min(r.pending_titles, r.gap)} already ordered`}
                           </div>

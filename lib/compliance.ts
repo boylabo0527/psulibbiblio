@@ -38,6 +38,17 @@ export function evaluateBookCompliance(recentBookTitles: number, recentPrintedTi
   return { compliant, partial: !compliant && recentBookTitles >= PARTIAL_MIN, gap: Math.max(totalGap, printedGap) };
 }
 
+/** How many more titles a subject genuinely still needs sourced, after
+ *  crediting whatever's already on an active (non-cancelled) Purchase
+ *  Request/Order but not yet catalogued -- see ProcurementRow.pending_titles
+ *  in app/api/procurement/route.ts. `gap` itself stays the raw compliance
+ *  number (catalogued titles only, used for accreditation reporting); this
+ *  is what staff should act on to avoid canvassing/requesting titles a
+ *  course doesn't actually need any more of. */
+export function stillToSource(r: { gap: number; pending_titles: number }): number {
+  return Math.max(0, r.gap - r.pending_titles);
+}
+
 // CMO No. 15, s. 2019: at least 3 professional journal titles (local and
 // foreign, print/electronic combined) per undergraduate program; graduate
 // programs require 2 more peer-reviewed/internationally-refereed titles in
