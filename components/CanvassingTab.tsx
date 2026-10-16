@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { apiFetch } from "@/lib/api-client";
-import { parseSheetRows, isSpreadsheet } from "@/lib/parse-client";
+import { parseSheetRows, isSpreadsheet, buildCanvassingValidateRowsFromRaw, type CanvassingValidateRow } from "@/lib/parse-client";
 import { groupRows } from "@/lib/group-rows";
 import { isPriceStale, daysSincePriced, PRICE_VALIDITY_DAYS } from "@/lib/pricing";
 import SearchableSelect from "@/components/SearchableSelect";
@@ -163,6 +163,10 @@ export default function CanvassingTab() {
 
   // Gap matching
   const [gaps, setGaps] = useState<ProcurementRow[]>([]);
+  // Every subject, not just ones with a compliance gap -- gaps alone can't
+  // resolve a validation upload's Course Code/Course Title text to a
+  // subject_id when that subject happens to already be fully compliant.
+  const [allSubjects, setAllSubjects] = useState<ProcurementRow[]>([]);
   const [loadingGaps, setLoadingGaps] = useState(false);
   // pending assignments: canvassing id → selected subject_id (string for select)
   const [assignments, setAssignments] = useState<Map<number, string>>(new Map());
@@ -178,6 +182,18 @@ export default function CanvassingTab() {
   const [recommendationsBySubject, setRecommendationsBySubject] = useState<Map<number, { title: string; author: string }[]>>(new Map());
   const [linkingId, setLinkingId] = useState<number | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
+
+  // Mass validation (download proposed assignments, review offline, upload
+  // to confirm+validate in one pass) -- see /api/canvassing/mass-validate.
+  const [exportingValidation, setExportingValidation] = useState(false);
+  const [validateUploadBusy, setValidateUploadBusy] = useState(false);
+  const [validateUploadMsg, setValidateUploadMsg] = useState<string | null>(null);
+  const [validateUploadErr, setValidateUploadErr] = useState<string | null>(null);
+
+  // Bulk select on the "Matched & Ready for Purchase Request" table, for
+  // Mass Validate / Mass Remove without leaving the app.
+  const [selectedAssignedIds, setSelectedAssignedIds] = useState<Set<number>>(new Set());
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
 
   function reload() {
     setLoading(true); setErr(null);
@@ -207,6 +223,7 @@ export default function CanvassingTab() {
       .then(r => r.json())
       .then(j => {
         const all: ProcurementRow[] = j.rows ?? [];
+        setAllSubjects(all);
         setGaps(all.filter(r => !r.compliant)); // only subjects with gaps
       })
       .catch(() => {})
@@ -319,6 +336,429 @@ export default function CanvassingTab() {
     reload();
   }
 
+  /** Downloads every canvassing row (assigned or not) with whichever course
+   *  is currently proposed for it -- already assigned server-side, or just
+   *  the on-screen best-guess suggestion for a still-unassigned row (same
+   *  value the "Assign to Subject Gap" dropdown shows). A reviewer marks
+   *  "Validate? (Y/N)" for each row they decide on and uploads the file
+   *  back via importValidationFile -- "Y" both confirms the assignment
+   *  (for a not-yet-assigned row) and marks it validated, ready for
+   *  Purchase Request prep; "N" bulk-removes (unassigns) it instead.
+   *  ID/Proposed Subject ID are the most
+   *  reliable columns for the upload to match on, but aren't required --
+   *  Title (this item) and Course Code/Course Title (the proposed course)
+   *  work too, e.g. if a reviewer rebuilds this sheet from scratch with
+   *  only the columns they actually have. */
+  async function exportForValidation() {
+    setExportingValidation(true);
+    try {
+      const XLSX = await import("xlsx");
+      const subjectById = new Map(allSubjects.map(s => [s.subject_id, s]));
+      const headers = [
+        "ID", "Item Type", "Title", "Author / Subject Area", "Publisher", "Year",
+        "Program", "Course Code", "Course Title", "Proposed Subject ID",
+        "Supplier", "Unit Cost", "Quantity", "Total", "Canvass Date",
+        "Already Validated", "Validate? (Y/N)",
+      ];
+      const aoa = [headers, ...rows.map(r => {
+        const proposedId = r.subject_id ?? (assignments.get(r.id) ? Number(assignments.get(r.id)) : null);
+        const proposed = proposedId != null ? subjectById.get(proposedId) : undefined;
+        return [
+          r.id, r.item_type, r.title,
+          r.item_type === "journal" ? r.subject_area : r.author,
+          r.publisher, r.year,
+          proposed?.program ?? "", proposed?.course_code ?? "", proposed?.course_title ?? "", proposedId ?? "",
+          r.supplier, r.unit_cost, r.quantity, r.unit_cost * r.quantity,
+          r.canvass_date || r.created_at.slice(0, 10),
+          r.validated ? "Yes" : "No", "",
+        ];
+      })];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = headers.map(h => ({ wch: Math.max(h.length + 2, 12) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Canvassing");
+      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = `canvassing_validation_${todayStr()}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+    } finally {
+      setExportingValidation(false);
+    }
+  }
+
+  function normText(s: string): string {
+    return s.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  /** Resolves a parsed row's canvassing_id: its own ID column if present,
+   *  else an exact (case/whitespace-insensitive) match on Title against
+   *  the currently loaded canvassing rows. Ambiguous or missing titles are
+   *  reported back rather than guessed at, since this feeds a real
+   *  purchase document. */
+  function resolveCanvassingId(pr: CanvassingValidateRow): { id: number | null; reason?: string } {
+    if (pr.id != null) return { id: pr.id };
+    if (!pr.title) return { id: null, reason: "No ID or Title to match against." };
+    const key = normText(pr.title);
+    const matches = rows.filter(r => normText(r.title) === key);
+    if (matches.length === 1) return { id: matches[0].id };
+    if (matches.length === 0) return { id: null, reason: `Title not found among canvassed items: "${pr.title}"` };
+    return { id: null, reason: `"${pr.title}" matches ${matches.length} canvassed items -- add an ID column to disambiguate.` };
+  }
+
+  /** Splits a Course Code/Course Title/Program cell on ";" or "," into
+   *  individual tokens. `dedupe` (default true) drops repeats after
+   *  normalizing -- right for a plain list of distinct courses, but wrong
+   *  when this list is paired positionally against another list of the
+   *  same length (see resolveSubjectIds below), where a repeated code
+   *  like "Math 21; Math 21; Math 21" legitimately means four different
+   *  (program, code) pairs and must keep its length/order intact. */
+  function splitCourseTokens(s: string, dedupe = true): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of s.split(/[;,]/)) {
+      const t = normText(raw);
+      if (!t) continue;
+      if (dedupe && seen.has(t)) continue;
+      seen.add(t); out.push(t);
+    }
+    return out;
+  }
+
+  // Standard Philippine CHED degree-prefix abbreviations, expanded only
+  // when they open a program token -- e.g. "BS Civil Engineering" ->
+  // "bachelor of science in civil engineering", "BSED" alone ->
+  // "bachelor of secondary education". Programs are stored under their
+  // full name (see CampusValidationTab/course_report.csv), but a
+  // reviewer's own sheet very reasonably uses the abbreviation instead.
+  const DEGREE_PREFIX_EXPANSIONS: Record<string, string> = {
+    bs: "bachelor of science in", ba: "bachelor of arts in", ab: "bachelor of arts in",
+    bsba: "bachelor of science in business administration",
+    bsed: "bachelor of secondary education", beed: "bachelor of elementary education",
+  };
+
+  function expandProgramToken(normalized: string): string {
+    const [first, ...rest] = normalized.split(" ");
+    const expansion = DEGREE_PREFIX_EXPANSIONS[first];
+    return expansion ? [expansion, ...rest].join(" ") : normalized;
+  }
+
+  const PROGRAM_GLUE_WORDS = new Set(["of", "in", "the", "and", "&", "for"]);
+  function programWords(s: string): string[] {
+    return s.split(" ").filter((w) => w && !PROGRAM_GLUE_WORDS.has(w));
+  }
+
+  // One word "fits" another if they're equal, or the shorter is a prefix
+  // of the longer (at least 3 characters) -- generalizes common inline
+  // abbreviations ("maj" -> "major", "math" -> "mathematics") without a
+  // dictionary for every possible one.
+  function wordsCompatible(a: string, b: string): boolean {
+    if (a === b) return true;
+    const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+    return shorter.length >= 3 && longer.startsWith(shorter);
+  }
+
+  /** Whether a (normalized, possibly abbreviated) Program token refers to
+   *  the same program as a real program name on file. Tries an exact or
+   *  raw substring match first (cheap, catches anything already spelled
+   *  out); otherwise expands the token's degree prefix and requires every
+   *  one of its significant words to fit some word in the real name. */
+  function programTokenMatches(token: string, realProgramNormalized: string): boolean {
+    if (token === realProgramNormalized || realProgramNormalized.includes(token) || token.includes(realProgramNormalized)) return true;
+    const tokenWords = programWords(expandProgramToken(token));
+    if (tokenWords.length === 0) return false;
+    const realWords = programWords(realProgramNormalized);
+    return tokenWords.every((tw) => realWords.some((rw) => wordsCompatible(tw, rw)));
+  }
+
+  /** Resolves one course token (already normalized) against a pool of
+   *  subjects -- tried as a Course Code first, then an exact Course Title,
+   *  then the same relevanceScore heuristic this tab already trusts for
+   *  its own auto-suggestion (but only its exact-phrase tier, score 1000,
+   *  since a wrong guess here would misdirect real money). A `titleHint`
+   *  (the row's own Course Title, when both columns are filled in) breaks
+   *  a tie among several same-code matches -- the catalog genuinely
+   *  reuses a code like "Elective 4" for more than one distinct elective
+   *  within the same program, so Program alone can't always disambiguate. */
+  function resolveCourseToken(token: string, pool: ProcurementRow[], titleHint?: string | null): { subject_id: number | null; reason?: string } {
+    const byCode = pool.filter(s => normText(s.course_code) === token);
+    if (byCode.length === 1) return { subject_id: byCode[0].subject_id };
+    if (byCode.length > 1) {
+      if (titleHint) {
+        const narrowed = byCode.filter(s => normText(s.course_title) === titleHint);
+        if (narrowed.length === 1) return { subject_id: narrowed[0].subject_id };
+      }
+      return { subject_id: null, reason: `"${token}" matches ${byCode.length} courses by code -- add a Program column to disambiguate.` };
+    }
+    const byTitle = pool.filter(s => normText(s.course_title) === token);
+    if (byTitle.length === 1) return { subject_id: byTitle[0].subject_id };
+    if (byTitle.length > 1) return { subject_id: null, reason: `"${token}" matches ${byTitle.length} courses by title -- add a Program or Course Code column to disambiguate.` };
+    let best: ProcurementRow | null = null, bestScore = 0;
+    for (const s of pool) {
+      const score = relevanceScore(token, s);
+      if (score > bestScore) { bestScore = score; best = s; }
+    }
+    if (best && bestScore >= 1000) return { subject_id: best.subject_id };
+    return { subject_id: null, reason: `Course not found: "${token}"` };
+  }
+
+  /** Resolves one course token against the full subject list, using a
+   *  Program token to narrow it down first when given. A course code is
+   *  frequently shared across several programs (e.g. "Math 21" =
+   *  Differential Equations under four different engineering programs)
+   *  -- genuinely ambiguous without knowing which one. The Program-scoped
+   *  pool is tried first, but this always ALSO falls back to the full,
+   *  unscoped list: if the Program token doesn't match a program name on
+   *  file (a different phrasing, an abbreviation programTokenMatches
+   *  doesn't cover, a typo), filtering down to empty BEFORE searching
+   *  would turn a real, unambiguous course code into a false "not found"
+   *  -- falling back instead either resolves it cleanly (if the code
+   *  happens to be unique after all) or reports the real ambiguity, which
+   *  is the actionable message. */
+  function resolveCourseTokenWithProgram(token: string, programToken: string | null, titleHint: string | null, subjects: ProcurementRow[]): { subject_id: number | null; reason?: string } {
+    const scopedPool = programToken ? subjects.filter((s) => programTokenMatches(programToken, normText(s.program))) : [];
+    const scoped = scopedPool.length ? resolveCourseToken(token, scopedPool, titleHint) : { subject_id: null as number | null, reason: undefined as string | undefined };
+    return scoped.subject_id != null ? scoped : resolveCourseToken(token, subjects, titleHint);
+  }
+
+  /** Resolves a parsed row's target course(s) -- Course Code/Course Title
+   *  text takes priority over the numeric Proposed Subject ID whenever
+   *  either is filled in, specifically so a reviewer can reassign a title
+   *  to a DIFFERENT course than the one originally downloaded just by
+   *  editing that cell: if the numeric ID won instead, an edited Course
+   *  Code/Title would be silently ignored in favor of the stale original
+   *  proposal still sitting in the ID column. Only once BOTH text columns
+   *  are blank does this fall back to the numeric Proposed Subject ID.
+   *
+   *  Either column can list more than one course (a title can count
+   *  toward several -- see additional_subjects/canvassing_subjects).
+   *  When Program ALSO lists the same number of entries as Course
+   *  Code/Title, they're paired up positionally (program[i] scopes
+   *  code[i]) -- this is the only way to tell apart something like
+   *  "Math 21; Math 21; Math 21; Math 21" alongside "BS Civil
+   *  Engineering; BS Electrical Engineering; BS Mechanical Engineering;
+   *  BS Petroleum Engineering": the SAME code resolves to four DIFFERENT
+   *  subjects, one per program, and deduplicating identical code tokens
+   *  (as a plain distinct-course list would) would collapse that down to
+   *  one and lose three of them. Otherwise, a single Program (or none)
+   *  applies to every distinct course token. A token that doesn't resolve
+   *  is just left out rather than failing the whole row, as long as at
+   *  least one other token did. */
+  function resolveSubjectIds(pr: CanvassingValidateRow, subjects: ProcurementRow[]): { subject_ids: number[]; reason?: string } {
+    const raw = pr.course_code || pr.course_title;
+    if (raw) {
+      const resolved: number[] = [];
+      const failures: string[] = [];
+      const codeTokens = splitCourseTokens(raw, false);
+      const programTokens = pr.program ? splitCourseTokens(pr.program, false) : [];
+      const pairwise = programTokens.length > 1 && programTokens.length === codeTokens.length;
+      // Only a secondary disambiguator when Course Code is what's driving
+      // resolution AND Course Title is also filled in -- when Course Code
+      // is blank, `raw`/codeTokens already IS the title, so there's
+      // nothing else to hint from.
+      const titleTokens = (pr.course_code && pr.course_title) ? splitCourseTokens(pr.course_title, false) : [];
+
+      function apply(token: string, programToken: string | null, titleHint: string | null) {
+        const r = resolveCourseTokenWithProgram(token, programToken, titleHint, subjects);
+        if (r.subject_id != null) {
+          if (!resolved.includes(r.subject_id)) resolved.push(r.subject_id);
+        } else if (r.reason) {
+          failures.push(r.reason);
+        }
+      }
+
+      if (pairwise) {
+        const titlePairwise = titleTokens.length === codeTokens.length;
+        for (let i = 0; i < codeTokens.length; i++) {
+          apply(codeTokens[i], programTokens[i], titlePairwise ? titleTokens[i] : (titleTokens[0] ?? null));
+        }
+      } else {
+        const programToken = pr.program ? normText(pr.program) : null;
+        const titleHint = titleTokens[0] ?? null;
+        for (const token of splitCourseTokens(raw)) apply(token, programToken, titleHint);
+      }
+
+      if (resolved.length === 0) return { subject_ids: [], reason: failures.join("; ") || `Course not found: "${raw}"` };
+      return { subject_ids: resolved };
+    }
+    if (pr.subject_id != null) return { subject_ids: [pr.subject_id] };
+    return { subject_ids: [], reason: "No Proposed Subject ID, Course Code, or Course Title to match against." };
+  }
+
+  /** Uploads a reviewed export from exportForValidation above (or a sheet a
+   *  reviewer built from scratch). Rows marked "Y" in Validate? are
+   *  assigned + validated together via /api/canvassing/mass-validate;
+   *  rows marked "N" are bulk-removed (unassigned, not deleted) via
+   *  /api/canvassing/mass-unassign instead -- the same effect as the
+   *  in-app Mass Remove button, just driven by the spreadsheet so a
+   *  whole batch of not-relevant titles can be cleared in one upload.
+   *  A "Y" row is resolved by ID/Proposed Subject ID when present, falling
+   *  back to Title and Course Code/Course Title text against the data
+   *  already loaded in this tab (see resolveCanvassingId/resolveSubjectIds
+   *  above) -- so a sheet with just Title and Course columns works too,
+   *  including one with several courses per title (e.g. "Psych 18; VED
+   *  14"). An "N" row only needs to resolve its Title/ID, since removal
+   *  doesn't touch the course assignment at all. Fetches the subjects
+   *  list fresh here rather than trusting allSubjects state --
+   *  that's populated by a separate /api/procurement fetch on mount, which
+   *  can still be in flight (or have failed silently) by the time someone
+   *  uploads, and resolving against an empty list fails every single
+   *  course rather than just the genuinely-missing ones. */
+  async function importValidationFile(file: File) {
+    if (!isSpreadsheet(file)) { setValidateUploadErr("Please upload an Excel (.xlsx/.xls) or CSV file."); return; }
+    setValidateUploadBusy(true); setValidateUploadErr(null); setValidateUploadMsg(null);
+    try {
+      const raw = await parseSheetRows(file);
+      const allParsed = buildCanvassingValidateRowsFromRaw(raw);
+      // "Y" rows get assigned + validated (resolving their course); "N"
+      // rows are bulk-removed instead -- same effect as the in-app "Mass
+      // Remove" button (unassigns, doesn't delete the canvassing record),
+      // just driven by the spreadsheet instead of checkboxes. Blank/
+      // unrecognized Validate? values are left untouched either way.
+      const yRows = allParsed.filter(r => r.validate === true);
+      const nRows = allParsed.filter(r => r.validate === false);
+      if (yRows.length === 0 && nRows.length === 0) {
+        setValidateUploadErr("No rows marked \"Y\" or \"N\" in Validate? were found.");
+        return;
+      }
+
+      const unresolved: string[] = [];
+      const removeIds: number[] = [];
+      for (const pr of nRows) {
+        const { id, reason } = resolveCanvassingId(pr);
+        if (id == null) { unresolved.push(`${pr.title || "(unknown row)"} -- ${reason}`); continue; }
+        removeIds.push(id);
+      }
+
+      let subjects = allSubjects;
+      if (yRows.length > 0 && subjects.length === 0) {
+        const subjRes = await apiFetch("/api/procurement");
+        const subjJson = await subjRes.json().catch(() => ({}));
+        subjects = subjJson.rows ?? [];
+        if (subjects.length) {
+          setAllSubjects(subjects);
+          setGaps(prev => prev.length > 0 ? prev : subjects.filter(s => !s.compliant));
+        }
+        if (subjects.length === 0) {
+          setValidateUploadErr("Couldn't load the courses list, so no Course Code/Course Title could be matched. Reload the page and try again.");
+          return;
+        }
+      }
+      const items: { id: number; subject_id: number; additional_subject_ids: number[] }[] = [];
+      for (const pr of yRows) {
+        const { id, reason: idReason } = resolveCanvassingId(pr);
+        const { subject_ids, reason: subjReason } = resolveSubjectIds(pr, subjects);
+        if (id == null || subject_ids.length === 0) {
+          unresolved.push(`${pr.title || (pr.id != null ? `#${pr.id}` : "(unknown row)")} -- ${idReason || subjReason}`);
+          continue;
+        }
+        items.push({ id, subject_id: subject_ids[0], additional_subject_ids: subject_ids.slice(1) });
+      }
+
+      if (items.length === 0 && removeIds.length === 0) {
+        setValidateUploadErr(`Couldn't resolve any "Y"/"N" rows:\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`);
+        return;
+      }
+
+      const msgParts: string[] = [];
+      let serverSkippedCount = 0;
+      if (items.length) {
+        const res = await apiFetch("/api/canvassing/mass-validate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        msgParts.push(`${j.validated} entr${j.validated === 1 ? "y" : "ies"} validated`);
+        serverSkippedCount += j.skipped?.length ?? 0;
+      }
+      if (removeIds.length) {
+        const res = await apiFetch("/api/canvassing/mass-unassign", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: removeIds }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+        msgParts.push(`${j.unassigned} entr${j.unassigned === 1 ? "y" : "ies"} removed (unassigned)`);
+        serverSkippedCount += j.skipped ?? 0;
+      }
+      let msg = msgParts.join(", ");
+      if (serverSkippedCount) msg += `, ${serverSkippedCount} skipped (out of your assigned campus, or not found)`;
+      if (unresolved.length) msg += `, ${unresolved.length} skipped (couldn't resolve title/course):\n${unresolved.slice(0, 15).join("\n")}${unresolved.length > 15 ? `\n…and ${unresolved.length - 15} more.` : ""}`;
+      setValidateUploadMsg(msg + (serverSkippedCount || unresolved.length ? "" : "."));
+      reload();
+    } catch (e) {
+      setValidateUploadErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setValidateUploadBusy(false);
+    }
+  }
+
+  function toggleAssignedSelection(id: number) {
+    setSelectedAssignedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllAssigned(ids: number[]) {
+    setSelectedAssignedIds(new Set(ids));
+  }
+
+  function invertAssignedSelection(ids: number[]) {
+    setSelectedAssignedIds(prev => new Set(ids.filter(id => !prev.has(id))));
+  }
+
+  async function massValidateSelected() {
+    const targets = assigned.filter(r => selectedAssignedIds.has(r.id) && r.subject_id != null);
+    if (targets.length === 0) return;
+    setBulkActionBusy(true);
+    try {
+      const res = await apiFetch("/api/canvassing/mass-validate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        // additional_subject_ids carries forward each row's EXISTING
+        // linked courses (see link-subject) -- approving a title as-is
+        // shouldn't silently drop courses it already counts toward.
+        body: JSON.stringify({
+          items: targets.map(r => ({
+            id: r.id, subject_id: r.subject_id,
+            additional_subject_ids: r.additional_subjects.map(a => a.subject_id),
+          })),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setSelectedAssignedIds(new Set());
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
+  async function massRemoveSelected() {
+    const ids = Array.from(selectedAssignedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Unassign ${ids.length} selected title${ids.length === 1 ? "" : "s"}? They'll go back to "needs sourcing" -- nothing is deleted.`)) return;
+    setBulkActionBusy(true);
+    try {
+      const res = await apiFetch("/api/canvassing/mass-unassign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+      setSelectedAssignedIds(new Set());
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
   async function del(id: number) {
     if (!confirm("Delete this entry?")) return;
     await apiFetch(`/api/canvassing?id=${id}`, { method: "DELETE" });
@@ -374,6 +814,16 @@ export default function CanvassingTab() {
   const assigned = useMemo(() => rows.filter(r => r.subject_id), [rows]);
   const unassigned = useMemo(() => rows.filter(r => !r.subject_id), [rows]);
   const totalCost = assigned.reduce((s, r) => s + r.unit_cost * r.quantity, 0);
+
+  // Drop any selected id that's no longer in the assigned list (reloaded,
+  // unassigned, or deleted out from under the bulk-select checkboxes).
+  useEffect(() => {
+    const stillAssigned = new Set(assigned.map(r => r.id));
+    setSelectedAssignedIds(prev => {
+      const next = new Set(Array.from(prev).filter(id => stillAssigned.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [assigned]);
 
   const supplierOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.supplier).filter(Boolean))).sort(), [assigned]);
   const programOptions = useMemo(() => Array.from(new Set(assigned.map(r => r.program).filter(Boolean))).sort(), [assigned]);
@@ -624,6 +1074,45 @@ export default function CanvassingTab() {
         )}
       </div>
 
+      {/* Mass Validate/Remove — download proposed assignments, review offline, upload to confirm+validate or bulk-remove */}
+      {rows.length > 0 && (
+        <div className="card">
+          <h2 className="text-psu font-semibold mb-1">Mass Validate / Remove Assignments</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            Download every canvassed title with its currently proposed course (already assigned, or just the
+            best-guess suggestion below), mark <span className="font-medium">Validate? (Y/N)</span> for each one a
+            reviewer decides on, then upload it back. <span className="font-medium">Y</span> confirms the assignment
+            and marks it validated in one pass -- only validated titles are pulled into Purchase Request prep.{" "}
+            <span className="font-medium">N</span> bulk-removes that title instead (same as the in-app Mass Remove
+            button -- unassigns it back to needs-sourcing, doesn&apos;t delete the canvassing record), so a whole
+            batch of not-relevant titles can be cleared in one upload instead of checking them off one by one.
+            Blank/other values leave that row untouched either way.
+            To assign a title to a <span className="font-medium">different</span> course than the one proposed, just
+            edit its Course Code or Course Title cell before uploading -- that edit wins over whatever was
+            originally in Proposed Subject ID. Don&apos;t have the ID/Proposed Subject ID columns at all (e.g.
+            building this sheet yourself)? That&apos;s fine -- just <span className="font-medium">Title</span>{" "}
+            (matching an existing canvassed item) and <span className="font-medium">Course Code or Course Title</span>{" "}
+            (matching an existing course) also work, as long as they match exactly one item/course each. A title
+            counting toward more than one course? List them separated by <span className="font-medium">;</span> or{" "}
+            <span className="font-medium">,</span> in that same cell, e.g. &quot;Psych 18; VED 14&quot; -- the first
+            becomes its main course, the rest are linked alongside it.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button className="btn-outline text-sm" disabled={exportingValidation} onClick={exportForValidation}>
+              {exportingValidation ? "Preparing…" : "Download for Validation (XLSX)"}
+            </button>
+            <label className="label flex-col items-start gap-1">
+              <span>Upload validated list</span>
+              <input type="file" accept=".xlsx,.xls,.csv" className="text-xs" disabled={validateUploadBusy}
+                onChange={e => { const f = e.target.files?.[0]; if (f) importValidationFile(f); e.target.value = ""; }} />
+            </label>
+          </div>
+          {validateUploadBusy && <p className="text-slate-500 text-xs mt-2">Uploading…</p>}
+          {validateUploadMsg && <p className="text-green-700 text-xs mt-2 whitespace-pre-wrap">{validateUploadMsg}</p>}
+          {validateUploadErr && <p className="text-red-700 text-xs mt-2 whitespace-pre-wrap">{validateUploadErr}</p>}
+        </div>
+      )}
+
       {/* Gap Matching — unassigned titles */}
       {rows.length > 0 && unassigned.length > 0 && (
         <div className="card">
@@ -741,10 +1230,43 @@ export default function CanvassingTab() {
               </label>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-3 mb-2 text-xs">
+            <span className="text-slate-500">{selectedAssignedIds.size} selected</span>
+            <button className="text-psu underline" onClick={() => selectAllAssigned(filteredSortedAssigned.map(r => r.id))}>
+              Select all{(supplierFilter || programFilter) ? " (filtered)" : ""}
+            </button>
+            <button className="text-psu underline" onClick={() => invertAssignedSelection(filteredSortedAssigned.map(r => r.id))}>
+              Invert selection
+            </button>
+            <button className="text-slate-400 underline" onClick={() => setSelectedAssignedIds(new Set())}>Clear</button>
+            <button
+              className="btn-outline text-[11px] px-2 py-1 ml-2"
+              disabled={bulkActionBusy || selectedAssignedIds.size === 0}
+              onClick={massValidateSelected}
+              title="Marks each selected title validated, using its current course assignment as-is"
+            >
+              {bulkActionBusy ? "Working…" : `Mass Validate (${selectedAssignedIds.size})`}
+            </button>
+            <button
+              className="btn-outline text-[11px] px-2 py-1 text-amber-700 border-amber-300"
+              disabled={bulkActionBusy || selectedAssignedIds.size === 0}
+              onClick={massRemoveSelected}
+              title="Unassigns each selected title -- sends it back to needs-sourcing without deleting it"
+            >
+              {bulkActionBusy ? "Working…" : `Mass Remove (${selectedAssignedIds.size})`}
+            </button>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500 text-left">
+                  <th className="py-1 pr-2 w-8">
+                    <input
+                      type="checkbox"
+                      checked={filteredSortedAssigned.length > 0 && filteredSortedAssigned.every(r => selectedAssignedIds.has(r.id))}
+                      onChange={e => e.target.checked ? selectAllAssigned(filteredSortedAssigned.map(r => r.id)) : setSelectedAssignedIds(new Set())}
+                    />
+                  </th>
                   <th className="py-1 pr-2">Title</th>
                   <th className="py-1 pr-2">Author</th>
                   <th className="py-1 pr-2">Subject Gap Addressed</th>
@@ -754,6 +1276,7 @@ export default function CanvassingTab() {
                   <th className="py-1 px-2" title={`Prices older than ${PRICE_VALIDITY_DAYS} days are flagged for re-verification`}>Quoted</th>
                   <th className="py-1 px-2 text-right">Qty</th>
                   <th className="py-1 px-2 text-right">Total</th>
+                  <th className="py-1 px-2" title="Only validated titles are pulled into Purchase Request prep">Validated</th>
                   <th className="py-1 pl-2"></th>
                 </tr>
               </thead>
@@ -761,7 +1284,7 @@ export default function CanvassingTab() {
                 {assignedGroups.flatMap(([label, groupItems]) => [
                   ...(assignedGroupBy !== "none" ? [
                     <tr key={`g-${label}`} className="bg-slate-50">
-                      <td colSpan={10} className="py-1 px-2 font-semibold text-slate-600">
+                      <td colSpan={12} className="py-1 px-2 font-semibold text-slate-600">
                         {label} · {groupItems.length} · ₱{money(groupItems.reduce((s, r) => s + r.unit_cost * r.quantity, 0))}
                       </td>
                     </tr>,
@@ -771,6 +1294,9 @@ export default function CanvassingTab() {
                     const stale = isPriceStale(priceDate);
                     return (
                     <tr key={r.id} className={"border-b border-slate-100 " + (stale ? "bg-amber-50/40 hover:bg-amber-50" : "hover:bg-green-50")}>
+                      <td className="py-1.5 pr-2">
+                        <input type="checkbox" checked={selectedAssignedIds.has(r.id)} onChange={() => toggleAssignedSelection(r.id)} />
+                      </td>
                       <td className="py-1.5 pr-2 font-medium">
                         {r.title}
                         {r.item_type === "journal" && (
@@ -839,6 +1365,13 @@ export default function CanvassingTab() {
                       </td>
                       <td className="py-1.5 px-2 text-right tabular-nums">{r.quantity}</td>
                       <td className="py-1.5 px-2 text-right font-semibold tabular-nums">₱{(r.unit_cost * r.quantity).toLocaleString("en-PH", { minimumFractionDigits: 2 })}</td>
+                      <td className="py-1.5 px-2">
+                        {r.validated ? (
+                          <span className="inline-block bg-green-100 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-medium">Validated</span>
+                        ) : (
+                          <span className="inline-block bg-slate-100 text-slate-500 rounded px-1.5 py-0.5 text-[10px] font-medium">Pending</span>
+                        )}
+                      </td>
                       <td className="py-1.5 pl-2 whitespace-nowrap">
                         {reverifyingId !== r.id && (
                           <button className="text-psu text-[11px] underline mr-2" onClick={() => startReverify(r)}>Re-verify</button>

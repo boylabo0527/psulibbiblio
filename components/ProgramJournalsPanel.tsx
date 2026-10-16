@@ -5,8 +5,14 @@ import { apiFetch } from "@/lib/api-client";
 import { JOURNAL_MIN_UNDERGRAD, JOURNAL_MIN_GRADUATE_ADDITIONAL } from "@/lib/compliance";
 
 type JournalTitle = {
-  id: number; format: ResourceTypeId; title: string;
+  id: number; format: ResourceTypeId; title: string; publisher?: string;
   call_no: string; issn: string; year: string; copies: number; url?: string;
+  /** Whether every course this journal is matched to in the program has had
+   *  that match locked (assignments.manual) -- see toggleJournalLock in
+   *  ProgramsTab. Only locked/validated journals count here; an
+   *  auto-matched title nobody has reviewed yet stays invisible to the
+   *  Dashboard and Procurement Analysis until it's locked. */
+  manual?: number;
 };
 type Buckets = Record<ResourceTypeId, JournalTitle[]>;
 
@@ -17,7 +23,14 @@ const JOURNAL_TYPES = RESOURCE_TYPES.filter((t) => t.kind === "journal");
  *  in lib/bibliography.ts), so this fetches the same program-wide,
  *  deduplicated list Programs & Export shows, for the Dashboard and
  *  Procurement Analysis tabs where a librarian is checking a program's
- *  overall standing rather than editing individual titles. */
+ *  overall standing rather than editing individual titles.
+ *
+ *  Both of those tabs are meant to work signed out, so this calls
+ *  /api/programs/[id]/journals -- a narrow, deliberately public slice of
+ *  the same data -- rather than /api/programs/[id]/bibliography, which
+ *  also returns full per-course book detail and stays behind sign-in (see
+ *  middleware.ts). Using the bibliography route here would 401 for every
+ *  anonymous visitor. */
 export default function ProgramJournalsPanel({
   programId, campus,
 }: { programId: number | string | null; campus: string }) {
@@ -31,7 +44,7 @@ export default function ProgramJournalsPanel({
     setErr(null);
     const p = new URLSearchParams();
     if (campus) p.set("campus", campus);
-    apiFetch(`/api/programs/${programId}/bibliography${p.toString() ? "?" + p.toString() : ""}`)
+    apiFetch(`/api/programs/${programId}/journals${p.toString() ? "?" + p.toString() : ""}`)
       .then((r) => r.json())
       .then((j) => {
         if (j.error) setErr(j.error);
@@ -43,7 +56,14 @@ export default function ProgramJournalsPanel({
 
   if (!programId) return null;
 
-  const rows = journals ? JOURNAL_TYPES.flatMap((t) => journals[t.id] ?? []) : [];
+  const allRows = journals ? JOURNAL_TYPES.flatMap((t) => journals[t.id] ?? []) : [];
+  // Only a journal whose match has been locked (validated by a librarian --
+  // see toggleJournalLock in ProgramsTab) counts here or shows in the table
+  // below; an auto-matched title nobody has confirmed yet doesn't count
+  // toward CMO No. 15 compliance or appear on the Dashboard/Procurement
+  // Analysis, even though it's visible for review in Programs & Export.
+  const rows = allRows.filter((j) => j.manual === 1);
+  const pending = allRows.length - rows.length;
   const total = rows.length;
   const meetsUndergrad = total >= JOURNAL_MIN_UNDERGRAD;
   const meetsGraduate = total >= JOURNAL_MIN_UNDERGRAD + JOURNAL_MIN_GRADUATE_ADDITIONAL;
@@ -68,8 +88,14 @@ export default function ProgramJournalsPanel({
                 : `; a graduate program needs ${JOURNAL_MIN_GRADUATE_ADDITIONAL} more on top of that (${JOURNAL_MIN_UNDERGRAD + JOURNAL_MIN_GRADUATE_ADDITIONAL} total)`
             )}.
           </p>
+          {pending > 0 && (
+            <p className="text-xs text-slate-500 mb-2">
+              {pending} more journal title{pending === 1 ? "" : "s"} matched but not yet locked/validated in
+              Programs &amp; Export -- not counted here until confirmed.
+            </p>
+          )}
           {total === 0 ? (
-            <p className="text-slate-500 text-sm">No journals matched to this program yet.</p>
+            <p className="text-slate-500 text-sm">No validated journals matched to this program yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -78,11 +104,12 @@ export default function ProgramJournalsPanel({
                     <th className="py-1 pr-2">Type</th>
                     <th className="py-1 pr-2">Call No. / ISSN</th>
                     <th className="py-1 pr-2">Title</th>
+                    <th className="py-1 pr-2">Publisher</th>
                     <th className="py-1 pr-2">Year</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {JOURNAL_TYPES.flatMap((t) => (journals?.[t.id] ?? []).map((j) => (
+                  {JOURNAL_TYPES.flatMap((t) => rows.filter((j) => j.format === t.id).map((j) => (
                     <tr key={j.id} className="border-b border-slate-100">
                       <td className="py-1 pr-2">{t.sectionLabel}</td>
                       <td className="py-1 pr-2">{j.call_no || j.issn}</td>
@@ -92,6 +119,7 @@ export default function ProgramJournalsPanel({
                           <a href={j.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-psu" title={j.url}>🔗</a>
                         )}
                       </td>
+                      <td className="py-1 pr-2">{j.publisher}</td>
                       <td className="py-1 pr-2">{j.year}</td>
                     </tr>
                   )))}

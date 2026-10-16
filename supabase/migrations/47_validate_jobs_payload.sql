@@ -1,0 +1,19 @@
+-- Migration: generic scratch space for a resumable job's own progress
+-- state, reusing the sync_jobs/sync_job_items pair from 17_sync_jobs.sql
+-- for a second, structurally different job kind instead of standing up a
+-- parallel table pair for it.
+--
+-- The system-wide "Validate Matches (CSV)" job (validate every program's
+-- title-to-course/journal matches from one uploaded CSV, not just one
+-- program at a time) doesn't fit sync_jobs' existing fixed columns --
+-- those (inserted/updated/duplicates/no_campus_titles/unmapped_campuses)
+-- are named for what a Destiny sync tracks, and this job needs a
+-- differently-shaped running total (programs scanned so far, a capped
+-- preview sample, counts of locked/removed/skipped/unresolved rows,
+-- unmatched Program names from the CSV, and a sequence counter for items
+-- it queues dynamically as it goes -- see lib/validate-jobs.ts). Rather
+-- than bolt on five more Destiny-specific-sounding columns for a second
+-- job kind to half-use, this adds one flexible jsonb column instead;
+-- existing Destiny sync jobs simply leave it at its default and are
+-- otherwise completely unaffected.
+alter table sync_jobs add column if not exists payload jsonb not null default '{}'::jsonb;

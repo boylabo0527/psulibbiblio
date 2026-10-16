@@ -4,6 +4,9 @@
  * - parseEbookTitles:  Perlego-style title lists (xlsx/xls/csv/pdf/docx)
  * - parsePrintedBooks: library catalog rows with Call No., Author, Title, Year, Copies
  * - parseSubjects:     per-program subject list (course code, title, description, optional section)
+ * - parseValidationRows: a Programs & Export CSV export (or an AI-reviewed
+ *   copy of one) re-uploaded to validate which title-to-course matches
+ *   actually belong -- see /api/programs/validate-csv.
  */
 import * as XLSX from "xlsx";
 import type { TitleRow, SubjectRow } from "./types";
@@ -312,4 +315,29 @@ export async function parseSubjects(filename: string, buf: Buffer): Promise<Pars
 /** Build ParsedSubject rows from rows already parsed by the browser. */
 export function buildSubjectRowsFromRaw(rows: Record<string, string>[]): ParsedSubject[] {
   return subjectRowsFromRaw(rows);
+}
+
+// ---------------------------------------------------------------------------
+// Validation rows: re-upload of a Programs & Export CSV (possibly reviewed
+// by an outside AI) to confirm/prune which title-to-course matches belong.
+// The actual field-extraction (buildValidationRowsFromRaw) lives in
+// lib/parse-client.ts, a dependency-free module safe to import from a
+// "use client" component too -- ValidateAllProgramsAdmin calls it directly
+// on rows it already parsed in the browser, to narrow a large multi-
+// program export down to just these fields before sending it anywhere.
+// Re-exported here so every existing server-side import of these from
+// "@/lib/parsers" keeps working unchanged.
+// ---------------------------------------------------------------------------
+export { buildValidationRowsFromRaw, type ValidationRow } from "./parse-client";
+import { buildValidationRowsFromRaw } from "./parse-client";
+
+/** Parses a Programs & Export CSV/XLSX re-upload into per-row course/program
+ *  + title + verdict. Course Code and Title are the usual columns, but a
+ *  journal row (program-wide, so it was exported with no course code -- see
+ *  programBibliographyCsv) is kept too as long as it has a Program column
+ *  value, since that's the only thing that says what to check it against.
+ *  Every other export column (Section, Description, Resource Type, Author,
+ *  ...) is ignored. */
+export async function parseValidationRows(filename: string, buf: Buffer) {
+  return buildValidationRowsFromRaw(rowsFromWorkbook(readSheet(filename, buf)));
 }

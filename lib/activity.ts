@@ -5,10 +5,11 @@ export type ActivityAction =
   | "match_run"
   | "bulk_delete" | "hostinger_migrate"
   | "program_create" | "program_rename" | "program_delete" | "program_merge" | "program_cost_estimate" | "program_college_set"
-  | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge"
+  | "subject_create" | "subject_edit" | "subject_lock" | "subject_unlock" | "subject_merge" | "subject_bulk_cost_edit"
   | "title_merge"
   | "assignment_add" | "assignment_remove" | "assignment_bulk_remove"
-  | "assignment_lock" | "assignment_unlock"
+  | "assignment_lock" | "assignment_unlock" | "assignment_bulk_lock"
+  | "assignment_validate_csv" | "assignment_bulk_add_printed"
   | "role_create" | "role_delete" | "role_permission_edit"
   | "user_role_assign" | "user_role_remove" | "user_campus_scope_edit"
   | "supplier_offer_submit" | "supplier_offer_decide"
@@ -17,12 +18,15 @@ export type ActivityAction =
   | "pr_advance" | "campus_budget_set" | "purchase_order_generate"
   | "purchase_order_edit" | "purchase_order_cancel" | "purchase_order_delete"
   | "canvassing_price_reverify" | "canvassing_link_subject"
+  | "canvassing_mass_validate" | "canvassing_mass_unassign"
   | "title_recommendation_submit" | "title_recommendation_status" | "title_recommendation_delete" | "title_recommendation_reassign" | "title_recommendation_bulk_upload"
   | "standard_title_bulk_upload" | "standard_title_delete"
   | "supplier_create" | "supplier_edit" | "supplier_delete"
   | "purchase_order_delivery_status"
   | "pr_overdue_reminder_sent"
-  | "tor_generate";
+  | "tor_generate"
+  | "settings_update"
+  | "reclassify_journals";
 
 /** Records one row in activity_log. Best-effort: a logging failure must
  *  never break the operation it's describing, so errors are swallowed

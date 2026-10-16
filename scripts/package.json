@@ -1,0 +1,8 @@
+{
+  "name": "destiny-push",
+  "private": true,
+  "description": "Standalone script (destiny-push.mjs) that pushes Destiny's printed-book catalog to the main app. Deployed independently of the rest of the repo -- run `npm install` in this folder only, it doesn't need the main app's dependencies (Next.js, PDF/DOCX parsing, etc).",
+  "dependencies": {
+    "mssql": "^12.7.0"
+  }
+}

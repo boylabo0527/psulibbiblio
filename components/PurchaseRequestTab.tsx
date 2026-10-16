@@ -5,6 +5,8 @@ import { useCampuses } from "@/lib/use-campuses";
 import { usePermissions } from "@/lib/use-permissions";
 import { isPriceStale, daysSincePriced } from "@/lib/pricing";
 import type { CanvassingRow } from "@/app/api/canvassing/route";
+import type { ProcurementRow } from "@/app/api/procurement/route";
+import { stillToSource } from "@/lib/compliance";
 
 type DraftItem = CanvassingRow & { selected: boolean; draftQty: number };
 
@@ -20,6 +22,17 @@ export default function PurchaseRequestTab() {
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [excludedCount, setExcludedCount] = useState(0);
+  // Assigned to a course but not yet validated (see Market Canvassing's
+  // "Mass Validate" / download-upload workflow) -- shown so a librarian
+  // isn't left wondering why a title they matched isn't loading here.
+  const [unvalidatedCount, setUnvalidatedCount] = useState(0);
+  // Per-subject gap/pending snapshot from Procurement Analysis, keyed by
+  // subject_id -- lets Step 3 warn when the titles about to be requested
+  // for a course exceed what it still needs after crediting whatever's
+  // already on another active PR/PO (see stillToSource in lib/compliance).
+  // University-wide (no campus filter), matching that this item list itself
+  // isn't campus-scoped either.
+  const [gapBySubject, setGapBySubject] = useState<Map<number, Pick<ProcurementRow, "course_code" | "course_title" | "gap" | "pending_titles">>>(new Map());
   const [supplierFilter, setSupplierFilter] = useState("");
   const [programFilter, setProgramFilter] = useState("");
   const [itemSortBy, setItemSortBy] = useState<"none" | "price_asc" | "price_desc" | "title_asc">("none");
@@ -52,26 +65,36 @@ export default function PurchaseRequestTab() {
   async function loadItems() {
     setLoading(true); setErr(null); setLoaded(false);
     try {
-      // Fetch all matched canvassing entries (subject_id assigned), and
-      // which of them are already claimed by another active purchase
-      // request -- excluded below so the same title can't be requested
-      // twice while its first request is still pending/in-progress. Not
-      // filtered by program -- a title can now be linked to courses across
-      // more than one program, so gating by program either hid it from a
-      // program where it also applies, or required loading multiple times.
-      // Campus is this PR's own record (for budget attribution), not a
-      // filter over which titles are eligible.
-      const [res, claimedRes] = await Promise.all([
+      // Fetch all matched canvassing entries (subject_id assigned AND
+      // validated -- see /api/canvassing/mass-validate; an assignment
+      // alone can just be an unreviewed auto-suggestion, so it isn't
+      // enough to feed a real purchase document), and which of them are
+      // already claimed by another active purchase request -- excluded
+      // below so the same title can't be requested twice while its first
+      // request is still pending/in-progress. Not filtered by program --
+      // a title can now be linked to courses across more than one
+      // program, so gating by program either hid it from a program where
+      // it also applies, or required loading multiple times. Campus is
+      // this PR's own record (for budget attribution), not a filter over
+      // which titles are eligible.
+      const [res, claimedRes, procRes] = await Promise.all([
         apiFetch("/api/canvassing").then(r => r.json()),
         apiFetch("/api/purchase-request/requested-ids").then(r => r.json()).catch(() => ({ claimed: [] })),
+        apiFetch("/api/procurement").then(r => r.json()).catch(() => ({ rows: [] })),
       ]);
       if (res.error) throw new Error(res.error);
       const all: CanvassingRow[] = res.rows ?? [];
       const claimedIds = new Set<number>((claimedRes.claimed ?? []).map((c: { canvassing_id: number }) => c.canvassing_id));
-      const eligible = all.filter(r => r.subject_id !== null);
+      const eligible = all.filter(r => r.subject_id !== null && r.validated);
       const matched = eligible.filter(r => !claimedIds.has(r.id));
       setExcludedCount(eligible.length - matched.length);
+      setUnvalidatedCount(all.filter(r => r.subject_id !== null && !r.validated).length);
       setAllMatched(matched);
+      const gapMap = new Map<number, Pick<ProcurementRow, "course_code" | "course_title" | "gap" | "pending_titles">>();
+      for (const row of (procRes.rows ?? []) as ProcurementRow[]) {
+        gapMap.set(row.subject_id, { course_code: row.course_code, course_title: row.course_title, gap: row.gap, pending_titles: row.pending_titles });
+      }
+      setGapBySubject(gapMap);
       // Initialize draft with all matched items selected
       const initDraft = new Map<number, DraftItem>();
       for (const r of matched) {
@@ -104,6 +127,36 @@ export default function PurchaseRequestTab() {
 
   const selectedItems = useMemo(() => Array.from(draft.values()).filter(i => i.selected), [draft]);
   const grandTotal = selectedItems.reduce((s, i) => s + i.unit_cost * i.draftQty, 0);
+
+  /** Advisory only -- doesn't block Generate. A course can legitimately
+   *  need more than its accreditation gap (extra copies, variety across
+   *  suppliers), so this flags it for a second look rather than refusing
+   *  the request outright, unlike the hard per-title duplicate check the
+   *  server enforces in /api/purchase-request for titles already on
+   *  another active PR. */
+  const overorderWarnings = useMemo(() => {
+    const requestingBySubject = new Map<number, number>();
+    for (const item of selectedItems) {
+      const subjectIds = new Set<number>();
+      if (item.subject_id != null) subjectIds.add(item.subject_id);
+      for (const a of item.additional_subjects) subjectIds.add(a.subject_id);
+      for (const sid of subjectIds) requestingBySubject.set(sid, (requestingBySubject.get(sid) ?? 0) + 1);
+    }
+    const warnings: { subject_id: number; label: string; requesting: number; stillNeeded: number; excess: number }[] = [];
+    for (const [sid, requesting] of requestingBySubject) {
+      const row = gapBySubject.get(sid);
+      if (!row) continue;
+      const stillNeeded = stillToSource(row);
+      if (requesting > stillNeeded) {
+        warnings.push({
+          subject_id: sid,
+          label: [row.course_code, row.course_title].filter(Boolean).join(" — ") || `Subject #${sid}`,
+          requesting, stillNeeded, excess: requesting - stillNeeded,
+        });
+      }
+    }
+    return warnings.sort((a, b) => b.excess - a.excess);
+  }, [selectedItems, gapBySubject]);
   const budgetVal = parseFloat(budget) || 0;
   const overBudget = budgetVal > 0 && grandTotal > budgetVal;
 
@@ -238,12 +291,18 @@ export default function PurchaseRequestTab() {
         {err && <p className="text-red-700 text-sm">{err}</p>}
         {loaded && allMatched.length === 0 && (
           <p className="text-amber-700 text-sm">
-            No matched titles found. Go to the Market Canvassing tab to assign canvassed titles to subject gaps first.
+            No matched titles found. Go to the Market Canvassing tab to assign and validate canvassed titles against subject gaps first.
           </p>
         )}
         {loaded && excludedCount > 0 && (
           <p className="text-slate-500 text-xs mt-1">
             {excludedCount} matched title{excludedCount === 1 ? "" : "s"} excluded -- already on another active purchase request.
+          </p>
+        )}
+        {loaded && unvalidatedCount > 0 && (
+          <p className="text-amber-700 text-xs mt-1">
+            {unvalidatedCount} title{unvalidatedCount === 1 ? "" : "s"} assigned to a course but not yet validated, so they aren&apos;t
+            shown here -- validate them in Market Canvassing (Mass Validate, or the download/upload workflow) first.
           </p>
         )}
       </div>
@@ -353,6 +412,25 @@ export default function PurchaseRequestTab() {
                   backgroundColor: overBudget ? "#dc2626" : grandTotal / budgetVal > 0.9 ? "#d97706" : "#1e40af",
                 }} />
               </div>
+            </div>
+          )}
+
+          {/* Over-order warning -- advisory, doesn't block Generate */}
+          {overorderWarnings.length > 0 && (
+            <div className="mb-4 p-3 rounded border bg-amber-50 border-amber-300 text-xs text-amber-800">
+              <p className="font-semibold mb-1">
+                {overorderWarnings.length} course{overorderWarnings.length === 1 ? "" : "s"} may not need this many more titles
+              </p>
+              <ul className="space-y-0.5 list-disc list-inside">
+                {overorderWarnings.map(w => (
+                  <li key={w.subject_id}>
+                    <span className="font-medium">{w.label}</span>: requesting {w.requesting} title{w.requesting === 1 ? "" : "s"}, but only{" "}
+                    {w.stillNeeded} more {w.stillNeeded === 1 ? "is" : "are"} still needed once what&apos;s already pending on another
+                    PR/PO is credited -- {w.excess} more than accreditation requires. May still be fine (extra copies, variety across
+                    suppliers); just worth a second look before submitting.
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

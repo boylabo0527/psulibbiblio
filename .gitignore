@@ -5,6 +5,7 @@ out/
 .env
 .env.local
 .env*.local
+scripts/destiny-push.env
 *.tsbuildinfo
 .DS_Store
 .pytest_cache/

@@ -24,8 +24,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "That course isn't in your assigned campus(es)." }, { status: 403 });
     }
 
+    // Any change here (assigning, reassigning, or unassigning) invalidates
+    // a prior validation -- the proposal is different now and needs
+    // re-review before it can feed a Purchase Request again. Only
+    // /api/canvassing/mass-validate is allowed to set validated: true.
     const { error } = await db.from("canvassing")
-      .update({ subject_id: subject_id ?? null, program_id: program_id ?? null })
+      .update({ subject_id: subject_id ?? null, program_id: program_id ?? null, validated: false })
       .eq("id", Number(id));
     if (error) throw error;
 
