@@ -18,6 +18,7 @@
  */
 import type { SubjectRow, TitleRow, AssignmentRow } from "./types";
 import { RESOURCE_BY_ID, type ResourceTypeId } from "./resources";
+import { TAGALOG_GLOSSARY } from "./tagalog-glossary";
 
 const STOPWORDS = new Set([
   "a","an","and","are","as","at","be","but","by","for","from","has","have",
@@ -25,15 +26,56 @@ const STOPWORDS = new Set([
   "she","such","that","the","their","then","there","these","they","this",
   "to","was","were","will","with","you","your","we","our","de","la","en",
   "el","los","las","y","con","del","al","introduction","fundamentals",
+  // Filipino/Tagalog function words. Several of PSU's own subjects (and a
+  // good share of the catalog) are taught/catalogued in Filipino, e.g.
+  // "Pagbasa at Pagsulat Tungo sa Pananaliksik" -- without these, every one
+  // of "ang/mga/ng/sa/na/at/ay" etc. survives as a real query term (they're
+  // 2+ letters and `to_tsquery('english', ...)` doesn't know Filipino
+  // stopwords either), and since nearly every Filipino-language title
+  // contains several of them, the broad OR query stops discriminating --
+  // almost any Filipino book scores similarly, which is exactly what made
+  // Filipino-subject matching "difficult because the description is also
+  // in Tagalog." Filtering them out here, before query_text/must_text are
+  // ever built, leaves only the subject's actual topical vocabulary
+  // (e.g. "pagbasa", "pagsulat", "pananaliksik") to match on.
+  "ang","mga","ng","nang","sa","na","at","ay","ito","iyon","iyan","dito",
+  "diyan","doon","rito","riyan","roon","kung","kapag","dahil","dahilan",
+  "upang","para","mula","hanggang","habang","bago","kasi","pero","subalit",
+  "ngunit","din","rin","lang","lamang","naman","pa","man","raw","daw","po",
+  "opo","hindi","wala","may","mayroon","meron","akin","iyo","kanya","amin",
+  "atin","inyo","kanila","ako","ikaw","ka","siya","kami","tayo","kayo",
+  "sila","nito","nina","ni","ninyo","nila","niya","niyo","kong","mong",
+  "niyang","iyong","ating","ganito","ganyan","ganoon","paano","bakit",
+  "saan","sino","alin","ilan","kailan","isa","isang","tungkol","bilang",
+  "tungo","gamit","batay","alinsunod","ayon","noon","ngayon","mamaya",
+  // Bare Tagalog verb/nominalizer prefixes. This tokenizer splits on
+  // anything that isn't a letter/digit, so a hyphenated compound like
+  // "pag-aaral" or "mag-aaral" never survives as one token -- it arrives
+  // here as "pag"/"mag" plus whatever follows. Left alone, neither
+  // fragment means anything on its own (nor is it in TAGALOG_GLOSSARY
+  // below), so they're dropped here same as any other stopword; the
+  // content half (e.g. "aaral") is what TAGALOG_GLOSSARY translates.
+  "pag","mag","pang","ika",
 ]);
 
+// See lib/tagalog-glossary.ts for why this exists: PSU's titles catalog is
+// almost entirely in English, but a real share of its own subjects are
+// named/described in Filipino -- without this, a Filipino course shares
+// literally zero words with the English books that might actually be
+// relevant to it, which is exactly what made Filipino-subject matching
+// return "mostly zero matches." Translate-if-known, else keep the word
+// as-is (an English word, a proper noun, or Filipino vocabulary this list
+// doesn't cover yet -- for those, the Match tab's per-course "Priority
+// Keywords" override is the escape hatch).
 function unigrams(text: string): string[] {
   const lc = text.toLowerCase();
   const words = lc.match(/[a-z0-9]{2,}/g) || [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const w of words) {
-    if (STOPWORDS.has(w) || seen.has(w)) continue;
+  for (const raw of words) {
+    if (STOPWORDS.has(raw)) continue;
+    const w = TAGALOG_GLOSSARY[raw] ?? raw;
+    if (seen.has(w)) continue;
     seen.add(w);
     out.push(w);
   }
@@ -45,6 +87,21 @@ export function titleText(t: TitleRow): string {
   return [t.title, t.author, t.publisher, t.subjects].filter(Boolean).join(" ");
 }
 
+// Word-for-word Tagalog->English swap that keeps everything else (order,
+// punctuation, untranslated words) exactly as-is -- unlike unigrams() above,
+// this doesn't dedupe or drop stopwords, since the embedding model (an
+// English-only sentence transformer, see lib/embeddings.ts) is sensitive to
+// sentence shape, not just bag-of-words overlap the way lexical search is.
+// A no-op on English/already-English text (TAGALOG_GLOSSARY simply never
+// matches those words), so this only changes anything for a genuinely
+// Filipino-language subject -- which is exactly the case where feeding the
+// model raw Tagalog it has no training signal for was contributing to
+// Filipino-subject matches coming back empty just as much as the lexical
+// side (see subjectQueryTerms/subjectMustQuery).
+function translateWords(text: string): string {
+  return text.replace(/[A-Za-z0-9]+/g, (w) => TAGALOG_GLOSSARY[w.toLowerCase()] ?? w);
+}
+
 export function subjectText(s: SubjectRow): string {
   // Same override as subjectQueryTerms/subjectMustQuery below -- when set,
   // the semantic embedding is based on it too, so all three matching
@@ -53,8 +110,8 @@ export function subjectText(s: SubjectRow): string {
   // pulling the embedding toward unrelated context (audience, delivery
   // format, etc.) the same way it can pull lexical ranking off course.
   const keyword = (s.match_keyword ?? "").trim();
-  if (keyword) return keyword;
-  return [s.course_title, s.description, s.course_code].filter(Boolean).join(" ");
+  if (keyword) return translateWords(keyword);
+  return translateWords([s.course_title, s.description, s.course_code].filter(Boolean).join(" "));
 }
 
 // Caps how many terms get OR'd into one query. A subject with a long
